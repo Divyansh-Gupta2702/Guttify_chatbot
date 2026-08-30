@@ -1,0 +1,388 @@
+[
+  {
+    "product_name": "Digest Boost",
+    "category": "Digestion & Constipation",
+    "symptoms": [
+      "bloating",
+      "constipation",
+      "irregular digestion"
+    ],
+    "intended_support": [
+      "relieve constipation",
+      "reduce bloating",
+      "support regular bowel movements",
+      "support gut microbiome health",
+      "support nutrient absorption"
+    ],
+    "ingredients": [
+      "Triphala",
+      "Amla",
+      "Bibhitak",
+      "Haritaki",
+      "Pea fiber",
+      "Isabgol/psyllium husk",
+      "Hing",
+      "Chitrak root extract",
+      "Shunti/ginger extract",
+      "Kutaj seed extract",
+      "Papaya leaf extract"
+    ],
+    "how_to_use": "Dissolve 1 tablet in a glass of water; best consumed before breakfast or lunch.",
+    "warnings": [
+      "Not recommended for pregnant or lactating women.",
+      "Fiber/herbal laxative blends may cause mild gas or loose stools when first starting.",
+      "People with known allergies to Hing or other ingredients should avoid it."
+    ],
+    "age_group": "Adult use; not specified for children.",
+    "status": "active",
+    "product_url": "https://guttify.com/products/digest-boost"
+  },
+
+  {
+    "product_name": "Acid Ease",
+    "category": "Acidity & Heartburn",
+    "symptoms": [
+      "acidity",
+      "heartburn",
+      "acid reflux",
+      "burning sensation after meals",
+      "gas"
+    ],
+    "intended_support": [
+      "neutralize stomach acid",
+      "relieve heartburn",
+      "support acid reflux relief",
+      "reduce gas"
+    ],
+    "ingredients": [
+      "Triphala",
+      "Ginger extract",
+      "Blueberry",
+      "Goji berry",
+      "Apple cider vinegar",
+      "Lactobacillus acidophilus",
+      "Isabgol husk",
+      "Inulin"
+    ],
+    "how_to_use": "1 tablet in water, ideally before breakfast or lunch.",
+    "warnings": [
+      "Not recommended for pregnant or lactating women.",
+      "People with acid sensitivity to apple cider vinegar should check with a doctor.",
+      "People on medications affected by probiotics should check with a doctor."
+    ],
+    "age_group": "Adult use; not specified for children.",
+    "status": "active",
+    "product_url": "https://guttify.com/products/acid-ease"
+  },
+
+  {
+    "product_name": "Liver Lift",
+    "category": "Liver Support",
+    "symptoms": [
+      "fatigue",
+      "sluggishness",
+      "bloating",
+      "digestion concerns",
+      "liver support"
+    ],
+    "intended_support": [
+      "support natural detoxification",
+      "reduce fatigue",
+      "support metabolism",
+      "support digestion",
+      "support liver function",
+      "general liver support"
+    ],
+    "ingredients": [
+      "Milk Thistle",
+      "Triphala",
+      "Amla",
+      "Bibhitak",
+      "Haritaki",
+      "Moringa oleifera leaf extract"
+    ],
+    "how_to_use": "1 tablet in water, before breakfast or lunch.",
+    "warnings": [
+      "Not recommended for pregnant or lactating women.",
+      "May occasionally cause mild digestive upset in sensitive individuals.",
+      "Anyone with an existing liver condition should consult a doctor before use.",
+      "This is a wellness/detox supplement, not a treatment for diagnosed liver disease."
+    ],
+    "age_group": "Adult use; not specified for children.",
+    "status": "active",
+    "product_url": "https://guttify.com/products/liver-lift",
+    "variants": [
+      {"flavor": "Original", "url": "https://guttify.com/products/liver-lift"},
+      {"flavor": "Strawberry", "url": "https://guttify.com/products/liver-lift-strawberry"}
+    ]
+  },
+
+  {
+    "product_name": "Piles Pure",
+    "category": "Piles / Haemorrhoid Relief",
+    "symptoms": [
+      "piles",
+      "haemorrhoids",
+      "pain",
+      "swelling",
+      "bleeding",
+      "discomfort",
+      "straining"
+    ],
+    "intended_support": [
+      "reduce pain",
+      "reduce swelling",
+      "reduce bleeding",
+      "reduce discomfort",
+      "support smoother bowel movements",
+      "support less strained bowel movements"
+    ],
+    "ingredients": [
+      "Nagkesar",
+      "Ashwagandha",
+      "Moringa",
+      "Guggal",
+      "Bibhitak",
+      "Amla",
+      "Neem leaf extract",
+      "Inulin fiber",
+      "Pea fiber",
+      "Vitamin C",
+      "Harad/Terminalia chebula"
+    ],
+    "how_to_use": "1 tablet in water, before breakfast or lunch.",
+    "warnings": [
+      "Not recommended for pregnant or lactating women.",
+      "For persistent, worsening, or bleeding piles, medical evaluation is advisable.",
+      "Do not rely on the supplement alone for persistent or worsening symptoms."
+    ],
+    "age_group": "Adult use; not specified for children.",
+    "status": "active",
+    "product_url": "https://guttify.com/products/piles-pure-orange",
+    "variants": [
+      {"flavor": "Orange", "url": "https://guttify.com/products/piles-pure-orange"},
+      {"flavor": "Cola Blast", "url": "https://guttify.com/products/piles-pure-cola-blast"}
+    ]
+  },
+
+  {
+    "product_name": "Apple Active",
+    "category": "Weight Management / Metabolism",
+    "symptoms": [
+      "weight management",
+      "metabolism support",
+      "bloating",
+      "digestion concerns"
+    ],
+    "intended_support": [
+      "support digestion",
+      "boost metabolism",
+      "aid weight management",
+      "support reduced bloating",
+      "support gut-health routine"
+    ],
+    "ingredients": [
+      "Apple cider vinegar",
+      "Garcinia cambogia extract",
+      "Green coffee seed extract",
+      "L-Carnitine",
+      "Vitamin B6",
+      "Vitamin B12",
+      "Beetroot extract",
+      "Pomegranate extract"
+    ],
+    "how_to_use": "1 tablet in water, before breakfast or lunch.",
+    "warnings": [
+      "Not recommended for pregnant or lactating women.",
+      "People sensitive to caffeine should check with a doctor.",
+      "People with blood sugar conditions should check with a doctor.",
+      "People taking weight-loss or psychiatric medications should check with a doctor.",
+      "ACV-based products may cause mild throat or stomach irritation in sensitive individuals if not properly diluted."
+    ],
+    "age_group": "Adult use; not specified for children.",
+    "status": "active",
+    "product_url": "https://guttify.com/products/apple-active"
+  },
+
+  {
+    "product_name": "Piloease Anal Care Spray",
+    "category": "Piles / Haemorrhoid Relief (Topical)",
+    "symptoms": [
+      "piles",
+      "haemorrhoids",
+      "anal fissures",
+      "burning sensation",
+      "itching",
+      "irritation",
+      "anal discomfort"
+    ],
+    "intended_support": [
+      "soothe burning, itching and irritation",
+      "support hygiene with a no-touch application",
+      "support comfort during sitting, walking and bowel movements",
+      "provide instant cooling relief"
+    ],
+    "ingredients": [
+      "Aloe Vera",
+      "Witch Hazel",
+      "Menthol"
+    ],
+    "how_to_use": "Spray directly onto the affected area as needed for hands-free, no-touch relief.",
+    "warnings": [
+      "No specific warnings were listed on the product page.",
+      "For external use only; avoid contact with eyes.",
+      "Discontinue use and consult a doctor if irritation occurs.",
+      "For persistent, worsening, or bleeding piles, seek medical evaluation rather than relying on the spray alone."
+    ],
+    "age_group": "Not specified on the product page.",
+    "status": "active",
+    "product_url": "https://guttify.com/products/piloease-anal-care-spray"
+  },
+
+  {
+    "product_name": "GloLux GlutaGlow Skin Effervescent Tablets",
+    "category": "Skin Health (Gut-to-Skin)",
+    "symptoms": [
+      "dull skin",
+      "dry skin",
+      "uneven skin tone",
+      "loss of skin elasticity",
+      "early signs of aging"
+    ],
+    "intended_support": [
+      "support brighter, more even-toned skin",
+      "improve skin firmness and elasticity",
+      "support deep hydration",
+      "provide antioxidant skin protection",
+      "support natural collagen synthesis",
+      "support absorption via a gut-friendly effervescent format"
+    ],
+    "ingredients": [
+      "Marine Collagen",
+      "L-Glutathione",
+      "Hyaluronic Acid",
+      "Vitamin C",
+      "Vitamin E"
+    ],
+    "how_to_use": "Dissolve 1 tablet in a glass of water; consume before breakfast or lunch.",
+    "warnings": [
+      "Not recommended for pregnant or lactating women."
+    ],
+    "age_group": "Not specified on the product page.",
+    "status": "active",
+    "product_url": "https://guttify.com/products/glolux%E2%84%A2-effervescent-tablets",
+    "flavors": ["Cola Blast", "Blueberry"]
+  },
+
+  {
+    "product_name": "Boost Vitamin B12",
+    "category": "Vitamin & Nutrient Support",
+    "symptoms": [
+      "fatigue",
+      "low energy",
+      "poor focus",
+      "brain fog",
+      "B12 deficiency",
+      "plant-based diet nutrient gaps",
+      "bloating",
+      "constipation"
+    ],
+    "intended_support": [
+      "support nutrient absorption",
+      "support red blood cell production",
+      "support a healthy nervous system",
+      "support a balanced gut microbiome",
+      "support memory, focus and mental clarity",
+      "support energy levels"
+    ],
+    "ingredients": [
+      "Vitamin B12",
+      "Folic acid",
+      "Green tea extract",
+      "Chromium"
+    ],
+    "how_to_use": "Use as an oral spray; recommended dosage is 0.5 ml (about 4 sprays).",
+    "warnings": [
+      "No specific warnings were listed on the product page.",
+      "As with any supplement, consult a doctor if pregnant, breastfeeding, or taking regular medication."
+    ],
+    "age_group": "Not specified on the product page.",
+    "status": "active",
+    "product_url": "https://guttify.com/products/boost-vitamin-b12",
+    "flavors": ["Orange", "Cola Blast", "Tangy Lemon", "Combo All 3"]
+  },
+
+  {
+    "product_name": "Boost Vitamin D3+",
+    "category": "Vitamin & Nutrient Support",
+    "symptoms": [
+      "low immunity",
+      "weak bones",
+      "low mood",
+      "vitamin D deficiency",
+      "low sun exposure",
+      "digestive discomfort related to calcium absorption"
+    ],
+    "intended_support": [
+      "support immunity",
+      "support strong bones",
+      "support calcium absorption",
+      "support mood and energy",
+      "support a balanced gut microbiome"
+    ],
+    "ingredients": [
+      "Vitamin D3"
+    ],
+    "how_to_use": "Use as an oral spray; no water or swallowing required.",
+    "warnings": [
+      "No specific warnings were listed on the product page.",
+      "As with any supplement, consult a doctor if pregnant, breastfeeding, or taking regular medication."
+    ],
+    "age_group": "Not specified on the product page.",
+    "status": "active",
+    "product_url": "https://guttify.com/products/boost-vitamin-d3",
+    "flavors": ["Zesty Orange", "Tangy Lemon", "Cola Blast", "Combo All 3"]
+  },
+
+  {
+    "product_name": "Guttify Poopie",
+    "category": "Digestion & Constipation (Daily Fibre)",
+    "symptoms": [
+      "irregular bowel movements",
+      "hard stools",
+      "bloating",
+      "occasional constipation",
+      "feeling backed up",
+      "low fibre intake"
+    ],
+    "intended_support": [
+      "promote regular bowel movements",
+      "support softer, easier-to-pass stools",
+      "support beneficial gut bacteria",
+      "support everyday digestive comfort",
+      "provide gentle daily fibre support"
+    ],
+    "ingredients": [
+      "Dietary Fibre",
+      "Inulin",
+      "Sunfiber (PHGG)",
+      "Ginger Extract",
+      "Triphala Extract",
+      "Fennel Extract",
+      "Potassium Chloride",
+      "Magnesium Citrate"
+    ],
+    "how_to_use": "Add 1 scoop (7 g) to 180-200 ml lukewarm water, mix thoroughly, and drink immediately. Take once daily. Do not consume the powder directly.",
+    "warnings": [
+      "Not recommended for pregnant or lactating women.",
+      "Consult a doctor before use if breastfeeding, taking medication, or managing an existing medical condition.",
+      "Do not exceed the recommended daily usage.",
+      "Discontinue use and seek professional advice if you experience an adverse reaction.",
+      "For persistent, recurring, or severe digestive concerns, a qualified healthcare professional should assess your condition.",
+      "Keep out of reach of children."
+    ],
+    "age_group": "Adult use; keep out of reach of children.",
+    "status": "active",
+    "product_url": "https://guttify.com/products/guttify-poopie"
+  }
+]
