@@ -2,20 +2,23 @@
 fastapi
 uvicorn[standard]
 
-# LLM (chat) — Groq's free tier powers the live chatbot
+# LLM (chat) — Groq's free tier phrases the final reply. It does not
+# choose the product; recommendation_engine.py does that deterministically
+# with no ML model involved.
 langchain-core
 langchain-groq
 
-# --- Not required for the live web app (app.py) ---
-# The optional standalone RAG scripts (create_memory_for_llm.py,
-# connect_memory_with_llm.py) need these, but app.py/recommendation_engine.py
-# do not — recommendation matching is pure keyword/vocab logic now, with no
-# embedding model, to keep the app's memory footprint small enough for
-# free hosting tiers (512MB and under).
-# langchain-huggingface
-# sentence-transformers
-# langchain-community
-# langchain-text-splitters
-# langchain-classic
-# faiss-cpu
-# pypdf
+# NOTE: the live app's symptom matching (recommendation_engine.py,
+# intent_parser.py) is pure Python — no embeddings, no vector DB, no extra
+# dependency. That keeps this safe to run in a small/constrained container.
+
+# Everything below is ONLY used by the optional offline RAG CLI scripts
+# (create_memory_for_llm.py / connect_memory_with_llm.py) and is not
+# imported by the live web app (app.py) at all.
+langchain-community
+langchain-huggingface
+sentence-transformers
+langchain-text-splitters
+langchain-classic
+faiss-cpu
+pypdf

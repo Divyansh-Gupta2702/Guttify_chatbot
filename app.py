@@ -1,8 +1,8 @@
 """
 Guttify Web App
 ----------------
-Thin FastAPI layer over the existing chatbot logic (recommendation_engine,
-safety_checker, guttify_chatbot). No business logic lives here — this file
+Thin FastAPI layer over the chatbot logic. No product-decision logic lives
+here — that's entirely in guttify_agent / recommendation_engine. This file
 only handles HTTP, sessions, and serving the static frontend.
 
 Run with:
@@ -15,19 +15,21 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
+from guttify_agent import ConversationManager
 from guttify_chatbot import generate_response, load_llm
-from recommendation_engine import recommend_product
 
 app = FastAPI(title="Guttify AI Assistant")
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
-# Per-session conversation history, held in process memory. Resets whenever
-# the server restarts, and a session disappears once the client stops using
-# it — there's no persistence to disk or a database here by design.
+# Per-session conversation history + structured symptom state, held in
+# process memory. Resets whenever the server restarts, and a session
+# disappears once the client stops using it — no persistence to disk or a
+# database here by design.
 # NOTE: single-process only. If you deploy with multiple workers, either
-# pin sessions to a worker (sticky sessions) or move this dict to something
+# pin sessions to a worker (sticky sessions) or move this to something
 # shared like Redis.
-SESSIONS: dict[str, list[dict]] = {}
+HISTORY: dict[str, list[dict]] = {}
+conversation_manager = ConversationManager()
 
 llm = load_llm()
 
@@ -51,7 +53,8 @@ def index():
 def new_session():
     """Called once when the page loads to get a fresh session id."""
     session_id = str(uuid.uuid4())
-    SESSIONS[session_id] = []
+    HISTORY[session_id] = []
+    conversation_manager.reset(session_id)
     return {"session_id": session_id}
 
 
@@ -59,27 +62,23 @@ def new_session():
 def chat(req: ChatRequest):
     # If the client sends a session_id we haven't seen (server restarted,
     # or the id was never registered), just start tracking it fresh.
-    history = SESSIONS.setdefault(req.session_id, [])
+    history = HISTORY.setdefault(req.session_id, [])
 
-    result = recommend_product(req.message)
+    result = conversation_manager.handle_message(req.session_id, req.message)
     status = result["status"]
 
-    if status == "GIBBERISH":
+    if status in ("GIBBERISH", "IRRELEVANT", "SAFETY_REVIEW", "ASK", "NO_MATCH", "AMBIGUOUS", "GREETING"):
         reply = result["message"]
 
-    elif status == "IRRELEVANT":
-        reply = result["message"]
+    elif status == "PRODUCT_INFO_FOUND":
+        reply = generate_response(llm, req.message, history, result["product"])
 
-    elif status == "SAFETY_REVIEW":
-        reasons = "\n".join(f"- {r}" for r in result["safety"]["reasons"])
-        reply = f"{result['safety']['message']}\n\n{reasons}"
-
-    elif status in ("RECOMMENDATION_FOUND", "PRODUCT_INFO_FOUND"):
+    elif status == "RECOMMENDATION_FOUND":
         best_product = result["recommendations"][0]
         reply = generate_response(llm, req.message, history, best_product)
 
-    else:  # NO_MATCH
-        reply = generate_response(llm, req.message, history, None)
+    else:
+        reply = "Sorry, something went wrong. Could you rephrase that?"
 
     history.append({"role": "user", "content": req.message})
     history.append({"role": "assistant", "content": reply})

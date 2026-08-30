@@ -12,7 +12,7 @@ GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
 # sustaining live traffic than the small quality gap between them. Swap to
 # "llama-3.3-70b-versatile" if you want stronger answers and your traffic
 # is light enough to stay under its lower daily cap.
-GROQ_MODEL = "llama-3.1-8b-instant"
+GROQ_MODEL = "openai/gpt-oss-20b"
 
 RESPONSE_PROMPT_TEMPLATE = """
 You are Guttify's product-focused assistant.
@@ -205,7 +205,11 @@ def chatbot():
         result = recommend_product(user_query)
         status = result["status"]
 
-        if status == "GIBBERISH":
+        if status == "GREETING":
+            answer = result["message"]
+            print("\n" + answer)
+
+        elif status == "GIBBERISH":
             answer = result["message"]
             print("\n" + answer)
 

@@ -1,277 +1,303 @@
-Guttify AI Assistant
+# 🩺 Guttify AI Assistant
 
-Guttify AI Assistant is a conversational product recommendation chatbot built with FastAPI, LangChain, Hugging Face Qwen, sentence-transformers, and FAISS.
+A conversational product-recommendation chatbot for **Guttify**, a gut-health/wellness supplement line. It asks a few natural clarifying questions, understands the user's symptoms in plain language, and recommends a product **only** from Guttify's own product database — the underlying LLM is used purely to phrase replies, never to decide what to recommend.
 
-Features
+Built with **FastAPI**, a small **Groq**-hosted LLM for conversational phrasing, and a fully deterministic, dependency-light Python recommendation engine.
 
-Product recommendation based on user concerns.
+---
 
-Product-specific questions such as ingredients, usage, benefits, and warnings.
+## Table of Contents
 
-Semantic + keyword product matching.
+- [Why it's built this way](#why-its-built-this-way)
+- [Features](#features)
+- [Architecture](#architecture)
+- [Project Structure](#project-structure)
+- [Requirements](#requirements)
+- [Installation](#installation)
+- [Environment Variables](#environment-variables)
+- [Running Locally](#running-locally)
+- [API Endpoints](#api-endpoints)
+- [Example Conversations](#example-conversations)
+- [Testing](#testing)
+- [Product Data](#product-data)
+- [Deployment](#deployment)
+- [Safety Notes](#safety-notes)
+- [Contributing](#contributing)
 
-Relevance filtering for unrelated questions.
+---
 
-Safety checking before recommendations.
+## Why it's built this way
 
-Conversation sessions through the FastAPI backend.
+Letting an LLM freely choose which product to recommend risks hallucinated products, invented ingredients, or unsafe suggestions. Guttify instead uses the LLM only to *understand and phrase* — a deterministic Python engine makes the actual product decision from `products.json`, so:
 
-Web interface served through FastAPI.
+- A product can **never** appear in a response unless it was actually loaded from `products.json`.
+- A product **never** scores above zero without an explicit primary-symptom match — "somewhat related to digestion" is never enough on its own.
+- The conversation never asks more than **3** clarifying questions, and never re-asks something the user already said.
+- Anything that looks like a serious/red-flag symptom short-circuits straight to "seek medical care," before any product logic runs.
 
-Project Structure
+## Features
 
+- 🗣️ **Natural language understanding** — synonym/intent mapping turns phrases like *"my stomach gets swollen"* or *"burning in my chest after meals"* into the right canonical symptom, without needing an embedding model.
+- 🎯 **Deterministic recommendation engine** — explicit, auditable scoring rules instead of vague semantic similarity; ties/ambiguous cases are flagged instead of guessed.
+- 🛡️ **Two-tier safety layer** — red-flag detection (e.g. vomiting blood, black stool, jaundice, fainting) stops the flow and tells the user to seek care; softer caution rules (pregnancy, existing conditions, medication) recommend checking with a doctor first.
+- 💬 **Bounded, adaptive conversation** — up to 3 follow-up questions, skipped entirely when the user already gave enough detail in one message.
+- 👋 **Greeting handling** — a plain "hi" / "hey" / "yo" / "what's up" gets a friendly reply instead of being treated as gibberish or off-topic.
+- 🔍 **Named-product lookup** — "what are the ingredients in Piloease?" is answered directly, no symptom description required.
+- 🚫 **Gibberish & off-topic filtering** — keyboard-mash input and unrelated questions ("who is the president?") are rejected cleanly.
+- 💾 **Session-based conversations** — structured symptom state and chat history are tracked per session in memory.
+- ✅ **Automated test suite** — 29 tests covering matching, safety, conversation flow, and edge cases, with no network or model dependency required to run them.
+
+## Architecture
+
+```
+User message
+    │
+    ▼
+Greeting check ───────────► "Hi! What can I help you with?"
+    │
+    ▼
+Gibberish check ──────────► Light "try again?" response
+    │
+    ▼
+Safety check (red flags) ─► "Please seek medical care" (stops here)
+    │
+    ▼
+Named-product lookup ─────► Direct product-info answer (skips Q&A)
+    │
+    ▼
+Intent parser
+(free text → structured
+ symptom state)
+    │
+    ▼
+Deterministic recommendation engine
+    │
+    ├─ Confident match ──────► Recommendation (LLM phrases the reply)
+    ├─ Ambiguous match ──────► Ask for one more distinguishing detail
+    └─ Not enough info ──────► Ask a clarifying question (max 3 total)
+                               or return "no close match"
+```
+
+The LLM (`guttify_chatbot.py`, via Groq) only ever sees an **already-approved** product dict and turns it into a natural-sounding reply — it cannot introduce a different product, ingredient, or claim.
+
+## Project Structure
+
+```
 guttify-chatbot/
 │
-├── app.py
-├── guttify_chatbot.py
-├── recommendation_engine.py
-├── safety_checker.py
-├── gibberish_checker.py
-├── products.json
-├── Pipfile
-├── requirements.txt
+├── app.py                        # FastAPI entrypoint — HTTP, sessions, static files only
+├── guttify_agent.py               # Conversation manager: question cap, flow control
+├── intent_parser.py                # Free text → structured symptom state (rule-based, no ML)
+├── recommendation_engine.py       # Deterministic product scoring & matching
+├── safety_checker.py              # Red-flag + caution safety rules
+├── gibberish_checker.py           # Keyboard-mash / nonsense input filter
+├── greeting_checker.py            # Greeting detection ("hi", "yo", "what's up", ...)
+├── guttify_chatbot.py              # LLM-backed reply phrasing (Groq)
+├── products.json                  # Product database — single source of truth
+│
+├── create_memory_for_llm.py       # (optional) builds a FAISS store from PDFs for RAG
+├── connect_memory_with_llm.py     # (optional) one-shot RAG CLI using that FAISS store
+│
+├── tests/
+│   └── test_recommendation.py     # Automated test suite (stdlib unittest)
 │
 ├── static/
 │   ├── index.html
 │   ├── app.js
 │   └── style.css
 │
-└── data/
-    └── reference/product documents
+├── requirements.txt
+├── Pipfile
+├── Dockerfile
+└── .gitignore
+```
 
-Requirements
+> `create_memory_for_llm.py` and `connect_memory_with_llm.py` are optional offline CLI scripts for an alternative RAG-based approach. They are **not** imported by the live web app and pull in heavier dependencies (FAISS, sentence-transformers) on their own.
 
-Python 3.10+
+## Requirements
 
-Hugging Face API token
+- Python 3.10+
+- A [Groq](https://console.groq.com) API key (free tier available) — powers the live chatbot's reply phrasing
+- Git
 
-Internet connection for Hugging Face inference
+The live recommendation path (`recommendation_engine.py`, `intent_parser.py`, `safety_checker.py`, `guttify_agent.py`) has **no ML/embedding dependency** — it's plain Python, which keeps it cheap to run in a small container.
 
-Git
+## Installation
 
-Installation
+1. **Clone the repository**
 
-1. Clone the repository
+   ```bash
+   git clone <YOUR_GITHUB_REPOSITORY_URL>
+   cd <YOUR_REPOSITORY_FOLDER>
+   ```
 
-git clone <YOUR_GITHUB_REPOSITORY_URL>
-cd <YOUR_REPOSITORY_FOLDER>
+2. **Create and activate a virtual environment**
 
-2. Create and activate a virtual environment
+   macOS / Linux:
+   ```bash
+   python -m venv env
+   source env/bin/activate
+   ```
 
-Windows PowerShell:
+   Windows PowerShell:
+   ```powershell
+   python -m venv env
+   .\env\Scripts\Activate.ps1
+   ```
 
-python -m venv env
-.\env\Scripts\Activate.ps1
+3. **Install dependencies**
 
-Or activate an existing environment:
+   ```bash
+   pip install -r requirements.txt
+   ```
 
-.\env\Scriptsctivate
+## Environment Variables
 
-3. Install dependencies
+Create a `.env` file in the project root:
 
-pip install -r requirements.txt
+```
+GROQ_API_KEY=your_groq_api_key
+```
 
-If you need to create requirements.txt from the working environment:
+> ⚠️ Never commit `.env` to version control. `.gitignore` already excludes it, along with `env/`, `.venv/`, `__pycache__/`, and `*.pyc`.
 
-pip freeze > requirements.txt
+If you also plan to use the optional RAG CLI scripts (`create_memory_for_llm.py` / `connect_memory_with_llm.py`), add:
 
-Environment Variables
-
-Create a .env file in the project root:
-
+```
 HF_TOKEN=your_huggingface_token
+```
 
-Do not commit .env to GitHub.
-
-Recommended .gitignore:
-
-.env
-env/
-.venv/
-__pycache__/
-*.pyc
-
-Run Locally
+## Running Locally
 
 Start the FastAPI server:
 
+```bash
 uvicorn app:app --reload
+```
 
 Then open:
 
+```
 http://127.0.0.1:8000
+```
 
-Example Questions
+## API Endpoints
 
-Digest Boost
+### Create a session
 
-I have constipation.
-I feel bloated.
-My bowel movements are irregular.
-
-Acid Ease
-
-I have acidity.
-I have heartburn.
-I experience acid reflux.
-
-Liver Lift
-
-I want liver support.
-I feel tired and sluggish.
-
-Piles Pure
-
-I have piles.
-I have hemorrhoid discomfort.
-I have pain and swelling from piles.
-
-Apple Active
-
-I want weight management support.
-I want to improve my metabolism.
-
-Piloease Anal Care Spray
-
-I have anal itching.
-I have burning and irritation around the anal area.
-What are the ingredients of Piloease Anal Care Spray?
-How do I use Piloease?
-
-GloLux GlutaGlow
-
-I have dull skin.
-I want skin hydration support.
-I want support for skin elasticity.
-
-Boost Vitamin B12
-
-I have low energy.
-I have brain fog.
-I want vitamin B12 support.
-
-Boost Vitamin D3+
-
-I have low vitamin D.
-I don't get much sunlight.
-I want support for bone health.
-
-Guttify Poopie
-
-I have hard stools.
-My bowel movements are irregular.
-I need daily fibre support.
-I feel backed up.
-
-Unrelated Questions
-
-Questions outside the Guttify/product domain should be rejected.
-
-Examples:
-
-How was the earth created?
-What is my name?
-Who is the president of the United States?
-Tell me a joke.
-
-Expected behavior:
-
-The information you provided is not relevant to Guttify products.
-
-Recommendation Flow
-
-User
-  ↓
-FastAPI (app.py)
-  ↓
-Gibberish Check
-  ↓
-Product Relevance Check
-  ├── Unrelated → NOT_RELEVANT
-  ↓
-Safety Check
-  ├── Needs review → SAFETY_REVIEW
-  ↓
-Recommendation Engine
-  ├── Keyword matching
-  └── Semantic matching
-  ↓
-Relevant Guttify Product
-  ↓
-Response
-
-API Endpoints
-
-Create Session
-
+```
 POST /api/session
+```
 
-Creates a new chat session.
+Creates a fresh chat session (and resets any prior conversation state for it).
 
-Chat
+**Response**
+```json
+{ "session_id": "..." }
+```
 
+### Chat
+
+```
 POST /api/chat
+```
 
-Example request:
-
+**Request**
+```json
 {
   "session_id": "your-session-id",
-  "message": "What are the ingredients of the Piloease Anal Care Spray?"
+  "message": "I have bloating after eating dairy"
 }
+```
 
-Hugging Face Model
+**Response**
+```json
+{
+  "reply": "...",
+  "status": "RECOMMENDATION_FOUND"
+}
+```
 
-The chatbot uses:
+`status` is one of: `GREETING`, `GIBBERISH`, `IRRELEVANT`, `SAFETY_REVIEW`, `ASK`, `AMBIGUOUS`, `NO_MATCH`, `PRODUCT_INFO_FOUND`, `RECOMMENDATION_FOUND`.
 
-Qwen/Qwen2.5-3B-Instruct
+## Example Conversations
 
-through Hugging Face inference.
+**Greeting**
+> **User:** yo
+> **Assistant:** Hey! I'm here to help with Guttify products — what's bothering you?
 
-The embedding model used for product matching is:
+**Multi-turn symptom flow**
+> **User:** liver issue
+> **Assistant:** Got it. What are you experiencing most — bloating, acidity, pain, constipation, or something else?
+> **User:** bloating, happens a few times a week and it's related to food
+> **Assistant:** Which food seems to trigger it most — dairy, spicy/oily food, wheat, beans/lentils, or not sure?
+> **User:** dairy
+> **Assistant:** *(recommends the best-matching product)*
 
-sentence-transformers/all-MiniLM-L6-v2
+**One-shot, fully-specified message**
+> **User:** I get bloating every day after eating paneer.
+> **Assistant:** *(already has enough info — recommends directly, no extra questions)*
 
-Product Data
+**Named product**
+> **User:** What are the ingredients of Piloease?
+> **Assistant:** *(answers directly from product data, no symptom Q&A)*
 
-Product information is stored in:
+**Red-flag safety**
+> **User:** I have severe abdominal pain and I'm vomiting blood.
+> **Assistant:** Please seek medical care promptly — I'm not able to recommend a supplement for this.
 
-products.json
+**Off-topic**
+> **User:** Who is the president of the United States?
+> **Assistant:** That's not something I can help with — I'm here for Guttify product questions.
 
-The recommendation engine uses this information for product matching and responses.
+## Testing
 
-Deployment
+The test suite uses only the Python standard library (`unittest`) — no network or model calls required:
 
-For a FastAPI cloud deployment, use:
+```bash
+python -m unittest discover -s tests -v
+```
 
-Build command
+Covers: exact & synonym symptom matching, food-trigger extraction, the "no primary-symptom match = zero score" rule, red-flag detection, greeting handling, the 3-question conversation cap, named-product bypass, ambiguous-match handling, and malformed/missing-data edge cases.
 
+## Product Data
+
+All product information — symptoms, intended support, ingredients, usage, warnings, flavors — lives in [`products.json`](./products.json). It is the **only** source of truth for recommendations; nothing is invented at request time.
+
+## Deployment
+
+**Build command**
+```bash
 pip install -r requirements.txt
+```
 
-Start command
-
+**Start command**
+```bash
 uvicorn app:app --host 0.0.0.0 --port $PORT
+```
 
-Add the following environment variable to the hosting platform:
+Set `GROQ_API_KEY` (and `HF_TOKEN` if using the optional RAG scripts) as environment variables on your hosting platform — never in the repository itself.
 
-HF_TOKEN
+A `Dockerfile` is included for container-based deployment.
 
-Never put the actual token in the GitHub repository.
+## Safety Notes
 
-Git Commands
+- Guttify AI Assistant is a **wellness/product assistant, not a doctor**. It does not diagnose medical conditions.
+- Symptoms consistent with a medical emergency (e.g. vomiting blood, black stool, jaundice, fainting, difficulty breathing) are detected and routed to a "seek medical care" response instead of a product recommendation.
+- Product information always comes from `products.json` — the LLM cannot invent ingredients, dosages, prices, or claims.
+- Conversation history and structured symptom state currently exist only in process memory and reset when the server restarts (see the notes in `app.py` for scaling this to multiple workers).
 
+## Contributing
+
+```bash
 git status
 git add .
 git commit -m "Update Guttify chatbot"
 git push
+```
 
-Important Notes
+Please run the test suite before opening a PR:
 
-This chatbot is a wellness/product assistant, not a doctor.
-
-It should not diagnose medical conditions.
-
-Product information should come from the configured product data.
-
-Conversation history currently exists only while the application process is running.
-
-LLM responses depend on the availability of the external Hugging Face inference service.
+```bash
+python -m unittest discover -s tests -v
+```
