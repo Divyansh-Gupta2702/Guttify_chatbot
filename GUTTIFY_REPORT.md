@@ -61,12 +61,12 @@ Every user message is run through the same ordered pipeline before anything is s
    overlap only add on top of that base match — they can never manufacture a match by
    themselves.
 10. **Outcome**:
-    - **Clear winner** → `RECOMMENDATION_FOUND`, and the top product is handed to the LLM
-      to phrase.
-    - **Still tied after the extra questions** → `AMBIGUOUS`, and the bot itself (not the
-      LLM) builds a message laying out every tied product side by side with what's unique
-      to each one, so the user can choose instead of the bot guessing.
-    - **Nothing matches well enough** → `NO_MATCH`, asking for more detail.
+     - **Clear winner** → `RECOMMENDATION_FOUND`, and the top product is handed to the LLM
+       to phrase.
+     - **Still tied after the extra questions** → `AMBIGUOUS`, and the bot itself (not the
+       LLM) builds a message laying out every tied product side by side with what's unique
+       to each one, so the user can choose instead of the bot guessing.
+     - **Nothing matches well enough** → `NO_MATCH`, asking for more detail.
 11. **LLM phrasing** — only for `RECOMMENDATION_FOUND` / `PRODUCT_INFO_FOUND` does the Groq
     LLM get involved, and only to phrase an already-chosen, already-approved product
     dictionary into natural language, using a strict prompt that forbids inventing
@@ -85,24 +85,24 @@ flowchart TD
     U["User message"] --> G{"Greeting?"}
     G -- yes --> R1["Friendly canned reply"]
     G -- no --> GB{"Gibberish?"}
-    GB -- yes --> R2["\"Try again?\" reply"]
-    GB -- no --> SF{"Safety check:\nred flag?"}
-    SF -- yes --> R3["\"Seek medical care\"\n(stops here, no product)"]
-    SF -- no --> NP{"Named product\nmentioned?"}
-    NP -- yes --> R4["Answer about that\nproduct directly"]
-    NP -- no --> IP["Intent parser:\ntext -> SymptomState"]
+    GB -- yes --> R2["Try again? reply"]
+    GB -- no --> SF{"Safety check:<br/>red flag?"}
+    SF -- yes --> R3["Seek medical care<br/>(stops here, no product)"]
+    SF -- no --> NP{"Named product<br/>mentioned?"}
+    NP -- yes --> R4["Answer about that<br/>product directly"]
+    NP -- no --> IP["Intent parser:<br/>text -> SymptomState"]
     IP --> DOM{"On-topic at all?"}
-    DOM -- no --> R5["\"Not something I can\nhelp with\" reply"]
-    DOM -- yes --> Q1{"General question\nleft to ask?\n(cap: 3)"}
-    Q1 -- yes --> R6["Ask next\nclarifying question"]
-    Q1 -- no --> SC["Score every active\nproduct deterministically"]
-    SC --> TIE{"Top candidates\ntied?"}
-    TIE -- "yes, and a tie-break\nquestion budget remains (cap: 2)" --> R7["Ask targeted\ntie-break question"]
-    TIE -- "yes, budget exhausted" --> R8["Show ALL tied products\nside-by-side w/ differences"]
-    TIE -- no --> WIN{"Best score\n>= threshold?"}
-    WIN -- no --> R9["\"No close match\" —\nask for more detail"]
-    WIN -- yes --> LLM["Groq LLM phrases\nthe approved product\ninto natural language"]
-    LLM --> R10["Final recommendation\nreply"]
+    DOM -- no --> R5["Not something I can<br/>help with reply"]
+    DOM -- yes --> Q1{"General question<br/>left to ask?<br/>(cap: 3)"}
+    Q1 -- yes --> R6["Ask next<br/>clarifying question"]
+    Q1 -- no --> SC["Score every active<br/>product deterministically"]
+    SC --> TIE{"Top candidates<br/>tied?"}
+    TIE -- "yes, and a tie-break<br/>question budget remains (cap: 2)" --> R7["Ask targeted<br/>tie-break question"]
+    TIE -- "yes, budget exhausted" --> R8["Show ALL tied products<br/>side-by-side w/ differences"]
+    TIE -- no --> WIN{"Best score<br/>>= threshold?"}
+    WIN -- no --> R9["No close match —<br/>ask for more detail"]
+    WIN -- yes --> LLM["Groq LLM phrases<br/>the approved product<br/>into natural language"]
+    LLM --> R10["Final recommendation<br/>reply"]
 
     style R3 fill:#f8d7da,stroke:#c0392b
     style R8 fill:#fff3cd,stroke:#b8860b
@@ -114,14 +114,14 @@ flowchart TD
 ```mermaid
 flowchart LR
     subgraph Web["Web layer"]
-        APP["app.py\n(FastAPI)"]
+        APP["app.py<br/>(FastAPI)"]
     end
 
     subgraph Conversation["Conversation layer"]
-        AGENT["guttify_agent.py\nConversationManager"]
+        AGENT["guttify_agent.py<br/>ConversationManager"]
     end
 
-    subgraph Understanding["Understanding & decisioning\n(deterministic, no ML)"]
+    subgraph Understanding["Understanding & decisioning<br/>(deterministic, no ML)"]
         GREET["greeting_checker.py"]
         GIB["gibberish_checker.py"]
         SAFE["safety_checker.py"]
@@ -130,14 +130,14 @@ flowchart LR
     end
 
     subgraph Phrasing["Phrasing (LLM)"]
-        CHAT["guttify_chatbot.py\n(Groq LLM)"]
+        CHAT["guttify_chatbot.py<br/>(Groq LLM)"]
     end
 
     subgraph Data["Data"]
         JSON["products.json"]
     end
 
-    subgraph Optional["Optional offline RAG path\n(not used by the live app)"]
+    subgraph Optional["Optional offline RAG path<br/>(not used by the live app)"]
         BUILD["create_memory_for_llm.py"]
         QUERY["connect_memory_with_llm.py"]
         FAISS[("FAISS vector store")]
@@ -184,6 +184,7 @@ decides which product wins — that's `recommendation_engine.py`'s job — it on
 
 **`intent_parser.py`** — Rule-based NLP layer. Defines the canonical vocabulary the whole
 system trusts:
+
 - `SYMPTOM_SYNONYMS` — canonical symptom name → a large list of everyday/colloquial
   phrasings (including common Indian-English terms like "gastric trouble", "paneer",
   "atta") that all map to it.
@@ -192,8 +193,8 @@ system trusts:
   often something happens, whether it's food-related, and which aspect of a product
   (ingredients/usage/warnings/price) the user is asking about.
 - All matching uses precompiled **word-boundary regex** (not raw substring checks), so
-  short synonyms like "gas", "pain", or "itch" don't false-positive inside unrelated words
-  (e.g. "itch" inside "kitchen").
+  short synonyms like "gas", "pain", or "itch" don't false-positive inside unrelated
+  words (e.g. "itch" inside "kitchen").
 - `SymptomState` — the structured record passed around the whole system.
 - `merge_state()` — merges a new message into existing state, only overwriting a field
   when the new message actually supplies a value (so earlier answers are never lost or
@@ -204,6 +205,7 @@ system trusts:
   rule-based result.
 
 **`safety_checker.py`** — Two-tier safety layer.
+
 - **Red flags** (vomiting blood, black stool, jaundice, fainting, difficulty breathing,
   severe/worsening symptoms, etc.) — detecting any of these **short-circuits the entire
   flow**: no product is recommended, and the user is told to seek medical care.
@@ -213,6 +215,7 @@ system trusts:
 
 **`recommendation_engine.py`** — The deterministic decision core, and the largest file in
 the project. Responsibilities:
+
 - Loads `products.json` once at import time.
 - `has_domain_overlap()` — a lightweight, auto-built vocabulary (from every product's
   category/symptoms/support text) used only to distinguish "on-topic but vague" from
@@ -298,8 +301,8 @@ instructions.
 
 - **The LLM never decides.** It only phrases an answer that a deterministic Python engine
   has already fully decided, using only data supplied to it in the prompt. This eliminates
-  hallucinated products, ingredients, dosages, or claims by construction, not by hoping the
-  model behaves.
+  hallucinated products, ingredients, dosages, or claims by construction, not by hoping
+  the model behaves.
 - **Safety short-circuits everything.** Red-flag detection runs before any product logic
   and cannot be overridden by anything downstream.
 - **No forced guesses.** Both the general Q&A flow and the newer tie-breaking flow are
