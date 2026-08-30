@@ -4,7 +4,14 @@ import os
 from langchain_core.prompts import PromptTemplate
 from langchain_groq import ChatGroq
 
+from recommendation_engine import products as ALL_PRODUCTS
 from recommendation_engine import recommend_product
+
+# Every real Guttify product name, used purely as a post-generation guard:
+# if the LLM's reply mentions a Guttify product other than the one that was
+# actually approved for this turn, that's a hallucinated substitution and
+# gets caught before it ever reaches the user (see generate_response).
+_ALL_PRODUCT_NAMES = [p.get("product_name", "") for p in ALL_PRODUCTS if p.get("product_name")]
 
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
 # llama-3.1-8b-instant has a much higher free-tier daily request cap
@@ -30,9 +37,12 @@ IMPORTANT RULES:
 5. If the user asks about something not present in the supplied product
    information (for example, price, if none is given), say plainly:
    "I don't have this information in the available product details."
-   Do not guess.
+   Do not guess, estimate, or approximate a number, ingredient, or claim
+   that isn't explicitly written in the product information below.
 6. If an approved product is supplied, do not replace it with another
-   product, and do not recommend additional products.
+   product, and do not recommend or even mention any other Guttify
+   product by name — not as an alternative, not as a comparison, not in
+   passing. There is exactly one approved product per turn.
 7. Ask a useful follow-up question only when no product information was
    supplied and the user's concern is still unclear.
 8. Do not repeatedly ask the user for information they already provided.
@@ -43,13 +53,19 @@ IMPORTANT RULES:
     situation, encourage them to seek appropriate medical care.
 12. A product recommendation is a wellness recommendation and is not a
     medical diagnosis or treatment.
-13. If a product link is supplied, include it exactly as given. If none is
-    supplied, omit the link line entirely rather than making one up.
+13. If a product link is supplied, include it exactly as given, character
+    for character. If none is supplied, omit the link line entirely
+    rather than making one up.
 14. If the user asked about only one specific aspect of a product (for
     example, just its ingredients, just how to use it, or just its
     warnings), answer that specific question directly and briefly. You do
     NOT need to use the full format below unless the user asked for a
     full recommendation or overview.
+15. Every ingredient, warning, and usage instruction you state must be
+    copied in meaning from the "CURRENT APPROVED PRODUCT" section below —
+    never from general knowledge about supplements, herbal medicine, or
+    similar-sounding products. If you are not sure a detail is in the
+    supplied information, leave it out rather than including it.
 
 CONVERSATION HISTORY:
 {conversation_history}
@@ -112,7 +128,12 @@ def load_llm():
         )
     return ChatGroq(
         model=GROQ_MODEL,
-        temperature=0.3,
+        # Low temperature on purpose: this call only ever phrases an
+        # already-decided, already-approved product's data — there's no
+        # creative task here that benefits from higher-temperature
+        # variety, and a lower temperature measurably cuts down on the
+        # model drifting into invented specifics.
+        temperature=0.1,
         max_tokens=512,
         api_key=GROQ_API_KEY,
     )
@@ -156,13 +177,90 @@ def format_conversation_history(conversation_history):
     )
 
 
-def generate_response(llm, user_query, conversation_history, product):
-    final_prompt = response_prompt.format(
-        conversation_history=format_conversation_history(conversation_history),
-        user_query=user_query,
-        product_information=format_product_information(product),
+MAX_LLM_ATTEMPTS = 2
+
+
+def _mentions_unapproved_product(reply_text, approved_product):
+    """Return True if `reply_text` names a real Guttify product other than
+    the one actually approved this turn. This is the concrete, checkable
+    signature of the failure mode this function guards against: the model
+    swapping in or additionally recommending a product the recommendation
+    engine did not select."""
+    approved_name = approved_product.get("product_name") if approved_product else None
+    lowered = reply_text.lower()
+    return any(
+        name.lower() in lowered
+        for name in _ALL_PRODUCT_NAMES
+        if name != approved_name
     )
-    return llm.invoke(final_prompt).content
+
+
+def _deterministic_reply(product):
+    """A fully template-based reply built only from fields that exist on
+    `product`. Used as a last-resort fallback if the LLM fails the
+    hallucination guard twice in a row, so a wrong/invented product can
+    never actually reach the user."""
+    if not product:
+        return (
+            "I don't have enough detail yet to point you to a specific "
+            "Guttify product. Could you tell me a bit more about what "
+            "you're experiencing?"
+        )
+
+    parts = [
+        f"Recommended Guttify Product:\n{product.get('product_name', '')}",
+        "\nWhat it's intended to support:\n" + _bullets(product.get("intended_support", [])),
+        f"\nHow to use:\n{product.get('how_to_use', '')}",
+        "\nImportant warnings:\n" + _bullets(product.get("warnings", [])),
+    ]
+    if product.get("product_url"):
+        parts.append(f"\nProduct link:\n{product['product_url']}")
+    if product.get("flavors"):
+        parts.append(f"\nFlavor options:\n{', '.join(product['flavors'])}")
+    elif product.get("variants"):
+        variant_lines = "\n".join(f"- {v['flavor']}: {v['url']}" for v in product["variants"])
+        parts.append(f"\nFlavor options:\n{variant_lines}")
+    parts.append(
+        "\nDisclaimer:\nThis is a general wellness suggestion, not a "
+        "medical diagnosis or treatment."
+    )
+    return "\n".join(parts)
+
+
+def generate_response(llm, user_query, conversation_history, product):
+    """
+    Phrase the final reply for an already-approved product (or None).
+
+    To keep this grounded, every candidate reply is checked against a
+    concrete, checkable invariant — that it doesn't name a real Guttify
+    product other than the approved one — before being shown to the user.
+    A failing reply is regenerated once with an explicit correction; if it
+    still fails, a fully deterministic, template-based reply built only
+    from the approved product's own fields is used instead, so a
+    hallucinated substitution can never actually reach the user.
+    """
+    history_text = format_conversation_history(conversation_history)
+    product_info = format_product_information(product)
+
+    for attempt in range(MAX_LLM_ATTEMPTS):
+        prompt_text = response_prompt.format(
+            conversation_history=history_text,
+            user_query=user_query,
+            product_information=product_info,
+        )
+        if attempt > 0:
+            prompt_text += (
+                "\n\nCORRECTION REQUIRED: your previous answer named a "
+                "Guttify product other than the one approved above. "
+                "Rewrite the answer using ONLY the approved product above, "
+                "and do not name any other Guttify product anywhere in "
+                "your reply."
+            )
+        candidate = llm.invoke(prompt_text).content
+        if not _mentions_unapproved_product(candidate, product):
+            return candidate
+
+    return _deterministic_reply(product)
 
 
 def print_banner(title, width=60):

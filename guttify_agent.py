@@ -35,8 +35,29 @@ from recommendation_engine import (
     MAX_DISAMBIGUATION_QUESTIONS,
 )
 from safety_checker import check_safety
+from satisfaction_checker import is_satisfied_closing, random_closing_response
+
+# Shown once a session has been closed out (see SessionState.ended) and the
+# user sends yet another message on the same session id.
+SESSION_ENDED_MESSAGE = (
+    "This conversation has already wrapped up. Please start a new chat if "
+    "you'd like help with another question — happy to help again!"
+)
 
 MAX_QUESTIONS = 3
+
+# If the user has just been asked the primary-symptom question and their
+# reply doesn't map to any known symptom, we ask them to elaborate rather
+# than immediately writing them off as irrelevant (see handle_message).
+# Capped so a genuinely off-topic conversation doesn't loop forever.
+MAX_ELABORATION_ATTEMPTS = 2
+
+PRIMARY_SYMPTOM_ELABORATION_MESSAGE = (
+    "I couldn't quite match that to something I can help with — could you "
+    "tell me a bit more about what you're experiencing? For example, is it "
+    "more like bloating, acidity, pain, constipation, or something along "
+    "those lines?"
+)
 
 # Ordered so the flow matches natural triage: what's wrong, how
 # often/food-related, then the specific trigger — matching the spec's
@@ -79,6 +100,19 @@ class SessionState:
     questions_asked: int = 0
     disambiguation_questions_asked: int = 0
     resolved: bool = False  # True once a recommendation/no-match/etc has been delivered
+    # How many times in a row we've asked the user to elaborate on their
+    # primary symptom because their last answer didn't map to anything we
+    # recognize. Capped by MAX_ELABORATION_ATTEMPTS.
+    elaboration_attempts: int = 0
+    # True once a product recommendation (or named-product answer) has been
+    # delivered, so we start watching for a "thanks, that's it" style
+    # closing remark. False again is never needed — once someone can close
+    # out, a later closing remark should still be honored.
+    awaiting_close: bool = False
+    # True once the session has actually been closed out. Any further
+    # message on this session id gets a polite "start a new chat" reply
+    # instead of being processed.
+    ended: bool = False
 
 
 class ConversationManager:
@@ -95,6 +129,17 @@ class ConversationManager:
 
     def handle_message(self, session_id: str, user_message: str) -> dict:
         session = self._get_session(session_id)
+
+        if session.ended:
+            return {"status": "SESSION_ENDED", "message": SESSION_ENDED_MESSAGE, "recommendations": []}
+
+        # Only checked once a recommendation/product answer has actually
+        # been delivered in this session — a bare "thanks" before that
+        # point is not a closing signal, it's just a greeting-adjacent
+        # remark, so it still falls through to the normal flow below.
+        if session.awaiting_close and is_satisfied_closing(user_message):
+            session.ended = True
+            return {"status": "SESSION_ENDED", "message": random_closing_response(), "recommendations": []}
 
         if is_greeting(user_message):
             return {"status": "GREETING", "message": random_greeting_response(), "recommendations": []}
@@ -116,6 +161,7 @@ class ConversationManager:
         named_product = find_named_product(user_message)
         if named_product:
             aspect = extract_named_aspect(user_message)
+            session.awaiting_close = True
             return {
                 "status": "PRODUCT_INFO_FOUND",
                 "message": "",
@@ -127,6 +173,22 @@ class ConversationManager:
         session.symptom_state = merge_state(session.symptom_state, user_message, [])
 
         if not session.symptom_state.primary_symptom and not has_domain_overlap(user_message):
+            # If we specifically just asked the primary-symptom question
+            # and the user's answer didn't map to anything we recognize,
+            # that's most likely an unfamiliar phrasing of a real symptom
+            # rather than an off-topic message — ask them to elaborate
+            # instead of writing it off as irrelevant. Only genuinely
+            # off-topic input (or repeated failed attempts) still gets the
+            # irrelevant response.
+            was_asked_primary_symptom = "primary_symptom" in (session.symptom_state.asked_fields or [])
+            if was_asked_primary_symptom and session.elaboration_attempts < MAX_ELABORATION_ATTEMPTS:
+                session.elaboration_attempts += 1
+                return {
+                    "status": "ASK",
+                    "message": PRIMARY_SYMPTOM_ELABORATION_MESSAGE,
+                    "recommendations": [],
+                    "safety": safety_result,
+                }
             return {"status": "IRRELEVANT", "message": IRRELEVANT_MESSAGE, "recommendations": []}
 
         # Ask any relevant outstanding question BEFORE finalizing a
@@ -171,4 +233,9 @@ class ConversationManager:
 
         result = evaluate(session.symptom_state, user_message)
         session.resolved = True
+        if result["status"] == "RECOMMENDATION_FOUND":
+            # A concrete recommendation was just delivered — start watching
+            # for a "thanks, that's it" style closing remark on the next
+            # turn(s) so we can wrap the session up.
+            session.awaiting_close = True
         return {**result, "safety": safety_result}

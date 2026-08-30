@@ -67,7 +67,16 @@ def chat(req: ChatRequest):
     result = conversation_manager.handle_message(req.session_id, req.message)
     status = result["status"]
 
-    if status in ("GIBBERISH", "IRRELEVANT", "SAFETY_REVIEW", "ASK", "NO_MATCH", "AMBIGUOUS", "GREETING"):
+    if status in (
+        "GIBBERISH",
+        "IRRELEVANT",
+        "SAFETY_REVIEW",
+        "ASK",
+        "NO_MATCH",
+        "AMBIGUOUS",
+        "GREETING",
+        "SESSION_ENDED",
+    ):
         reply = result["message"]
 
     elif status == "PRODUCT_INFO_FOUND":

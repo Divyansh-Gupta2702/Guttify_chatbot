@@ -45,6 +45,8 @@ Letting an LLM freely choose which product to recommend risks hallucinated produ
 - 🔍 **Named-product lookup** — "what are the ingredients in Piloease?" is answered directly, no symptom description required.
 - 🚫 **Gibberish & off-topic filtering** — keyboard-mash input and unrelated questions ("who is the president?") are rejected cleanly.
 - 💾 **Session-based conversations** — structured symptom state and chat history are tracked per session in memory.
+- 👋 **Graceful session close** — after a recommendation, a "thanks, that's all!" style remark ends the session (`SESSION_ENDED`) instead of leaving it open indefinitely; a genuine follow-up question is never mistaken for a closing remark.
+- 🎯 **Hallucination guard on the LLM reply** — the LLM only ever phrases an already-approved product; every reply is checked to make sure it doesn't name a different Guttify product, regenerated once if it does, and if it still fails, a fully template-based reply (no LLM involved) is used instead.
 - ✅ **Automated test suite** — 29 tests covering matching, safety, conversation flow, and edge cases, with no network or model dependency required to run them.
 
 ## Architecture
@@ -94,6 +96,7 @@ guttify-chatbot/
 ├── safety_checker.py              # Red-flag + caution safety rules
 ├── gibberish_checker.py           # Keyboard-mash / nonsense input filter
 ├── greeting_checker.py            # Greeting detection ("hi", "yo", "what's up", ...)
+├── satisfaction_checker.py        # Closing-remark detection ("thanks!", "got it", ...)
 ├── guttify_chatbot.py              # LLM-backed reply phrasing (Groq)
 ├── products.json                  # Product database — single source of truth
 │
@@ -220,7 +223,9 @@ POST /api/chat
 }
 ```
 
-`status` is one of: `GREETING`, `GIBBERISH`, `IRRELEVANT`, `SAFETY_REVIEW`, `ASK`, `AMBIGUOUS`, `NO_MATCH`, `PRODUCT_INFO_FOUND`, `RECOMMENDATION_FOUND`.
+`status` is one of: `GREETING`, `GIBBERISH`, `IRRELEVANT`, `SAFETY_REVIEW`, `ASK`, `AMBIGUOUS`, `NO_MATCH`, `PRODUCT_INFO_FOUND`, `RECOMMENDATION_FOUND`, `SESSION_ENDED`.
+
+Once a `RECOMMENDATION_FOUND` or `PRODUCT_INFO_FOUND` reply has been sent, the session starts watching for a closing remark ("thanks!", "great, that's all I needed", "got it", ...). The next such remark ends the session with `SESSION_ENDED`; any further message on that same `session_id` gets a polite "start a new chat" reply instead of being processed. A message that isn't purely a closing remark (e.g. it asks a further question) is unaffected and flows through normally.
 
 ## Example Conversations
 
@@ -243,6 +248,11 @@ POST /api/chat
 **Named product**
 > **User:** What are the ingredients of Piloease?
 > **Assistant:** *(answers directly from product data, no symptom Q&A)*
+
+**Closing out after a recommendation**
+> **Assistant:** *(recommends Digest Boost)*
+> **User:** Thanks, that's helpful!
+> **Assistant:** Glad that helped! This chat will close out now — feel free to start a new one anytime you have another gut-health question. *(session ends — `SESSION_ENDED`)*
 
 **Red-flag safety**
 > **User:** I have severe abdominal pain and I'm vomiting blood.
