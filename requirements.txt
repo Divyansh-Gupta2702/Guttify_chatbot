@@ -1,12 +1,21 @@
+# Web app
 fastapi
 uvicorn[standard]
-pydantic
-langchain
+
+# LLM (chat) — Groq's free tier powers the live chatbot
 langchain-core
-langchain-community
-langchain-huggingface
-langchain-text-splitters
-huggingface-hub
-sentence-transformers
-faiss-cpu
-python-dotenv
+langchain-groq
+
+# --- Not required for the live web app (app.py) ---
+# The optional standalone RAG scripts (create_memory_for_llm.py,
+# connect_memory_with_llm.py) need these, but app.py/recommendation_engine.py
+# do not — recommendation matching is pure keyword/vocab logic now, with no
+# embedding model, to keep the app's memory footprint small enough for
+# free hosting tiers (512MB and under).
+# langchain-huggingface
+# sentence-transformers
+# langchain-community
+# langchain-text-splitters
+# langchain-classic
+# faiss-cpu
+# pypdf

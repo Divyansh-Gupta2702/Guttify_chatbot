@@ -64,19 +64,22 @@ def chat(req: ChatRequest):
     result = recommend_product(req.message)
     status = result["status"]
 
-    if status in ("GIBBERISH", "NOT_RELEVANT"):
+    if status == "GIBBERISH":
+        reply = result["message"]
+
+    elif status == "IRRELEVANT":
         reply = result["message"]
 
     elif status == "SAFETY_REVIEW":
         reasons = "\n".join(f"- {r}" for r in result["safety"]["reasons"])
         reply = f"{result['safety']['message']}\n\n{reasons}"
 
-    elif status == "RECOMMENDATION_FOUND":
+    elif status in ("RECOMMENDATION_FOUND", "PRODUCT_INFO_FOUND"):
         best_product = result["recommendations"][0]
         reply = generate_response(llm, req.message, history, best_product)
 
     else:  # NO_MATCH
-        reply = result.get("message", "I couldn't identify a relevant Guttify product from the available product information.")
+        reply = generate_response(llm, req.message, history, None)
 
     history.append({"role": "user", "content": req.message})
     history.append({"role": "assistant", "content": reply})

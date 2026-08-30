@@ -2,30 +2,39 @@
 import os
 
 from langchain_core.prompts import PromptTemplate
-from langchain_huggingface import ChatHuggingFace, HuggingFaceEndpoint
+from langchain_groq import ChatGroq
 
 from recommendation_engine import recommend_product
 
-HF_TOKEN = os.environ.get("HF_TOKEN")
-HUGGINGFACE_REPO_ID = "Qwen/Qwen2.5-3B-Instruct"
+GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
+# llama-3.1-8b-instant has a much higher free-tier daily request cap
+# (~14,400/day) than the 70b models (~1,000/day), which matters more for
+# sustaining live traffic than the small quality gap between them. Swap to
+# "llama-3.3-70b-versatile" if you want stronger answers and your traffic
+# is light enough to stay under its lower daily cap.
+GROQ_MODEL = "llama-3.1-8b-instant"
 
 RESPONSE_PROMPT_TEMPLATE = """
-You are Guttify's product recommendation assistant.
+You are Guttify's product-focused assistant.
 
-You are NOT a doctor.
-
-Your job is to have a helpful conversation with the user and, when
-appropriate, explain an already-approved Guttify product recommendation.
+You are NOT a doctor, and you are NOT a general-purpose chatbot — you only
+answer questions about Guttify products, gut-health symptoms, and product
+recommendations.
 
 IMPORTANT RULES:
 1. Do not diagnose diseases.
 2. Do not claim that a Guttify product cures or treats a disease.
-3. Do not invent products, ingredients, benefits, dosages, warnings, or links.
+3. Do not invent products, ingredients, benefits, dosages, warnings,
+   prices, specifications, certifications, or links.
 4. Only use the supplied product information, including the product link.
-5. If an approved product is supplied, do not replace it with another product.
-6. Do not recommend additional products.
-7. Ask a useful follow-up question when the available information is
-   insufficient.
+5. If the user asks about something not present in the supplied product
+   information (for example, price, if none is given), say plainly:
+   "I don't have this information in the available product details."
+   Do not guess.
+6. If an approved product is supplied, do not replace it with another
+   product, and do not recommend additional products.
+7. Ask a useful follow-up question only when no product information was
+   supplied and the user's concern is still unclear.
 8. Do not repeatedly ask the user for information they already provided.
 9. Use the conversation history to understand words such as "it", "this",
    "that", "also", and "again".
@@ -36,6 +45,11 @@ IMPORTANT RULES:
     medical diagnosis or treatment.
 13. If a product link is supplied, include it exactly as given. If none is
     supplied, omit the link line entirely rather than making one up.
+14. If the user asked about only one specific aspect of a product (for
+    example, just its ingredients, just how to use it, or just its
+    warnings), answer that specific question directly and briefly. You do
+    NOT need to use the full format below unless the user asked for a
+    full recommendation or overview.
 
 CONVERSATION HISTORY:
 {conversation_history}
@@ -48,23 +62,8 @@ CURRENT APPROVED PRODUCT:
 
 INSTRUCTIONS:
 
-FIRST answer the user's actual question directly using only the supplied
-CURRENT APPROVED PRODUCT information.
-
-- If the user asks for ingredients/composition, list the exact ingredients.
-- If the user asks how to use it, give the exact usage information.
-- If the user asks what it supports/benefits, give only the supplied intended
-  support.
-- If the user asks for warnings, give only the supplied warnings.
-- Do not force a "recommendation" style answer when the user is asking a
-  factual product question.
-- Never invent missing details.
-
-After directly answering the question, you may add the structured product
-information below when useful.
-
-If an approved product is available, explain why it may be relevant using
-this format:
+If an approved product is available and the user asked for a full
+recommendation or overview, use this format:
 
 Recommended Guttify Product:
 [Product name]
@@ -90,9 +89,13 @@ Flavor options:
 Disclaimer:
 [Short wellness disclaimer]
 
-If NO approved product is available, do NOT invent or recommend a product.
-Instead, respond conversationally and ask one useful follow-up question
-that can help understand the user's concern better.
+If the user asked about only one specific aspect of the product (see rule
+14), skip this format entirely and just answer that one aspect directly,
+using only the supplied product information.
+
+If NO approved product is available, do NOT invent or recommend a
+product. Instead, respond conversationally and ask one useful follow-up
+question that can help understand the user's concern better.
 """
 
 response_prompt = PromptTemplate(
@@ -102,14 +105,17 @@ response_prompt = PromptTemplate(
 
 
 def load_llm():
-    llm = HuggingFaceEndpoint(
-        repo_id=HUGGINGFACE_REPO_ID,
-        provider="featherless-ai",
+    if not GROQ_API_KEY:
+        raise RuntimeError(
+            "GROQ_API_KEY is not set. Get a free key at https://console.groq.com "
+            "and set it as an environment variable before running this app."
+        )
+    return ChatGroq(
+        model=GROQ_MODEL,
         temperature=0.3,
-        max_new_tokens=512,
-        huggingfacehub_api_token=HF_TOKEN,
+        max_tokens=512,
+        api_key=GROQ_API_KEY,
     )
-    return ChatHuggingFace(llm=llm)
 
 
 def _bullets(items):
@@ -196,13 +202,14 @@ def chatbot():
             continue
 
         print("\nAnalyzing your request...")
-        result = recommend_product(
-            user_query,
-            conversation_history=conversation_history,
-        )
+        result = recommend_product(user_query)
         status = result["status"]
 
         if status == "GIBBERISH":
+            answer = result["message"]
+            print("\n" + answer)
+
+        elif status == "IRRELEVANT":
             answer = result["message"]
             print("\n" + answer)
 
@@ -210,7 +217,7 @@ def chatbot():
             display_safety_response(result)
             answer = result["safety"]["message"]
 
-        elif status == "RECOMMENDATION_FOUND":
+        elif status in ("RECOMMENDATION_FOUND", "PRODUCT_INFO_FOUND"):
             print("\nGenerating response...")
             best_product = result["recommendations"][0]
             answer = generate_response(llm, user_query, conversation_history, best_product)

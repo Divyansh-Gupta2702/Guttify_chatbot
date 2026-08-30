@@ -1,41 +1,23 @@
-"""Guttify Recommendation Engine — hybrid semantic + keyword product matching."""
+"""Guttify Recommendation Engine — lightweight keyword + domain matching.
+
+No embedding model here on purpose: sentence-transformers pulls in PyTorch,
+which alone can eat 500MB-1GB of RAM before your app handles a single
+request — too much for most free hosting tiers. This uses plain keyword
+and vocabulary-overlap matching instead, which is enough for a catalog
+this size and keeps the whole app's memory footprint tiny.
+"""
 import json
 import re
-
-from langchain_huggingface import HuggingFaceEmbeddings
 
 from gibberish_checker import is_gibberish, random_gibberish_response
 from safety_checker import check_safety
 
 PRODUCTS_FILE = "products.json"
 TOP_K = 3
-MIN_SEMANTIC_SCORE = 0.45
-MIN_KEYWORD_SCORE = 2
-NOT_RELEVANT_MESSAGE = "The information you provided is not relevant to Guttify products. Please ask about a Guttify product, its ingredients, usage, benefits, warnings, or a related concern."
+MIN_KEYWORD_SCORE = 4
 
 with open(PRODUCTS_FILE, "r", encoding="utf-8") as file:
     products = json.load(file)
-
-print("\nLoading embedding model...")
-embedding_model = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
-
-
-def create_product_search_text(product):
-    symptoms = ", ".join(product.get("symptoms", []))
-    intended_support = ", ".join(product.get("intended_support", []))
-    ingredients = ", ".join(product.get("ingredients", []))
-    return (
-        f"Product: {product.get('product_name', '')}\n"
-        f"Category: {product.get('category', '')}\n"
-        f"Symptoms this product is associated with: {symptoms}\n"
-        f"Intended support: {intended_support}\n"
-        f"Ingredients: {ingredients}"
-    )
-
-
-print("Creating product embeddings...")
-product_texts = [create_product_search_text(p) for p in products]
-product_embeddings = embedding_model.embed_documents(product_texts)
 
 
 def normalize_text(text):
@@ -43,74 +25,186 @@ def normalize_text(text):
     return re.sub(r"\s+", " ", text).strip()
 
 
+def _stem(word):
+    """Crude, dependency-free suffix stripping — not real stemming, just
+    enough to match 'bloated'/'bloating'/'bloats' to the same root."""
+    for suffix in ("ations", "ation", "ing", "ers", "er", "ed", "es", "s"):
+        if word.endswith(suffix) and len(word) - len(suffix) >= 3:
+            return word[: -len(suffix)]
+    return word
+
+
+# ------------------------------------------------------------------
+# Domain relevance — used to tell "off-topic" apart from "needs detail"
+# ------------------------------------------------------------------
+GENERIC_DOMAIN_TERMS = {
+    "gut", "digestion", "digestive", "stomach", "bowel", "supplement",
+    "product", "ingredient", "ingredients", "tablet", "tablets", "spray",
+    "capsule", "capsules", "health", "wellness", "symptom", "symptoms",
+    "dosage", "usage", "warning", "warnings", "flavor", "flavour", "link",
+}
+
+
+def _build_domain_vocab(products):
+    vocab = set(GENERIC_DOMAIN_TERMS)
+    for product in products:
+        for word in normalize_text(product.get("category", "")).split():
+            if len(word) >= 4:
+                vocab.add(_stem(word))
+        for symptom in product.get("symptoms", []):
+            for word in normalize_text(symptom).split():
+                if len(word) >= 4:
+                    vocab.add(_stem(word))
+        for support in product.get("intended_support", []):
+            for word in normalize_text(support).split():
+                if len(word) >= 5:
+                    vocab.add(_stem(word))
+    return vocab
+
+
+DOMAIN_VOCAB = _build_domain_vocab(products)
+
+
+def has_domain_overlap(user_query):
+    words = normalize_text(user_query).split()
+    return any(len(w) >= 4 and _stem(w) in DOMAIN_VOCAB for w in words)
+
+
+# ------------------------------------------------------------------
+# Named-product lookup — lets a user ask "what are the ingredients of
+# X" directly, without needing to describe a symptom at all.
+# ------------------------------------------------------------------
+NAME_TOKEN_STOPWORDS = {
+    "guttify", "boost", "vitamin", "tablet", "tablets", "spray",
+    "effervescent", "skin", "care", "anal",
+}
+
+
+def _build_distinctive_name_tokens(products):
+    token_counts = {}
+    product_tokens = {}
+    for product in products:
+        tokens = [
+            t for t in normalize_text(product.get("product_name", "")).split()
+            if len(t) >= 4 or any(c.isdigit() for c in t)
+        ]
+        product_tokens[product["product_name"]] = tokens
+        for t in set(tokens):
+            token_counts[t] = token_counts.get(t, 0) + 1
+
+    distinctive = {}
+    for product in products:
+        name = product["product_name"]
+        distinctive[name] = [
+            t for t in product_tokens[name]
+            if t not in NAME_TOKEN_STOPWORDS and token_counts[t] == 1
+        ]
+    return distinctive
+
+
+DISTINCTIVE_NAME_TOKENS = _build_distinctive_name_tokens(products)
+
+
+def find_named_product(user_query):
+    """Return the product the user explicitly named, or None."""
+    query_normalized = normalize_text(user_query)
+    query_words = set(query_normalized.split())
+
+    # 1. Exact full product-name match — the strongest possible signal.
+    best_match, best_len = None, 0
+    for product in products:
+        if product.get("status") != "active":
+            continue
+        name_normalized = normalize_text(product.get("product_name", ""))
+        if name_normalized and name_normalized in query_normalized and len(name_normalized) > best_len:
+            best_match, best_len = product, len(name_normalized)
+    if best_match:
+        return best_match
+
+    # 2. A single distinctive token unique to one product (e.g. "b12",
+    # "poopie", "piloease") — covers shorthand mentions.
+    for product in products:
+        if product.get("status") != "active":
+            continue
+        tokens = DISTINCTIVE_NAME_TOKENS.get(product["product_name"], [])
+        if any(t in query_words for t in tokens):
+            return product
+
+    return None
+
+
 def calculate_keyword_score(user_query, product):
     query = normalize_text(user_query)
+    query_words = {_stem(w) for w in query.split()}
     score = 0
-    if normalize_text(product.get("product_name", "")) in query:
-        score += 50
-    for ingredient in product.get("ingredients", []):
-        if normalize_text(ingredient) in query:
-            score += 15
 
     for symptom in product.get("symptoms", []):
-        if normalize_text(symptom) and normalize_text(symptom) in query:
-            score += 10
+        symptom_norm = normalize_text(symptom)
+        if not symptom_norm:
+            continue
+        if symptom_norm in query:
+            score += 10  # exact phrase match — strongest signal
+            continue
+        symptom_words = [_stem(w) for w in symptom_norm.split() if len(w) >= 4]
+        if not symptom_words:
+            continue
+        overlap = sum(1 for w in symptom_words if w in query_words)
+        if overlap == len(symptom_words):
+            score += 8  # all significant words present, just reordered/reworded
+        elif overlap:
+            score += 3 * overlap  # partial credit for a related but incomplete match
 
-    category_words = normalize_text(product.get("category", "")).split()
-    score += 2 * sum(1 for w in category_words if len(w) >= 4 and w in query)
+    category_words = [_stem(w) for w in normalize_text(product.get("category", "")).split() if len(w) >= 4]
+    score += 2 * sum(1 for w in category_words if w in query_words)
 
     for support in product.get("intended_support", []):
-        support_words = normalize_text(support).split()
-        score += sum(1 for w in support_words if len(w) >= 5 and w in query)
+        support_words = [_stem(w) for w in normalize_text(support).split() if len(w) >= 5]
+        score += sum(1 for w in support_words if w in query_words)
 
     return score
 
 
-def cosine_similarity(vector_a, vector_b):
-    dot_product = sum(a * b for a, b in zip(vector_a, vector_b))
-    magnitude_a = sum(a * a for a in vector_a) ** 0.5
-    magnitude_b = sum(b * b for b in vector_b) ** 0.5
-    if magnitude_a == 0 or magnitude_b == 0:
-        return 0
-    return dot_product / (magnitude_a * magnitude_b)
-
-
-def is_product_related(user_query):
-    query = normalize_text(user_query)
-    if any(normalize_text(p.get("product_name", "")) in query for p in products):
-        return True
-    terms = "guttify digestion constipation bloating acidity heartburn reflux liver piles hemorrhoid haemorrhoid fissure anal itching irritation burning bowel stool metabolism weight skin vitamin supplement tablet spray powder fiber fibre ingredient ingredients composition benefits usage dosage warning warnings".split()
-    return any(term in query.split() for term in terms)
-
-
-def find_relevant_products(user_query, top_k=TOP_K):
-    if not is_product_related(user_query):
-        return []
-    query_embedding = embedding_model.embed_query(user_query)
+def score_all_products(user_query):
+    """Score every active product against the query, best match first."""
     candidates = []
 
-    for index, product in enumerate(products):
+    for product in products:
         if product.get("status") != "active":
             continue
 
-        semantic_score = cosine_similarity(query_embedding, product_embeddings[index])
         keyword_score = calculate_keyword_score(user_query, product)
+        candidates.append({"product": product, "keyword_score": keyword_score})
 
-        candidates.append({
-            "product": product,
-            "semantic_score": semantic_score,
-            "keyword_score": keyword_score,
-            "combined_score": semantic_score * 100 + keyword_score,
-        })
+    candidates.sort(key=lambda c: c["keyword_score"], reverse=True)
+    return candidates
 
-    candidates.sort(key=lambda c: c["combined_score"], reverse=True)
 
-    recommended = [
-        c for c in candidates
-        if c["semantic_score"] >= MIN_SEMANTIC_SCORE or c["keyword_score"] >= MIN_KEYWORD_SCORE
-    ]
-
+def find_relevant_products(user_query, top_k=TOP_K):
+    candidates = score_all_products(user_query)
+    recommended = [c for c in candidates if c["keyword_score"] >= MIN_KEYWORD_SCORE]
     return recommended[:top_k]
+
+
+def _build_recommendation(product, match=None):
+    return {
+        "product_name": product["product_name"],
+        "category": product["category"],
+        "keyword_score": match["keyword_score"] if match else None,
+        "intended_support": product["intended_support"],
+        "ingredients": product["ingredients"],
+        "how_to_use": product["how_to_use"],
+        "warnings": product["warnings"],
+        "age_group": product.get("age_group", ""),
+        "product_url": product.get("product_url", ""),
+        "flavors": product.get("flavors", []),
+        "variants": product.get("variants", []),
+    }
+
+
+IRRELEVANT_MESSAGE = (
+    "The information you provided is not relevant to the products I can "
+    "assist you with. Please ask me something related to our products."
+)
 
 
 def recommend_product(user_query):
@@ -122,48 +216,47 @@ def recommend_product(user_query):
             "message": random_gibberish_response(),
         }
 
-    if not is_product_related(user_query):
-        return {"status": "NOT_RELEVANT", "recommendations": [], "safety": None, "message": NOT_RELEVANT_MESSAGE}
-
     safety_result = check_safety(user_query)
     if not safety_result["safe_to_recommend"]:
         return {"status": "SAFETY_REVIEW", "recommendations": [], "safety": safety_result}
 
-    matches = find_relevant_products(user_query)
-    no_match = not matches or (
-        matches[0]["keyword_score"] == 0 and matches[0]["semantic_score"] < MIN_SEMANTIC_SCORE
-    )
-    if no_match:
+    # If the user names a specific product ("what's in Piloease?"), answer
+    # about that exact product directly — no symptom description needed.
+    named_product = find_named_product(user_query)
+    if named_product:
+        return {
+            "status": "PRODUCT_INFO_FOUND",
+            "recommendations": [_build_recommendation(named_product)],
+            "safety": safety_result,
+        }
+
+    candidates = score_all_products(user_query)
+    top = candidates[0] if candidates else None
+
+    in_domain = bool(top) and (top["keyword_score"] > 0 or has_domain_overlap(user_query))
+
+    if not in_domain:
+        return {
+            "status": "IRRELEVANT",
+            "recommendations": [],
+            "safety": safety_result,
+            "message": IRRELEVANT_MESSAGE,
+        }
+
+    matches = [c for c in candidates if c["keyword_score"] >= MIN_KEYWORD_SCORE][:TOP_K]
+
+    if not matches:
         return {"status": "NO_MATCH", "recommendations": [], "safety": safety_result}
 
-    recommendations = [
-        {
-            "product_name": m["product"]["product_name"],
-            "category": m["product"]["category"],
-            "semantic_score": round(m["semantic_score"], 3),
-            "keyword_score": m["keyword_score"],
-            "combined_score": round(m["combined_score"], 2),
-            "intended_support": m["product"]["intended_support"],
-            "ingredients": m["product"]["ingredients"],
-            "how_to_use": m["product"]["how_to_use"],
-            "warnings": m["product"]["warnings"],
-            "age_group": m["product"].get("age_group", ""),
-            "product_url": m["product"].get("product_url", ""),
-            "flavors": m["product"].get("flavors", []),
-            "variants": m["product"].get("variants", []),
-        }
-        for m in matches
-    ]
-
+    recommendations = [_build_recommendation(m["product"], m) for m in matches]
     return {"status": "RECOMMENDATION_FOUND", "recommendations": recommendations, "safety": safety_result}
 
 
 def display_product(recommendation, number):
     print(f"\n{number}. {recommendation['product_name']}")
     print(f"Category: {recommendation['category']}")
-    print(f"Semantic score: {recommendation['semantic_score']}")
-    print(f"Keyword score: {recommendation['keyword_score']}")
-    print(f"Combined score: {recommendation['combined_score']}")
+    if recommendation.get("keyword_score") is not None:
+        print(f"Keyword score: {recommendation['keyword_score']}")
 
     print("\nWhy it may be relevant:")
     for support in recommendation["intended_support"]:
@@ -203,7 +296,7 @@ if __name__ == "__main__":
     print("       GUTTIFY RECOMMENDATION ENGINE")
     print("=" * 60)
 
-    user_query = input("\nTell me what you're experiencing:\n> ").strip()
+    user_query = input("\nTell me what you're experiencing (or ask about a product):\n> ").strip()
     if not user_query:
         print("\nPlease describe what you're experiencing.")
         raise SystemExit
@@ -211,7 +304,10 @@ if __name__ == "__main__":
     result = recommend_product(user_query)
     status = result["status"]
 
-    if status in ("GIBBERISH", "NOT_RELEVANT"):
+    if status == "GIBBERISH":
+        print("\n" + result["message"])
+
+    elif status == "IRRELEVANT":
         print("\n" + result["message"])
 
     elif status == "SAFETY_REVIEW":
@@ -230,9 +326,9 @@ if __name__ == "__main__":
         print("\nI couldn't identify a relevant Guttify product from the available product information.")
         print("\nPlease provide more details about what you're experiencing.")
 
-    elif status == "RECOMMENDATION_FOUND":
+    elif status in ("RECOMMENDATION_FOUND", "PRODUCT_INFO_FOUND"):
         print("\n" + "=" * 60)
-        print("          RECOMMENDED PRODUCTS")
+        print("          PRODUCT INFORMATION")
         print("=" * 60)
         for i, recommendation in enumerate(result["recommendations"], start=1):
             display_product(recommendation, i)
