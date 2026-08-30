@@ -38,7 +38,7 @@ Letting an LLM freely choose which product to recommend risks hallucinated produ
 ## Features
 
 - 🗣️ **Natural language understanding** — synonym/intent mapping turns phrases like *"my stomach gets swollen"* or *"burning in my chest after meals"* into the right canonical symptom, without needing an embedding model.
-- 🎯 **Deterministic recommendation engine** — explicit, auditable scoring rules instead of vague semantic similarity; ties/ambiguous cases are flagged instead of guessed.
+- 🎯 **Deterministic recommendation engine** — explicit, auditable scoring rules instead of vague semantic similarity; ties are never guessed — the assistant asks up to 2 targeted questions to try to break the tie, and if it's still unresolved, presents every tied product side by side with the symptoms and support that make each one distinct.
 - 🛡️ **Two-tier safety layer** — red-flag detection (e.g. vomiting blood, black stool, jaundice, fainting) stops the flow and tells the user to seek care; softer caution rules (pregnancy, existing conditions, medication) recommend checking with a doctor first.
 - 💬 **Bounded, adaptive conversation** — up to 3 follow-up questions, skipped entirely when the user already gave enough detail in one message.
 - 👋 **Greeting handling** — a plain "hi" / "hey" / "yo" / "what's up" gets a friendly reply instead of being treated as gibberish or off-topic.
@@ -73,7 +73,9 @@ Intent parser
 Deterministic recommendation engine
     │
     ├─ Confident match ──────► Recommendation (LLM phrases the reply)
-    ├─ Ambiguous match ──────► Ask for one more distinguishing detail
+    ├─ Ambiguous match ──────► Ask up to 2 targeted tie-break questions,
+    │                          then show every tied product side by side
+    │                          with what makes each one distinct
     └─ Not enough info ──────► Ask a clarifying question (max 3 total)
                                or return "no close match"
 ```

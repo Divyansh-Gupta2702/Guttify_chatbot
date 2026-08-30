@@ -13,13 +13,19 @@ import re
 
 from gibberish_checker import is_gibberish, random_gibberish_response
 from greeting_checker import is_greeting, random_greeting_response
-from intent_parser import SymptomState, extract_named_aspect, merge_state
+from intent_parser import SYMPTOM_SYNONYMS, SymptomState, extract_named_aspect, merge_state
 from safety_checker import check_safety
+
+# Canonical symptom vocabulary (see intent_parser.py) — the only symptom
+# strings that can ever actually be extracted from a user's message, so
+# they're the only ones worth asking a disambiguating question about.
+CANONICAL_SYMPTOMS = set(SYMPTOM_SYNONYMS.keys())
 
 PRODUCTS_FILE = "products.json"
 TOP_K = 2
 MIN_SCORE = 100  # a product must have at least one primary-symptom hit
 AMBIGUITY_MARGIN = 15  # if top two scores are this close, don't force a pick
+MAX_DISAMBIGUATION_QUESTIONS = 2  # extra tie-breaking questions, on top of the normal Q&A budget
 
 PRIMARY_MATCH_POINTS = 100
 SECONDARY_MATCH_POINTS = 10
@@ -201,6 +207,113 @@ def score_all_products(state: SymptomState, raw_query: str):
     return candidates
 
 
+# ------------------------------------------------------------------
+# Tie handling — when several products are close enough in score that
+# picking one over the others would be a guess, we (a) try asking one
+# more targeted question that could break the tie, and (b) if that's
+# exhausted or doesn't help, show every tied product side by side with
+# their differences spelled out, instead of forcing a single pick.
+# ------------------------------------------------------------------
+
+def get_tied_candidates(candidates):
+    """All candidates within AMBIGUITY_MARGIN of the top score. Assumes
+    `candidates` is already sorted descending by score."""
+    if not candidates:
+        return []
+    top_score = candidates[0]["score"]
+    return [c for c in candidates if top_score - c["score"] <= AMBIGUITY_MARGIN]
+
+
+def _canonical_symptoms_of(product):
+    return _product_symptom_set(product) & CANONICAL_SYMPTOMS
+
+
+def get_differentiating_symptoms(tied_candidates, state: SymptomState):
+    """Canonical symptoms that are present on SOME but not ALL tied
+    products, and that we don't already know the answer to (either
+    because the user already mentioned them, or we've already asked
+    about them in a prior tie-break question). These are exactly the
+    symptoms where a yes/no from the user would help split the tie."""
+    if len(tied_candidates) < 2:
+        return []
+
+    symptom_sets = [_canonical_symptoms_of(c["product"]) for c in tied_candidates]
+    union = set().union(*symptom_sets)
+    intersection = set.intersection(*symptom_sets)
+    differentiators = union - intersection
+
+    known = {normalize_text(state.primary_symptom)} if state.primary_symptom else set()
+    known |= {normalize_text(s) for s in (state.secondary_symptoms or [])}
+    already_asked = {normalize_text(s) for s in (state.asked_disambiguation or [])}
+
+    return sorted(differentiators - known - already_asked)
+
+
+def get_disambiguation_question(state: SymptomState, raw_query: str):
+    """If the current candidates are tied and there's a symptom we haven't
+    asked about yet that could split them, return
+    (differentiator_symptom, question_text). Otherwise return None."""
+    candidates = score_all_products(state, raw_query)
+    tied = get_tied_candidates(candidates)
+    if len(tied) < 2:
+        return None
+
+    differentiators = get_differentiating_symptoms(tied, state)
+    if not differentiators:
+        return None
+
+    # Ask about a couple of the most useful differentiators at once
+    # rather than one at a time, to keep the question count down.
+    options = differentiators[:3]
+    if len(options) == 1:
+        symptom_phrase = options[0]
+    else:
+        symptom_phrase = ", ".join(options[:-1]) + f", or {options[-1]}"
+
+    question_text = (
+        f"A couple of products could fit — to narrow it down, are you also "
+        f"noticing {symptom_phrase}?"
+    )
+    # Use the first option as the tracking key; all offered options are
+    # recorded by the caller so none of them get asked about again.
+    return options, question_text
+
+
+def build_ambiguous_message(tied_candidates):
+    """Lay out every tied product with what makes it distinct, so the
+    user (or a follow-up message) can pick between them instead of us
+    guessing."""
+    lines = [
+        "A couple of Guttify products fit equally well based on what you've "
+        "shared. Here's how they differ:",
+        "",
+    ]
+    for candidate in tied_candidates:
+        product = candidate["product"]
+        own_symptoms = _canonical_symptoms_of(product)
+        other_symptoms = set()
+        for other in tied_candidates:
+            if other is candidate:
+                continue
+            other_symptoms |= _canonical_symptoms_of(other["product"])
+        unique_symptoms = sorted(own_symptoms - other_symptoms)
+
+        lines.append(f"**{product['product_name']}**")
+        if unique_symptoms:
+            lines.append(f"- Especially relevant for: {', '.join(unique_symptoms)}")
+        support = product.get("intended_support", [])[:3]
+        if support:
+            lines.append(f"- Supports: {', '.join(support)}")
+        lines.append("")
+
+    lines.append(
+        "Which of these sounds closer to what you're experiencing? You're "
+        "welcome to name one directly, or share more detail and I'll narrow "
+        "it down further."
+    )
+    return "\n".join(lines)
+
+
 def _build_recommendation(product, score=None):
     return {
         "product_name": product["product_name"],
@@ -228,13 +341,6 @@ NO_MATCH_MESSAGE = (
     "experiencing?"
 )
 
-AMBIGUOUS_MESSAGE = (
-    "A couple of products could fit what you've described, and I don't "
-    "want to guess. Could you share a little more detail about your main "
-    "symptom?"
-)
-
-
 def evaluate(state: SymptomState, raw_query: str):
     """
     Deterministic evaluation over the current structured symptom state.
@@ -253,17 +359,13 @@ def evaluate(state: SymptomState, raw_query: str):
     if top["score"] < MIN_SCORE:
         return {"status": "NO_MATCH", "recommendations": [], "message": NO_MATCH_MESSAGE}
 
-    if len(candidates) > 1:
-        second = candidates[1]
-        if (top["score"] - second["score"]) <= AMBIGUITY_MARGIN and second["score"] >= MIN_SCORE:
-            return {
-                "status": "AMBIGUOUS",
-                "recommendations": [
-                    _build_recommendation(top["product"], top["score"]),
-                    _build_recommendation(second["product"], second["score"]),
-                ],
-                "message": AMBIGUOUS_MESSAGE,
-            }
+    tied = [c for c in get_tied_candidates(candidates) if c["score"] >= MIN_SCORE]
+    if len(tied) > 1:
+        return {
+            "status": "AMBIGUOUS",
+            "recommendations": [_build_recommendation(c["product"], c["score"]) for c in tied],
+            "message": build_ambiguous_message(tied),
+        }
 
     top_candidates = candidates[:TOP_K]
     recommendations = [_build_recommendation(c["product"], c["score"]) for c in top_candidates]

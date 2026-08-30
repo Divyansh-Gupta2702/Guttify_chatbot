@@ -26,7 +26,14 @@ from dataclasses import dataclass, field
 from gibberish_checker import is_gibberish, random_gibberish_response
 from greeting_checker import is_greeting, random_greeting_response
 from intent_parser import SymptomState, extract_named_aspect, merge_state
-from recommendation_engine import evaluate, find_named_product, has_domain_overlap, IRRELEVANT_MESSAGE
+from recommendation_engine import (
+    evaluate,
+    find_named_product,
+    get_disambiguation_question,
+    has_domain_overlap,
+    IRRELEVANT_MESSAGE,
+    MAX_DISAMBIGUATION_QUESTIONS,
+)
 from safety_checker import check_safety
 
 MAX_QUESTIONS = 3
@@ -70,6 +77,7 @@ def next_question(state: SymptomState):
 class SessionState:
     symptom_state: SymptomState = field(default_factory=SymptomState)
     questions_asked: int = 0
+    disambiguation_questions_asked: int = 0
     resolved: bool = False  # True once a recommendation/no-match/etc has been delivered
 
 
@@ -132,6 +140,28 @@ class ConversationManager:
                 field_name, question_text = question
                 session.symptom_state.asked_fields = list(session.symptom_state.asked_fields or []) + [field_name]
                 session.questions_asked += 1
+                return {
+                    "status": "ASK",
+                    "message": question_text,
+                    "recommendations": [],
+                    "safety": safety_result,
+                }
+
+        # Before locking in a recommendation, check whether the current
+        # candidates are tied closely enough that we could easily confuse
+        # one product for another. If so, and there's a symptom we haven't
+        # already asked about that could split the tie, ask it — up to a
+        # small dedicated budget separate from the general Q&A cap, since
+        # this is specifically about avoiding a wrong pick, not general
+        # triage.
+        if session.disambiguation_questions_asked < MAX_DISAMBIGUATION_QUESTIONS:
+            disambiguation = get_disambiguation_question(session.symptom_state, user_message)
+            if disambiguation is not None:
+                differentiators, question_text = disambiguation
+                session.symptom_state.asked_disambiguation = list(
+                    session.symptom_state.asked_disambiguation or []
+                ) + list(differentiators)
+                session.disambiguation_questions_asked += 1
                 return {
                     "status": "ASK",
                     "message": question_text,
