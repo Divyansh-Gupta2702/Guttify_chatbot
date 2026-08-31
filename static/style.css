@@ -135,6 +135,17 @@ body {
   outline-offset: 1px;
 }
 
+/* Locked, end-of-conversation state — both visual and functional (the
+   `disabled` attribute set by app.js is what actually blocks typing,
+   clicking, and Enter). */
+#chat-input:disabled,
+#chat-form button:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+#chat-form button:disabled:hover { filter: none; }
+
 #chat-form button {
   width: 44px;
   height: 44px;
@@ -166,4 +177,86 @@ body {
 @keyframes rise {
   from { opacity: 0; transform: translateY(4px); }
   to { opacity: 1; transform: translateY(0); }
+}
+
+/* Feedback rating popup, shown once the assistant closes out a
+   conversation. Uses the same palette/radius as the rest of the app. */
+#feedback-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(36, 31, 43, 0.45);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  z-index: 1000;
+}
+
+/* The ID selector above otherwise beats the browser's default
+   `[hidden] { display: none }` rule, which would leave the (invisible
+   but still flex-laid-out) overlay intercepting clicks. */
+#feedback-overlay[hidden] {
+  display: none;
+}
+
+#feedback-modal {
+  background: white;
+  border: 1px solid var(--surface-border);
+  border-radius: var(--radius);
+  padding: 28px 24px;
+  width: 100%;
+  max-width: 340px;
+  text-align: center;
+  box-shadow: 0 16px 40px rgba(74, 45, 107, 0.18);
+}
+
+#feedback-title {
+  margin: 0 0 20px;
+  font-family: "Fraunces", serif;
+  font-weight: 600;
+  font-size: 1.05rem;
+  color: var(--plum-700);
+}
+
+#feedback-ratings {
+  display: flex;
+  justify-content: center;
+  gap: 10px;
+}
+
+.rating-btn {
+  width: 42px;
+  height: 42px;
+  border-radius: 50%;
+  border: 1px solid var(--surface-border);
+  background: white;
+  color: var(--ink-900);
+  font-family: inherit;
+  font-size: 0.95rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease, transform 0.1s ease, border-color 0.15s ease;
+}
+
+.rating-btn:hover:not(:disabled) {
+  border-color: var(--plum-600);
+}
+
+.rating-btn.selected {
+  background: linear-gradient(135deg, var(--magenta-500), var(--plum-600));
+  border-color: transparent;
+  color: white;
+  transform: scale(1.06);
+}
+
+.rating-btn:disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+#feedback-confirmation {
+  margin: 18px 0 0;
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: var(--plum-700);
 }

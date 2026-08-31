@@ -49,6 +49,15 @@ CORE_CLOSING_PATTERNS = [
     r"that'?s all i needed",
     r"will (try|do) (that|it)",
     r"no,? i'?m (good|all set)",
+    # Product-acceptance phrasing — the user is accepting the
+    # recommendation itself, not just thanking the assistant.
+    r"i'?ll try (it|that|this|this product|it out)",
+    r"i (will|might) try (it|that|this|this product)",
+    r"i like (it|this|that|this one|this product)",
+    r"i love (it|this|that|this product)",
+    r"this (looks|sounds) good",
+    r"looks good",
+    r"this works? for me",
 ]
 _CORE_RE = re.compile(r"^(" + "|".join(CORE_CLOSING_PATTERNS) + r")$")
 

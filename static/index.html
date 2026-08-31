@@ -37,6 +37,21 @@
     </form>
     <p id="disclaimer">Guttify is a wellness assistant, not a medical provider. It doesn't diagnose conditions.</p>
   </div>
+
+  <div id="feedback-overlay" hidden>
+    <div id="feedback-modal" role="dialog" aria-modal="true" aria-labelledby="feedback-title">
+      <p id="feedback-title">How would you rate the bot's responses?</p>
+      <div id="feedback-ratings">
+        <button class="rating-btn" type="button" data-rating="1">1</button>
+        <button class="rating-btn" type="button" data-rating="2">2</button>
+        <button class="rating-btn" type="button" data-rating="3">3</button>
+        <button class="rating-btn" type="button" data-rating="4">4</button>
+        <button class="rating-btn" type="button" data-rating="5">5</button>
+      </div>
+      <p id="feedback-confirmation" hidden>Thank you for your feedback!</p>
+    </div>
+  </div>
+
   <script src="/static/app.js"></script>
 </body>
 </html>

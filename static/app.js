@@ -2,9 +2,26 @@ const messagesEl = document.getElementById("messages");
 const form = document.getElementById("chat-form");
 const input = document.getElementById("chat-input");
 
+const feedbackOverlay = document.getElementById("feedback-overlay");
+const feedbackConfirmation = document.getElementById("feedback-confirmation");
+const ratingButtons = Array.from(document.querySelectorAll(".rating-btn"));
+
 // A fresh session id every page load — refreshing the page means the
 // server starts a brand-new (empty) conversation_history for this session.
 let sessionId = null;
+
+// True once the backend reports status "SESSION_ENDED" (see
+// guttify_agent.py — set after a recommendation is followed by a
+// satisfied/closing remark, per satisfaction_checker.py). Nothing about
+// this is persisted anywhere on purpose: a page refresh re-runs this
+// script from scratch, requests a brand-new session, and the chat is
+// fully usable again.
+let chatEnded = false;
+
+// Guards against the rating popup ever showing twice in one chat
+// session, and against a second rating being submitted for one.
+let feedbackShown = false;
+let feedbackSubmitted = false;
 
 function escapeHtml(text) {
   const div = document.createElement("div");
@@ -47,6 +64,12 @@ async function initSession() {
 
 form.addEventListener("submit", async (event) => {
   event.preventDefault();
+
+  // Blocks typing/Enter/click from doing anything once the chat has
+  // ended, even if the disabled attribute below was somehow bypassed
+  // (e.g. a request already in flight when the chat ended).
+  if (chatEnded) return;
+
   const message = input.value.trim();
   if (!message || !sessionId) return;
 
@@ -68,13 +91,67 @@ form.addEventListener("submit", async (event) => {
 
     thinking.remove();
     addMessage(data.reply, "bot", data.status === "SAFETY_REVIEW" ? "safety" : "");
+
+    if (data.status === "SESSION_ENDED") {
+      lockChat();
+      showFeedbackModal();
+      return; // leave the input locked — no further messages this session
+    }
   } catch (err) {
     thinking.remove();
     addMessage("Something went wrong reaching the assistant. Please try again.", "bot");
   } finally {
-    input.disabled = false;
-    input.focus();
+    if (!chatEnded) {
+      input.disabled = false;
+      input.focus();
+    }
   }
+});
+
+/** Disables the input and Send button both visually (see the
+ * :disabled styling in style.css) and functionally — no further
+ * /api/chat calls are made for this session once this has run. */
+function lockChat() {
+  chatEnded = true;
+  input.disabled = true;
+  form.querySelector("button[type='submit']").disabled = true;
+  input.blur();
+}
+
+function showFeedbackModal() {
+  if (feedbackShown) return; // only ever shown once per chat session
+  feedbackShown = true;
+  feedbackOverlay.hidden = false;
+}
+
+function hideFeedbackModal() {
+  feedbackOverlay.hidden = true;
+}
+
+ratingButtons.forEach((btn) => {
+  btn.addEventListener("click", async () => {
+    if (feedbackSubmitted) return; // prevents accidental multiple submissions
+    feedbackSubmitted = true;
+
+    const rating = Number(btn.dataset.rating);
+    ratingButtons.forEach((b) => {
+      b.disabled = true;
+      b.classList.toggle("selected", b === btn);
+    });
+
+    try {
+      await fetch("/api/feedback", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ session_id: sessionId, rating }),
+      });
+    } catch (err) {
+      console.error("Feedback submit failed:", err);
+    }
+
+    feedbackConfirmation.hidden = false;
+    setTimeout(hideFeedbackModal, 1800);
+  });
 });
 
 initSession();
