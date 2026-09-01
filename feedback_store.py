@@ -21,13 +21,14 @@ rest of the app already uses for session/conversation state.
 import json
 import os
 import threading
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 
 FEEDBACK_LOG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "feedback_log.jsonl")
 
 _write_lock = threading.Lock()
 _RATED_SESSIONS: set[str] = set()
 
+IST = timezone(timedelta(hours=5, minutes=30))
 
 class DuplicateFeedbackError(Exception):
     """Raised when a session tries to submit feedback more than once."""
@@ -46,7 +47,7 @@ def save_feedback(session_id: str, rating: int) -> dict:
     record = {
         "session_id": session_id,
         "rating": rating,
-        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "timestamp": datetime.now(IST).isoformat(),
     }
 
     with _write_lock:
