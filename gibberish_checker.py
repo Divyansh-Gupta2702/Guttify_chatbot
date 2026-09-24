@@ -35,7 +35,9 @@ def is_gibberish(text):
     cleaned = re.sub(r"[^a-zA-Z\s]", "", text).strip()
 
     if not cleaned:
-        # Nothing alphabetic at all (numbers, symbols, emoji only)
+        # Numeric answers such as age ("23") are valid questionnaire input.
+        if re.search(r"\d", text):
+            return False
         return True
 
     lowered = cleaned.lower()
