@@ -33,3 +33,8 @@ Open:
 ```text
 http://127.0.0.1:8080
 ```
+
+
+## V5 fixes
+- Recognizes natural constipation phrases such as "unable to pass my stools".
+- Keeps an active question context so answers like "5 months" are never classified as irrelevant.
