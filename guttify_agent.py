@@ -35,6 +35,7 @@ PRODUCT_ELIGIBILITY = {
     "IBS-C pattern": {"Digest Boost", "Guttify Poopie"},
     "Reflux/GERD-like symptom pattern": {"Acid Ease"},
     "Dyspepsia/indigestion pattern": {"Acid Ease"},
+    "Upper-abdominal meal-related dyspepsia pattern": {"Acid Ease"},
     "Food-triggered gas/bloating pattern": {"Digest Boost", "Guttify Poopie"},
     "Constipation-associated bloating pattern": {"Digest Boost", "Guttify Poopie"},
     "Functional gas/bloating pattern": {"Digest Boost", "Guttify Poopie"},
@@ -432,7 +433,7 @@ class ConversationManager:
                 return {"status": "DIAGNOSIS", "message": screening["message"], "recommendations": [], "safety": safety, "screening": screening}
 
             allowed = PRODUCT_ELIGIBILITY.get(screening.get("pattern"))
-            result = evaluate_product(session.symptom_state, user_message, allowed_names=allowed)
+            result = evaluate_product(session.symptom_state, user_message, allowed_names=allowed, match_context=screening.get("pattern"))
             result = _filter_approved_products(result, screening)
             result["screening"] = screening
             result["safety"] = safety

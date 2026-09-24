@@ -86,3 +86,53 @@ class TestV7ProductCoverage(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+class TestV8ClinicalContextBridging(unittest.TestCase):
+    def test_blood_plus_sharp_pain_reaches_piloease(self):
+        """Regression for the live flow: primary symptom is bleeding, but
+        the completed clinical pattern is an anal fissure pattern."""
+        cm = ConversationManager()
+        sid = "blood-fissure-v8"
+        answers = [
+            "There is blood in stool", "3 weeks", "50", "Bright red",
+            "Tissue", "Sharp pain during bowel movement",
+        ]
+        result = None
+        for answer in answers:
+            result = cm.handle_message(sid, answer)
+        self.assertEqual(result["status"], "RECOMMENDATION_FOUND")
+        self.assertEqual(result["screening"]["pattern"], "Possible anal fissure pattern")
+        self.assertIn("Piloease Anal Care Spray", [x["product_name"] for x in result["recommendations"]])
+
+    def test_dyspepsia_pattern_reaches_acid_ease(self):
+        s = SymptomState(primary_symptom="indigestion")
+        screening = clinical_evaluate(s)
+        self.assertEqual(screening["pattern"], "Dyspepsia/indigestion pattern")
+        r = product_evaluate(s, "indigestion", allowed_names={"Acid Ease"}, match_context=screening["pattern"])
+        self.assertEqual(r["status"], "RECOMMENDATION_FOUND")
+        self.assertEqual(r["recommendations"][0]["product_name"], "Acid Ease")
+
+    def test_upper_abdominal_meal_related_dyspepsia_reaches_acid_ease(self):
+        s = SymptomState(primary_symptom="stomach pain", food_related=True, pain_location="upper abdomen")
+        screening = clinical_evaluate(s)
+        self.assertEqual(screening["pattern"], "Upper-abdominal meal-related dyspepsia pattern")
+        r = product_evaluate(s, "upper abdominal pain after meals", allowed_names={"Acid Ease"}, match_context=screening["pattern"])
+        self.assertEqual(r["status"], "RECOMMENDATION_FOUND")
+        self.assertEqual(r["recommendations"][0]["product_name"], "Acid Ease")
+
+
+class TestV8AllActiveProductEntryPoints(unittest.TestCase):
+    def test_all_product_specific_routes_have_a_match(self):
+        cases = [
+            ("GloLux GlutaGlow Skin Effervescent Tablets", "I have dull skin"),
+            ("Boost Vitamin B12", "I have brain fog"),
+            ("Boost Vitamin D3+", "I have low immunity"),
+            ("Apple Active", "I want weight management support"),
+            ("Liver Lift", "I need liver support"),
+            ("Guttify Poopie", "I have low fibre intake"),
+        ]
+        for expected, query in cases:
+            with self.subTest(expected=expected):
+                result = ConversationManager().handle_message(expected, query)
+                self.assertEqual(result["status"], "RECOMMENDATION_FOUND")
+                self.assertIn(expected, [x["product_name"] for x in result["recommendations"]])

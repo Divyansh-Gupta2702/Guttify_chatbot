@@ -26,6 +26,7 @@ TOP_K = 2
 MIN_SCORE = 100  # a product must have at least one primary-symptom hit
 AMBIGUITY_MARGIN = 15  # if top two scores are this close, don't force a pick
 MAX_DISAMBIGUATION_QUESTIONS = 2  # extra tie-breaking questions, on top of the normal Q&A budget
+CONTEXT_MATCH_POINTS = 100
 
 PRIMARY_MATCH_POINTS = 100
 SECONDARY_MATCH_POINTS = 10
@@ -105,6 +106,29 @@ PRODUCT_PRIMARY_ALIASES = {
     "Liver Lift": {"fatigue", "sluggishness", "bloating", "digestion concerns", "liver support"},
 }
 
+# Clinical-pattern context matches are deliberately separate from the general
+# symptom aliases above.  They are only usable after the clinical rule engine
+# has already established the named pattern, so a generic "bleeding" message
+# can never bypass the bleeding work-up and jump straight to Piloease.
+# The numeric value is the score contribution; 95 keeps a direct product
+# symptom match (for example Piles Pure -> bleeding) ahead of a context-only
+# match while still allowing the approved contextual product into TOP_K.
+CLINICAL_PATTERN_PRODUCT_MATCHES = {
+    "Dyspepsia/indigestion pattern": {
+        "Acid Ease": {"indigestion", "dyspepsia"},
+    },
+    "Upper-abdominal meal-related dyspepsia pattern": {
+        "Acid Ease": {"upper abdominal discomfort", "meal-related indigestion", "dyspepsia"},
+    },
+    "Possible hemorrhoid pattern": {
+        "Piles Pure": {"hemorrhoid pattern", "piles pattern"},
+        "Piloease Anal Care Spray": {"hemorrhoid pattern", "piles pattern"},
+    },
+    "Possible anal fissure pattern": {
+        "Piloease Anal Care Spray": {"anal fissure pattern", "anal fissure"},
+    },
+}
+
 
 
 def _build_distinctive_name_tokens(products):
@@ -172,7 +196,7 @@ def calculate_keyword_score(user_query, product):
     return score
 
 
-def score_product(product, state: SymptomState, raw_query: str):
+def score_product(product, state: SymptomState, raw_query: str, match_context=None):
     """
     Deterministic scoring. Critical rule: a product without a primary
     symptom match gets a score of zero, full stop — no partial credit
@@ -184,11 +208,22 @@ def score_product(product, state: SymptomState, raw_query: str):
     symptom_set = _product_symptom_set(product)
     primary = normalize_text(state.primary_symptom) if state.primary_symptom else None
     alias_set = {normalize_text(x) for x in PRODUCT_PRIMARY_ALIASES.get(product.get("product_name"), set())}
+    context_terms = {normalize_text(x) for x in CLINICAL_PATTERN_PRODUCT_MATCHES.get(match_context, {}).get(product.get("product_name"), set())}
+    context_match = bool(match_context and context_terms)
 
-    if not primary or (primary not in symptom_set and primary not in alias_set):
+    # A clinical context match is valid only when the upstream clinical rule
+    # engine explicitly supplied that pattern. This is the bridge that lets a
+    # pattern such as "Possible anal fissure" reach Piloease even though the
+    # raw primary symptom is "bleeding".
+    if not primary and not context_match:
+        return 0
+    if primary not in symptom_set and primary not in alias_set and not context_match:
         return 0
 
-    score = PRIMARY_MATCH_POINTS
+    score = PRIMARY_MATCH_POINTS if primary in symptom_set or primary in alias_set else CONTEXT_MATCH_POINTS
+    if context_match and score == PRIMARY_MATCH_POINTS:
+        # Keep a direct symptom match slightly ahead of a contextual match.
+        score += 1
 
     for secondary in state.secondary_symptoms or []:
         if normalize_text(secondary) in symptom_set:
@@ -210,12 +245,12 @@ def score_product(product, state: SymptomState, raw_query: str):
     return score
 
 
-def score_all_products(state: SymptomState, raw_query: str):
+def score_all_products(state: SymptomState, raw_query: str, match_context=None):
     candidates = []
     for product in products:
         if product.get("status") != "active":
             continue
-        score = score_product(product, state, raw_query)
+        score = score_product(product, state, raw_query, match_context=match_context)
         if score > 0:
             candidates.append({"product": product, "score": score})
     candidates.sort(key=lambda c: c["score"], reverse=True)
@@ -356,7 +391,7 @@ NO_MATCH_MESSAGE = (
     "experiencing?"
 )
 
-def evaluate(state: SymptomState, raw_query: str, allowed_names=None):
+def evaluate(state: SymptomState, raw_query: str, allowed_names=None, match_context=None):
     """
     Deterministic evaluation over the current structured symptom state.
     Returns one of: RECOMMENDATION_FOUND, AMBIGUOUS, NO_MATCH.
@@ -366,7 +401,7 @@ def evaluate(state: SymptomState, raw_query: str, allowed_names=None):
     if not state.primary_symptom:
         return {"status": "NO_MATCH", "recommendations": [], "message": NO_MATCH_MESSAGE}
 
-    candidates = score_all_products(state, raw_query)
+    candidates = score_all_products(state, raw_query, match_context=match_context)
     if allowed_names is not None:
         allowed_names = set(allowed_names)
         candidates = [c for c in candidates if c["product"].get("product_name") in allowed_names]
