@@ -1,142 +1,48 @@
-"""
-Guttify Conversation Agent
---------------------------
-Owns the multi-turn conversation flow:
-
-    user message
-      -> greeting check
-      -> gibberish check
-      -> intent parsing (structured symptom state)
-      -> safety validation (red flags short-circuit everything)
-      -> deterministic recommendation engine
-      -> at most 3 clarifying questions, never re-asking what's known
-      -> final response
-
-The LLM (guttify_chatbot) is used ONLY to phrase the final recommendation
-or an unclear-need follow-up in natural language from data this agent has
-already decided on — it never chooses the product and never decides which
-clarifying question to ask.
-
-Priority for state: current user answer > current conversation > any
-previously stored state. This is enforced by `intent_parser.merge_state`,
-which only overwrites a field when the new message actually supplies one.
-"""
+"""GutGPT conversation manager: clinical-style assessment first, product second."""
 from dataclasses import dataclass, field
-
 from gibberish_checker import is_gibberish, random_gibberish_response
 from greeting_checker import is_greeting, random_greeting_response
-from intent_parser import SymptomState, extract_named_aspect, merge_state
+from satisfaction_checker import is_satisfied_closing, random_closing_response
+from intent_parser import SymptomState, merge_state
+from symptom_questionnaire import next_question
+from clinical_rule_engine import evaluate as evaluate_screening
+from safety_checker import check_safety
 from recommendation_engine import (
-    evaluate,
+    evaluate as evaluate_product,
     find_named_product,
-    get_disambiguation_question,
     has_domain_overlap,
     IRRELEVANT_MESSAGE,
-    MAX_DISAMBIGUATION_QUESTIONS,
-)
-from safety_checker import check_safety
-from satisfaction_checker import is_satisfied_closing, random_closing_response
-
-# Shown once a session has been closed out (see SessionState.ended) and the
-# user sends yet another message on the same session id.
-SESSION_ENDED_MESSAGE = (
-    "This conversation has already wrapped up. Please start a new chat if "
-    "you'd like help with another question — happy to help again!"
 )
 
-MAX_QUESTIONS = 3
-
-# If the user has just been asked the primary-symptom question and their
-# reply doesn't map to any known symptom, we ask them to elaborate rather
-# than immediately writing them off as irrelevant (see handle_message).
-# Capped so a genuinely off-topic conversation doesn't loop forever.
-MAX_ELABORATION_ATTEMPTS = 2
-
-PRIMARY_SYMPTOM_ELABORATION_MESSAGE = (
-    "I couldn't quite match that to something I can help with — could you "
-    "tell me a bit more about what you're experiencing? For example, is it "
-    "more like bloating, acidity, pain, constipation, or something along "
-    "those lines?"
-)
-
-# Ordered so the flow matches natural triage: what's wrong, how
-# often/food-related, then the specific trigger — matching the spec's
-# example conversation.
-QUESTION_TEMPLATES = [
-    (
-        "primary_symptom",
-        lambda state: state.primary_symptom is None,
-        "Got it. What are you experiencing most — bloating, acidity, pain, "
-        "constipation, or something else?",
-    ),
-    (
-        "frequency_and_food",
-        lambda state: state.primary_symptom is not None and state.food_related is None,
-        "How often does it happen, and does it seem related to food?",
-    ),
-    (
-        "food_trigger",
-        lambda state: bool(state.food_related) and state.food_trigger is None,
-        "Which food seems to trigger it most — dairy, spicy/oily food, "
-        "wheat, beans/lentils, or not sure?",
-    ),
-]
-
-
-def next_question(state: SymptomState):
-    """Return the next clarifying question to ask, or None if there isn't
-    one left / everything relevant is already known."""
-    for field_name, needs_asking, question_text in QUESTION_TEMPLATES:
-        if field_name in (state.asked_fields or []):
-            continue
-        if needs_asking(state):
-            return field_name, question_text
-    return None
+SESSION_ENDED_MESSAGE = "This conversation has already wrapped up. Please start a new chat if you'd like help with another question."
+MAX_QUESTIONS = 10
 
 
 @dataclass
 class SessionState:
     symptom_state: SymptomState = field(default_factory=SymptomState)
     questions_asked: int = 0
-    disambiguation_questions_asked: int = 0
-    resolved: bool = False  # True once a recommendation/no-match/etc has been delivered
-    # How many times in a row we've asked the user to elaborate on their
-    # primary symptom because their last answer didn't map to anything we
-    # recognize. Capped by MAX_ELABORATION_ATTEMPTS.
-    elaboration_attempts: int = 0
-    # True once a product recommendation (or named-product answer) has been
-    # delivered, so we start watching for a "thanks, that's it" style
-    # closing remark. False again is never needed — once someone can close
-    # out, a later closing remark should still be honored.
     awaiting_close: bool = False
-    # True once the session has actually been closed out. Any further
-    # message on this session id gets a polite "start a new chat" reply
-    # instead of being processed.
     ended: bool = False
+    screening: dict | None = None
 
 
 class ConversationManager:
-    """Holds per-session structured state across turns."""
-
     def __init__(self):
-        self.sessions: dict[str, SessionState] = {}
+        self.sessions = {}
 
-    def _get_session(self, session_id: str) -> SessionState:
-        return self.sessions.setdefault(session_id, SessionState())
+    def _get_session(self, sid):
+        return self.sessions.setdefault(sid, SessionState())
 
-    def reset(self, session_id: str):
-        self.sessions[session_id] = SessionState()
+    def reset(self, sid):
+        self.sessions[sid] = SessionState()
 
-    def handle_message(self, session_id: str, user_message: str) -> dict:
-        session = self._get_session(session_id)
+    def handle_message(self, sid, user_message):
+        session = self._get_session(sid)
 
         if session.ended:
             return {"status": "SESSION_ENDED", "message": SESSION_ENDED_MESSAGE, "recommendations": []}
 
-        # Only checked once a recommendation/product answer has actually
-        # been delivered in this session — a bare "thanks" before that
-        # point is not a closing signal, it's just a greeting-adjacent
-        # remark, so it still falls through to the normal flow below.
         if session.awaiting_close and is_satisfied_closing(user_message):
             session.ended = True
             return {"status": "SESSION_ENDED", "message": random_closing_response(), "recommendations": []}
@@ -147,95 +53,86 @@ class ConversationManager:
         if is_gibberish(user_message):
             return {"status": "GIBBERISH", "message": random_gibberish_response(), "recommendations": []}
 
-        safety_result = check_safety(user_message)
-        if not safety_result["safe_to_recommend"]:
+        safety = check_safety(user_message)
+        if safety["red_flag"]:
             return {
-                "status": "SAFETY_REVIEW",
-                "message": safety_result["message"],
-                "safety": safety_result,
+                "status": "DIAGNOSIS",
+                "message": safety["message"],
+                "safety": safety,
                 "recommendations": [],
+                "screening": {
+                    "pattern": "Red-flag presentation",
+                    "likely_condition": "Medical evaluation required",
+                    "confidence": "high",
+                    "evidence": safety["reasons"],
+                    "differentials": [],
+                    "action": "urgent_medical_evaluation",
+                    "product_allowed": False,
+                },
             }
 
-        # A user naming a specific product (or asking about one aspect of
-        # it) bypasses the symptom conversation entirely.
-        named_product = find_named_product(user_message)
-        if named_product:
-            aspect = extract_named_aspect(user_message)
+        named = find_named_product(user_message)
+        if named and not session.symptom_state.primary_symptom:
             session.awaiting_close = True
-            return {
-                "status": "PRODUCT_INFO_FOUND",
-                "message": "",
-                "product": named_product,
-                "aspect": aspect,
-                "recommendations": [named_product],
-            }
+            return {"status": "PRODUCT_INFO_FOUND", "message": "", "product": named, "recommendations": [named]}
 
         session.symptom_state = merge_state(session.symptom_state, user_message, [])
 
         if not session.symptom_state.primary_symptom and not has_domain_overlap(user_message):
-            # If we specifically just asked the primary-symptom question
-            # and the user's answer didn't map to anything we recognize,
-            # that's most likely an unfamiliar phrasing of a real symptom
-            # rather than an off-topic message — ask them to elaborate
-            # instead of writing it off as irrelevant. Only genuinely
-            # off-topic input (or repeated failed attempts) still gets the
-            # irrelevant response.
-            was_asked_primary_symptom = "primary_symptom" in (session.symptom_state.asked_fields or [])
-            if was_asked_primary_symptom and session.elaboration_attempts < MAX_ELABORATION_ATTEMPTS:
-                session.elaboration_attempts += 1
-                return {
-                    "status": "ASK",
-                    "message": PRIMARY_SYMPTOM_ELABORATION_MESSAGE,
-                    "recommendations": [],
-                    "safety": safety_result,
-                }
             return {"status": "IRRELEVANT", "message": IRRELEVANT_MESSAGE, "recommendations": []}
 
-        # Ask any relevant outstanding question BEFORE finalizing a
-        # recommendation — a single unique symptom match is not by itself
-        # a reason to skip the conversation. We only skip a question when
-        # its underlying field is already known (e.g. the user volunteered
-        # food-trigger info up front) or the 3-question budget is spent.
+        # Rectal bleeding gets explicit colour/location/pain clarification before
+        # the rule engine is allowed to classify it.
+        if session.symptom_state.blood_present:
+            if session.symptom_state.blood_colour is None and session.questions_asked < MAX_QUESTIONS:
+                q = ("blood_colour", "Is the blood bright/fresh red, or dark/black/tarry?")
+                if q[0] not in session.symptom_state.asked_fields:
+                    session.symptom_state.asked_fields.append(q[0])
+                    session.questions_asked += 1
+                    return {"status": "ASK", "message": q[1], "recommendations": [], "safety": safety}
+            if session.symptom_state.blood_location is None and session.questions_asked < MAX_QUESTIONS:
+                q = ("blood_location", "If it is bright red, is it only on toilet paper/tissue, dripping into the toilet, or mixed into the stool?")
+                if q[0] not in session.symptom_state.asked_fields:
+                    session.symptom_state.asked_fields.append(q[0])
+                    session.questions_asked += 1
+                    return {"status": "ASK", "message": q[1], "recommendations": [], "safety": safety}
+            if session.symptom_state.sharp_pain_during_stool is None and session.questions_asked < MAX_QUESTIONS:
+                q = ("anal_pain", "Is there sharp or tearing pain during or just after passing stool?")
+                if q[0] not in session.symptom_state.asked_fields:
+                    session.symptom_state.asked_fields.append(q[0])
+                    session.questions_asked += 1
+                    return {"status": "ASK", "message": q[1], "recommendations": [], "safety": safety}
+
+        # Keep asking targeted questions while useful information remains.
         if session.questions_asked < MAX_QUESTIONS:
-            question = next_question(session.symptom_state)
-            if question is not None:
-                field_name, question_text = question
-                session.symptom_state.asked_fields = list(session.symptom_state.asked_fields or []) + [field_name]
+            q = next_question(session.symptom_state)
+            if q:
+                name, text = q
+                session.symptom_state.asked_fields.append(name)
                 session.questions_asked += 1
-                return {
-                    "status": "ASK",
-                    "message": question_text,
-                    "recommendations": [],
-                    "safety": safety_result,
-                }
+                return {"status": "ASK", "message": text, "recommendations": [], "safety": safety}
 
-        # Before locking in a recommendation, check whether the current
-        # candidates are tied closely enough that we could easily confuse
-        # one product for another. If so, and there's a symptom we haven't
-        # already asked about that could split the tie, ask it — up to a
-        # small dedicated budget separate from the general Q&A cap, since
-        # this is specifically about avoiding a wrong pick, not general
-        # triage.
-        if session.disambiguation_questions_asked < MAX_DISAMBIGUATION_QUESTIONS:
-            disambiguation = get_disambiguation_question(session.symptom_state, user_message)
-            if disambiguation is not None:
-                differentiators, question_text = disambiguation
-                session.symptom_state.asked_disambiguation = list(
-                    session.symptom_state.asked_disambiguation or []
-                ) + list(differentiators)
-                session.disambiguation_questions_asked += 1
-                return {
-                    "status": "ASK",
-                    "message": question_text,
-                    "recommendations": [],
-                    "safety": safety_result,
-                }
+        screening = evaluate_screening(session.symptom_state)
+        session.screening = screening
 
-        result = evaluate(session.symptom_state, user_message)
-        session.resolved = True
+        if screening["action"] == "clarify_bleeding":
+            return {"status": "ASK", "message": screening["message"], "recommendations": [], "safety": safety, "screening": screening}
+
+        # A clinical pattern is now the primary answer. Product logic only runs
+        # after the pattern has been established and only if explicitly allowed.
+        if not screening["product_allowed"]:
+            return {
+                "status": "DIAGNOSIS",
+                "message": screening["message"],
+                "recommendations": [],
+                "safety": safety,
+                "screening": screening,
+            }
+
+        result = evaluate_product(session.symptom_state, user_message)
+        result["screening"] = screening
+        result["safety"] = safety
+
         if result["status"] == "RECOMMENDATION_FOUND":
-            # A concrete recommendation was just delivered — start watching
-            # for a "thanks, that's it" style closing remark on the next
-            # turn(s) so we can wrap the session up.
             session.awaiting_close = True
-        return {**result, "safety": safety_result}
+        return result

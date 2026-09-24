@@ -19,7 +19,7 @@ from feedback_store import DuplicateFeedbackError, save_feedback
 from guttify_agent import ConversationManager
 from guttify_chatbot import generate_response, load_llm
 
-app = FastAPI(title="Guttify AI Assistant")
+app = FastAPI(title="GutGPT")
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
 # Per-session conversation history + structured symptom state, held in
@@ -81,6 +81,7 @@ def chat(req: ChatRequest):
         "GIBBERISH",
         "IRRELEVANT",
         "SAFETY_REVIEW",
+        "SCREENING_REVIEW",
         "ASK",
         "NO_MATCH",
         "AMBIGUOUS",
@@ -89,12 +90,15 @@ def chat(req: ChatRequest):
     ):
         reply = result["message"]
 
+    elif status == "DIAGNOSIS":
+        reply = generate_response(llm, req.message, history, None, result.get("screening"))
+
     elif status == "PRODUCT_INFO_FOUND":
-        reply = generate_response(llm, req.message, history, result["product"])
+        reply = generate_response(llm, req.message, history, result["product"], result.get("screening"))
 
     elif status == "RECOMMENDATION_FOUND":
         best_product = result["recommendations"][0]
-        reply = generate_response(llm, req.message, history, best_product)
+        reply = generate_response(llm, req.message, history, best_product, result.get("screening"))
 
     else:
         reply = "Sorry, something went wrong. Could you rephrase that?"

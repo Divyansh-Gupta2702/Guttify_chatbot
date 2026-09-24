@@ -1,265 +1,53 @@
-"""
-Guttify Intent Parser
-----------------------
-Turns free-text user messages into a small, validated structured record
-(`SymptomState`). This is deliberately rule-based and lightweight — no
-embedding model, no vector DB — so it stays cheap to run and its output is
-always one of a fixed set of known values that the recommendation engine
-can trust.
-
-If a local LLM's interpretation is ever plugged in ahead of this, its
-output MUST still be validated with `validate_llm_extraction()` before use;
-anything that doesn't match the known schema/values is discarded and the
-rule-based extraction below is used instead.
-"""
+"""Lightweight structured symptom extraction for the Guttify screening flow."""
 import re
 from dataclasses import dataclass, field, asdict
 
-# ---------------------------------------------------------------------
-# Canonical symptom vocabulary. These strings are the ones that actually
-# appear in products.json "symptoms" lists, so a canonical hit here is
-# guaranteed to be matchable against real product data.
-# ---------------------------------------------------------------------
 SYMPTOM_SYNONYMS = {
-    "bloating": [
-        "bloat", "bloats", "bloating", "bloated", "swollen stomach", "stomach swollen",
-        "tummy feels full", "puffed up", "stomach becomes big", "gassy",
-        "stomach gets swollen", "feel full and tight", "stomach feels tight",
-        "belly bloat", "belly is bloated", "abdominal bloating", "stomach distension",
-        "distended stomach", "puffy stomach", "puffy belly", "swollen belly",
-        "feeling stuffed", "stomach feels heavy", "heavy stomach", "full and heavy stomach",
-        "stomach feels full", "tight stomach", "tummy is swollen", "stomach inflated",
-        "feels like a balloon", "bloating after eating", "gas and bloating", "indigestion",
-    ],
-    "constipation": [
-        "constipation", "constipated", "can't poop", "cant poop", "can not poop",
-        "not able to poop", "irregular digestion", "backed up",
-        "feeling backed up", "not going regularly", "not pooping regularly",
-        "trouble pooping", "difficulty pooping", "hard to poop", "unable to poop",
-        "not passing stool", "stool is stuck", "poop is stuck", "clogged up",
-        "blocked feeling", "bowel movement problems", "infrequent bowel movements",
-        "not clearing properly", "not able to pass motion", "motion is not clear",
-        "not going to the bathroom", "haven't pooped in days", "havent pooped in days",
-        "cant go", "can't go", "no bowel movement",
-    ],
-    "hard stools": [
-        "hard stool", "hard stools", "difficulty passing stool",
-        "straining to pass stool", "stool is hard", "stools are hard",
-        "dry stool", "dry stools", "hard poop", "poop is hard",
-        "lumpy stool", "stools are dry and hard",
-    ],
-    "irregular bowel movements": [
-        "irregular bowel", "irregular bowel movements", "irregular poop",
-        "bowel movements are irregular", "unpredictable bowel movements",
-        "erratic bowel movements", "irregular bathroom habits", "irregular motions",
-    ],
-    "acidity": [
-        "acidity", "acid reflux", "acid comes up", "sour burps",
-        "sour liquid", "sour taste in mouth", "acidic stomach", "stomach acid",
-        "too much acid", "acid buildup", "gerd", "reflux", "acid problem",
-        "gastric problem", "gastric issue", "gastric trouble", "sour belching",
-        "acidic burps", "stomach feels acidic",
-    ],
-    "heartburn": [
-        "heartburn", "burning in chest", "burning in my chest", "burning chest",
-        "chest burning", "my chest burning", "burning sensation after meals",
-        "burning after meals", "burning after food", "burning throat",
-        "burning in throat", "chest pain after eating", "burning feeling in chest",
-        "acid coming up my throat", "esophagus burning", "fire in chest",
-    ],
-    "gas": [
-        "gas", "flatulence", "excess gas", "too much gas", "gassy stomach",
-        "farting a lot", "trapped wind", "wind problem", "burping a lot",
-        "belching a lot", "stomach gas", "gas trouble", "gas issue",
-    ],
-    "fatigue": [
-        "fatigue", "tired", "tiredness", "low energy", "no energy",
-        "exhausted", "worn out", "feeling drained", "drained of energy",
-        "lethargic", "sleepy all the time", "always tired", "burnt out",
-        "zero energy", "feeling weak", "no stamina", "low stamina",
-        "constantly fatigued", "feel exhausted all day",
-    ],
-    "sluggishness": [
-        "sluggish", "sluggishness", "feel slow", "low motivation",
-        "feeling sluggish", "slow digestion", "feeling lazy", "body feels heavy",
-        "everything feels slow", "mentally and physically slow",
-    ],
-    "liver support": [
-        "liver support", "support my liver", "help my liver", "liver detox",
-        "detox my liver", "cleanse my liver", "liver cleanse", "liver health",
-        "liver function support", "improve liver function", "liver care",
-    ],
-    "piles": [
-        "piles", "hemorrhoid", "hemorrhoids", "haemorrhoid", "haemorrhoids",
-        "piles problem", "piles issue", "piles pain", "external piles",
-        "internal piles", "pile issue",
-    ],
-    "pain": ["pain", "hurts", "hurting", "sore", "aching", "painful", "ache"],
-    "swelling": ["swelling", "swollen", "puffiness", "inflammation", "inflamed", "swollen area"],
-    "bleeding": [
-        "bleeding", "blood when i poop", "blood after bowel movement",
-        "blood in stool", "blood while pooping", "bleeding from anus",
-        "rectal bleeding", "blood while passing stool", "spotting blood",
-    ],
-    "straining": [
-        "straining", "strain to pass stool", "pushing hard to poop",
-        "pushing too hard", "straining during bowel movement",
-        "hard to pass stool", "have to push a lot",
-    ],
-    "weight management": [
-        "weight management", "lose weight", "weight loss", "manage my weight",
-        "want to lose weight", "shed kilos", "shed some kilos", "extra weight",
-        "belly fat", "reduce weight", "trying to lose fat", "cut weight",
-    ],
-    "metabolism support": [
-        "metabolism", "slow metabolism", "boost metabolism", "sluggish metabolism",
-        "metabolism is slow", "improve my metabolism", "speed up metabolism",
-        "metabolic rate is low",
-    ],
-    "anal fissures": [
-        "anal fissure", "fissure", "tear near anus", "cut near anus",
-        "fissure pain", "small tear while pooping",
-    ],
-    "burning sensation": [
-        "burning sensation", "burning around anus", "anal burning",
-        "burning near anus", "burning down there", "burning feeling in that area",
-    ],
-    "itching": ["itching", "itchy", "itch", "itchy anus", "itching around anus", "itchy around the anus"],
-    "irritation": [
-        "irritation", "irritated", "skin irritation near anus",
-        "irritated skin", "irritation around anus",
-    ],
-    "anal discomfort": [
-        "anal discomfort", "discomfort around anus", "discomfort in anal area",
-        "uncomfortable around anus", "discomfort down there",
-    ],
-    "dull skin": [
-        "dull skin", "skin looks dull", "lackluster skin", "lacklustre skin",
-        "skin looks tired", "lifeless skin", "no glow", "skin has lost its glow",
-        "skin looks lifeless",
-    ],
-    "dry skin": ["dry skin", "skin feels dry", "flaky skin", "rough skin", "skin is dry and rough"],
-    "uneven skin tone": [
-        "uneven skin tone", "patchy skin tone", "skin tone is uneven",
-        "dark patches on skin", "blotchy skin", "uneven complexion",
-    ],
-    "loss of skin elasticity": [
-        "loss of skin elasticity", "sagging skin", "skin elasticity",
-        "skin is sagging", "loose skin", "skin lost its firmness", "skin feels loose",
-    ],
-    "brain fog": [
-        "brain fog", "foggy head", "can't focus", "cant focus", "poor focus",
-        "mind feels foggy", "hard to think clearly", "mentally foggy",
-        "head feels cloudy", "can't think straight clearly", "foggy thinking",
-    ],
-    "poor focus": [
-        "poor focus", "trouble concentrating", "difficulty concentrating",
-        "can't concentrate", "cant concentrate", "attention issues",
-        "distracted easily", "hard to concentrate", "lack of focus",
-    ],
-    "low immunity": [
-        "low immunity", "weak immunity", "catch colds often", "get sick often",
-        "fall ill frequently", "immune system is weak", "keep falling sick",
-        "frequent colds", "weak immune system",
-    ],
-    "weak bones": [
-        "weak bones", "bone health", "brittle bones", "bones feel weak",
-        "joint and bone weakness", "fragile bones",
-    ],
-    "low mood": [
-        "low mood", "feeling low", "mood is low", "feeling down",
-        "not in a good mood", "feeling blue", "feeling off lately",
-    ],
-    "occasional constipation": [
-        "occasional constipation", "constipation once in a while",
-        "constipated every now and then", "occasionally constipated",
-    ],
+    "constipation": ["constipation", "constipated", "can't poop", "cant poop", "not passing stool", "no bowel movement", "hard to poop", "trouble pooping", "difficulty pooping", "haven't pooped", "havent pooped", "infrequent bowel movements", "feeling backed up"],
+    "hard stools": ["hard stool", "hard stools", "hard poop", "dry stool", "dry stools", "lumpy stool", "pellet-like stools", "pellet stools"],
+    "bloating": ["bloating", "bloated", "bloat", "stomach becomes bigger", "stomach swollen", "swollen stomach", "distended stomach", "stomach distension", "belly bloat", "gas and bloating"],
+    "gas": ["gas", "gassy", "excess gas", "too much gas", "flatulence", "trapped wind", "burping a lot", "belching a lot"],
+    "acidity": ["acidity", "acid reflux", "reflux", "gerd", "sour taste", "sour burps", "acid coming up", "gastric problem", "gastric issue"],
+    "heartburn": ["heartburn", "burning in chest", "burning chest", "burning after meals", "burning after food", "burning in throat"],
+    "diarrhea": ["diarrhea", "diarrhoea", "loose motion", "loose motions", "loose stool", "loose stools", "watery stool", "watery stools", "runny stool"],
+    "stomach pain": ["stomach pain", "abdominal pain", "belly pain", "abdomen pain", "stomach ache", "stomachache", "abdominal ache"],
+    "piles": ["piles", "hemorrhoid", "hemorrhoids", "haemorrhoid", "haemorrhoids"],
+    "anal fissures": ["anal fissure", "anal fissures", "fissure", "tear near anus", "cut near anus"],
+    "bleeding": ["blood in stool", "blood while passing stool", "blood after stool", "blood after bowel movement", "blood on toilet paper", "fresh blood", "rectal bleeding", "bleeding from anus", "bleeding while pooping"],
+    "indigestion": ["indigestion", "indigestion after eating", "upset stomach after eating", "dyspepsia"],
+    "food intolerance": ["food intolerance", "food sensitivity", "intolerance to milk", "intolerance to dairy", "can't tolerate milk", "cannot tolerate milk"],
 }
-
-# Longer/more specific synonyms first so e.g. "hard stools" doesn't get
-# swallowed by a generic "constipation" match ordering issue.
-_SORTED_SYMPTOM_ITEMS = sorted(
-    ((canon, phrase) for canon, phrases in SYMPTOM_SYNONYMS.items() for phrase in phrases),
-    key=lambda pair: -len(pair[1]),
-)
-
-# Word-boundary patterns, precompiled once. Matching on \b...\b instead of
-# a raw substring check matters once the synonym lists include short words
-# ("gas", "pain", "itch", "tea") — a raw substring match would also fire
-# inside unrelated words ("itch" inside "kitchen", "tea" inside "steak").
-_SYMPTOM_PATTERNS = [
-    (canon, re.compile(r"\b" + re.escape(phrase) + r"\b")) for canon, phrase in _SORTED_SYMPTOM_ITEMS
-]
 
 FOOD_TRIGGER_SYNONYMS = {
-    "dairy": [
-        "dairy", "milk", "paneer", "cheese", "curd", "yogurt", "yoghurt",
-        "buttermilk", "lassi", "ice cream", "cream", "milk products",
-    ],
-    "spicy_oily": [
-        "spicy", "oily", "fried", "fatty food", "greasy", "masala",
-        "chilli", "chili", "spicy food", "junk food", "street food",
-        "fast food", "deep fried", "oily food",
-    ],
-    "wheat_gluten": [
-        "wheat", "gluten", "roti", "bread", "atta", "chapati", "paratha", "maida",
-    ],
-    "legumes": [
-        "beans", "lentils", "dal", "chickpeas", "rajma", "chana",
-        "kidney beans", "soybean", "soybeans", "sprouts",
-    ],
-    "caffeine": ["coffee", "caffeine", "tea", "chai", "cold coffee", "energy drink"],
+    "dairy": ["dairy", "milk", "paneer", "cheese", "curd", "yogurt", "yoghurt", "buttermilk", "lassi", "ice cream"],
+    "spicy_oily": ["spicy", "oily", "fried", "fatty food", "greasy", "masala", "chilli", "chili", "junk food", "fast food"],
+    "wheat_gluten": ["wheat", "gluten", "roti", "bread", "atta", "chapati", "paratha", "maida"],
+    "legumes": ["beans", "lentils", "dal", "chickpeas", "rajma", "chana", "kidney beans", "sprouts"],
+    "caffeine": ["coffee", "caffeine", "tea", "chai", "energy drink"],
 }
-_FOOD_TRIGGER_PATTERNS = {
-    trigger: [re.compile(r"\b" + re.escape(phrase) + r"\b") for phrase in phrases]
-    for trigger, phrases in FOOD_TRIGGER_SYNONYMS.items()
-}
-
-FREQUENCY_PATTERNS = [
-    ("daily", [r"\bdaily\b", r"every day", r"each day", r"almost every day", r"all the time"]),
-    (
-        "few_times_per_week",
-        [
-            r"few times a week", r"couple times a week", r"2-3 times a week",
-            r"several times a week", r"twice a week", r"most days",
-        ],
-    ),
-    ("weekly", [r"once a week", r"weekly", r"every alternate day"]),
-    (
-        "occasional",
-        [
-            r"occasionally", r"sometimes", r"once in a while", r"rarely",
-            r"on and off", r"now and then", r"every now and then",
-        ],
-    ),
-]
-
-FOOD_RELATED_PATTERNS = [
-    r"after eating", r"after meals", r"after food", r"related to food",
-    r"food related", r"when i eat", r"post meal", r"post-meal",
-    r"right after eating", r"soon after eating", r"whenever i eat",
-]
 
 NAME_QUESTION_ASPECTS = {
-    "ingredients": [
-        "ingredient", "ingredients", "what's in it", "whats in it", "contains",
-        "what does it contain", "made of", "composition",
-    ],
-    "how_to_use": [
-        "how to use", "how do i use", "dosage", "how much", "how to take",
-        "when to take", "how do i take it", "usage instructions",
-    ],
-    "warnings": [
-        "warning", "warnings", "side effect", "side effects", "caution",
-        "is it safe", "any risks", "precautions",
-    ],
+    "ingredients": ["ingredient", "ingredients", "what's in it", "whats in it", "contains", "what does it contain", "made of", "composition"],
+    "how_to_use": ["how to use", "how do i use", "dosage", "how much", "how to take", "when to take", "how do i take it", "usage instructions"],
+    "warnings": ["warning", "warnings", "side effect", "side effects", "caution", "is it safe", "any risks", "precautions"],
     "price": ["price", "cost", "how much does it cost", "how much is it"],
 }
-_NAME_ASPECT_PATTERNS = {
-    aspect: [re.compile(r"\b" + re.escape(phrase) + r"\b") for phrase in phrases]
-    for aspect, phrases in NAME_QUESTION_ASPECTS.items()
+
+FREQUENCY_PATTERNS = {
+    "daily": [r"\bdaily\b", r"every day", r"each day", r"almost every day"],
+    "few_times_per_week": [r"few times a week", r"couple times a week", r"2-3 times a week", r"several times a week", r"twice a week"],
+    "weekly": [r"once a week", r"weekly", r"every alternate day"],
+    "occasional": [r"occasionally", r"sometimes", r"once in a while", r"rarely", r"on and off"],
 }
 
+
+def normalize(text):
+    return re.sub(r"\s+", " ", re.sub(r"[^a-z0-9\s']", " ", text.lower())).strip()
+
+_SORTED = sorted(((c, p) for c, ps in SYMPTOM_SYNONYMS.items() for p in ps), key=lambda x: -len(x[1]))
+_PATTERNS = [(c, re.compile(r"\b" + re.escape(p) + r"\b")) for c, p in _SORTED]
+_FOOD_PATTERNS = {k: [re.compile(r"\b" + re.escape(p) + r"\b") for p in ps] for k, ps in FOOD_TRIGGER_SYNONYMS.items()}
+_ASPECT_PATTERNS = {k: [re.compile(r"\b" + re.escape(p) + r"\b") for p in ps] for k, ps in NAME_QUESTION_ASPECTS.items()}
 
 @dataclass
 class SymptomState:
@@ -270,131 +58,221 @@ class SymptomState:
     food_trigger: str = None
     severity: str = "unknown"
     duration: str = "unknown"
+    age: int = None
+    bowel_frequency_per_week: float = None
+    bowel_frequency_per_day: float = None
+    stool_form: int = None
+    straining: bool = None
+    incomplete_evacuation: bool = None
+    abdominal_pain: bool = None
+    pain_location: str = None
+    pain_related_to_bowel_movement: bool = None
+    blood_present: bool = None
+    blood_colour: str = None
+    blood_location: str = None
+    blood_mixed_with_stool: bool = None
+    anal_pain: bool = None
+    sharp_pain_during_stool: bool = None
+    lump_or_prolapse: bool = None
+    bloating: bool = None
+    diarrhea: bool = None
+    mucus: bool = None
+    fever: bool = None
+    vomiting: bool = None
+    abdominal_distension: bool = None
+    night_time_symptoms: bool = None
+    weight_loss: bool = None
+    dehydration: bool = None
+    unable_to_pass_stool_and_gas: bool = None
+    water_intake: str = None
+    fibre_intake: str = None
+    medications: str = None
+    recent_infection: bool = None
+    family_history_gi: bool = None
     red_flags: list = field(default_factory=list)
-    asked_fields: list = field(default_factory=list)  # which clarifying Qs we've already asked
-    asked_disambiguation: list = field(default_factory=list)  # canonical symptoms already used in a tie-break question
+    asked_fields: list = field(default_factory=list)
+    asked_disambiguation: list = field(default_factory=list)
 
-    def to_dict(self):
-        return asdict(self)
-
-    def has_enough_to_recommend(self):
-        return bool(self.primary_symptom) and not self.red_flags
+    def to_dict(self): return asdict(self)
+    def has_enough_to_recommend(self): return bool(self.primary_symptom) and not self.red_flags
 
 
-def normalize(text):
-    text = re.sub(r"[^a-z0-9\s']", " ", text.lower())
-    return re.sub(r"\s+", " ", text).strip()
+def _has(text, phrases):
+    n = normalize(text)
+    return any(re.search(r"\b" + re.escape(p) + r"\b", n) for p in phrases)
+
+
+def _yes_no(text, positive, negative=None):
+    n = normalize(text)
+    if negative and any(p in n for p in negative): return False
+    if any(p in n for p in positive): return True
+    return None
 
 
 def extract_symptoms(text):
-    """Return (primary_symptom, [secondary_symptoms]) using synonym matching."""
-    norm = normalize(text)
-    found = []
-    for canonical, pattern in _SYMPTOM_PATTERNS:
-        if canonical not in found and pattern.search(norm):
-            found.append(canonical)
-    if not found:
-        return None, []
-    return found[0], found[1:]
+    n = normalize(text); found=[]
+    for c,p in _PATTERNS:
+        if c not in found and p.search(n): found.append(c)
+    return (found[0], found[1:]) if found else (None, [])
 
 
 def extract_food_trigger(text):
-    norm = normalize(text)
-    for trigger, patterns in _FOOD_TRIGGER_PATTERNS.items():
-        if any(p.search(norm) for p in patterns):
-            return trigger
+    n=normalize(text)
+    for trigger, pats in _FOOD_PATTERNS.items():
+        if any(p.search(n) for p in pats): return trigger
     return None
 
 
 def extract_food_related(text):
-    norm = normalize(text)
-    if any(re.search(p, norm) for p in FOOD_RELATED_PATTERNS):
-        return True
-    if extract_food_trigger(text):
-        return True
-    return None  # unknown, not necessarily False
+    n=normalize(text)
+    if extract_food_trigger(text): return True
+    if any(x in n for x in ["after eating", "after meals", "after food", "related to food", "when i eat", "whenever i eat"]): return True
+    return None
 
 
 def extract_frequency(text):
-    norm = normalize(text)
-    for canonical, patterns in FREQUENCY_PATTERNS:
-        if any(re.search(p, norm) for p in patterns):
-            return canonical
+    n=normalize(text)
+    for k,ps in FREQUENCY_PATTERNS.items():
+        if any(re.search(p,n) for p in ps): return k
     return None
 
 
 def extract_named_aspect(text):
-    """If the user is asking about one specific aspect of a product (rule 14
-    in guttify_chatbot's prompt), return which aspect."""
-    norm = normalize(text)
-    for aspect, patterns in _NAME_ASPECT_PATTERNS.items():
-        if any(p.search(norm) for p in patterns):
-            return aspect
+    n=normalize(text)
+    for aspect,pats in _ASPECT_PATTERNS.items():
+        if any(p.search(n) for p in pats): return aspect
     return None
 
 
-def merge_state(previous: SymptomState, text: str, red_flags: list) -> SymptomState:
-    """
-    Merge the latest user message into the running structured state.
-    Priority: current user answer > prior conversation state.
-    Only overwrite a field when the new message actually supplies a value.
-    """
+def extract_duration(text):
+    n=normalize(text)
+    m=re.search(r"\b(\d+)\s*(day|days|week|weeks|month|months|year|years)\b", n)
+    return m.group(0) if m else None
+
+
+def extract_age(text):
+    n=normalize(text)
+    m=re.search(r"\b(?:i am|im|age is|aged)\s*(\d{1,3})\b", n)
+    return int(m.group(1)) if m else None
+
+
+def extract_bowel_frequency(text):
+    n=normalize(text)
+    m=re.search(r"\b(\d+(?:\.\d+)?)\s*(?:bowel movements?|bm|times?)\s*(?:per|a|each)\s*week\b", n)
+    if m: return float(m.group(1))
+    m=re.search(r"\b(once|twice|three times|4 times|five times|5 times)\s*(?:a|per)\s*week\b", n)
+    if m:
+        return {"once":1.0,"twice":2.0,"three times":3.0,"4 times":4.0,"five times":5.0,"5 times":5.0}[m.group(1)]
+    return None
+
+
+def extract_bowel_frequency_per_day(text):
+    n = normalize(text)
+    m = re.search(r"\b(\d+(?:\.\d+)?)\s*(?:loose\s+)?(?:bowel movements?|bm|times?)\s*(?:per|a|each)\s*day\b", n)
+    if m:
+        return float(m.group(1))
+    return None
+
+
+def extract_severity(text):
+    n = normalize(text)
+    m = re.search(r"\b(?:pain|severity)\s*(?:is|of)?\s*(\d{1,2})\s*(?:/\s*10)?\b", n)
+    if m:
+        value = int(m.group(1))
+        if 0 <= value <= 10:
+            return str(value)
+    return None
+
+
+def extract_lifestyle(text):
+    n = normalize(text)
+    water = None
+    fibre = None
+    if any(x in n for x in ["low fibre", "low fiber", "little fibre", "little fiber", "poor fibre", "poor fiber"]):
+        fibre = "low"
+    elif any(x in n for x in ["high fibre", "high fiber", "good fibre", "good fiber"]):
+        fibre = "high"
+    elif any(x in n for x in ["average fibre", "average fiber", "normal fibre", "normal fiber"]):
+        fibre = "average"
+    m = re.search(r"\b(\d+(?:\.\d+)?)\s*(?:litres?|liters?|l)\b", n)
+    if m:
+        water = m.group(0)
+    return water, fibre
+
+
+def extract_medications(text):
+    n = normalize(text)
+    if any(x in n for x in ["no medicines", "no medication", "not taking medicines", "not taking medication", "no regular medicines", "no regular medication"]):
+        return "none"
+    if any(x in n for x in ["taking medicine", "taking medication", "taking medicines", "taking supplements", "regular medication", "regular medicines", "on medication", "on medicines"]):
+        return "reported"
+    return None
+
+
+def extract_bool(text, positives, negatives):
+    n=normalize(text)
+    if any(p in n for p in negatives): return False
+    if any(p in n for p in positives): return True
+    return None
+
+
+def merge_state(previous, text, red_flags):
     previous = previous or SymptomState()
-
     primary, secondary = extract_symptoms(text)
-    food_trigger = extract_food_trigger(text)
-    food_related = extract_food_related(text)
-    frequency = extract_frequency(text)
+    updates = {
+        "primary_symptom": primary or previous.primary_symptom,
+        "secondary_symptoms": list(dict.fromkeys((previous.secondary_symptoms or []) + secondary)),
+        "frequency": extract_frequency(text) or previous.frequency,
+        "food_related": extract_food_related(text) if extract_food_related(text) is not None else previous.food_related,
+        "food_trigger": extract_food_trigger(text) or previous.food_trigger,
+        "severity": extract_severity(text) or previous.severity,
+        "duration": extract_duration(text) or previous.duration,
+        "age": extract_age(text) or previous.age,
+        "bowel_frequency_per_week": extract_bowel_frequency(text) if extract_bowel_frequency(text) is not None else previous.bowel_frequency_per_week,
+        "bowel_frequency_per_day": extract_bowel_frequency_per_day(text) if extract_bowel_frequency_per_day(text) is not None else previous.bowel_frequency_per_day,
+        "stool_form": previous.stool_form,
+        "straining": extract_bool(text,["strain", "straining", "push hard", "pushing hard"],["no strain", "without straining"]) if extract_bool(text,["strain", "straining", "push hard", "pushing hard"],["no strain", "without straining"]) is not None else previous.straining,
+        "incomplete_evacuation": extract_bool(text,["incomplete evacuation", "not completely empty", "not fully empty", "still feel like i need to go"],["complete evacuation", "completely empty"]) if extract_bool(text,["incomplete evacuation", "not completely empty", "not fully empty", "still feel like i need to go"],["complete evacuation", "completely empty"]) is not None else previous.incomplete_evacuation,
+        "abdominal_pain": extract_bool(text,["abdominal pain", "stomach pain", "belly pain", "stomach ache", "abdominal ache"],["no abdominal pain", "no stomach pain"]) if extract_bool(text,["abdominal pain", "stomach pain", "belly pain", "stomach ache", "abdominal ache"],["no abdominal pain", "no stomach pain"]) is not None else previous.abdominal_pain,
+        "pain_related_to_bowel_movement": extract_bool(text,["pain improves after stool", "pain improves after bowel movement", "pain relieved after stool", "pain relieved after bowel movement", "pain related to bowel movement", "pain when i need to poop", "pain changes after bowel movement", "pain associated with stool"],["pain not related to stool"]) if extract_bool(text,["pain improves after stool", "pain improves after bowel movement", "pain relieved after stool", "pain relieved after bowel movement", "pain related to bowel movement", "pain when i need to poop", "pain changes after bowel movement", "pain associated with stool"],["pain not related to stool"]) is not None else previous.pain_related_to_bowel_movement,
+        "blood_present": extract_bool(text,["blood in stool", "blood after stool", "blood on toilet paper", "fresh blood", "rectal bleeding", "bleeding from anus"],["no blood", "no bleeding", "without blood"]) if extract_bool(text,["blood in stool", "blood after stool", "blood on toilet paper", "fresh blood", "rectal bleeding", "bleeding from anus"],["no blood", "no bleeding", "without blood"]) is not None else previous.blood_present,
+        "anal_pain": extract_bool(text,["anal pain", "pain around anus", "pain near anus", "pain during stool", "sharp pain during stool"],["no anal pain"]) if extract_bool(text,["anal pain", "pain around anus", "pain near anus", "pain during stool", "sharp pain during stool"],["no anal pain"]) is not None else previous.anal_pain,
+        "sharp_pain_during_stool": extract_bool(text,["sharp pain during stool", "sharp tearing pain during stool", "sharp pain while passing stool", "cutting pain during stool", "tearing pain during stool"],["no sharp pain"]) if extract_bool(text,["sharp pain during stool", "sharp tearing pain during stool", "sharp pain while passing stool", "cutting pain during stool", "tearing pain during stool"],["no sharp pain"]) is not None else previous.sharp_pain_during_stool,
+        "lump_or_prolapse": extract_bool(text,["lump near anus", "lump at anus", "lump comes out", "prolapse", "something comes out of anus"],["no lump", "no prolapse"]) if extract_bool(text,["lump near anus", "lump at anus", "lump comes out", "prolapse", "something comes out of anus"],["no lump", "no prolapse"]) is not None else previous.lump_or_prolapse,
+        "bloating": extract_bool(text,["bloating", "bloated", "bloat"],["no bloating", "not bloated"]) if extract_bool(text,["bloating", "bloated", "bloat"],["no bloating", "not bloated"]) is not None else previous.bloating,
+        "diarrhea": extract_bool(text,["diarrhea", "diarrhoea", "loose motion", "loose stool", "watery stool"],["no diarrhea", "no diarrhoea", "no loose motion"]) if extract_bool(text,["diarrhea", "diarrhoea", "loose motion", "loose stool", "watery stool"],["no diarrhea", "no diarrhoea", "no loose motion"]) is not None else previous.diarrhea,
+        "mucus": extract_bool(text,["mucus in stool", "mucus in my stool"],["no mucus"]) if extract_bool(text,["mucus in stool", "mucus in my stool"],["no mucus"]) is not None else previous.mucus,
+        "fever": extract_bool(text,["fever", "high temperature"],["no fever"]) if extract_bool(text,["fever", "high temperature"],["no fever"]) is not None else previous.fever,
+        "vomiting": extract_bool(text,["vomiting", "vomit", "throwing up"],["no vomiting", "not vomiting"]) if extract_bool(text,["vomiting", "vomit", "throwing up"],["no vomiting", "not vomiting"]) is not None else previous.vomiting,
+        "abdominal_distension": extract_bool(text,["severe abdominal swelling", "severe bloating", "abdomen is very swollen", "stomach is severely swollen"],["no abdominal swelling"]) if extract_bool(text,["severe abdominal swelling", "severe bloating", "abdomen is very swollen", "stomach is severely swollen"],["no abdominal swelling"]) is not None else previous.abdominal_distension,
+        "night_time_symptoms": extract_bool(text,["wakes me at night", "waking at night", "symptoms wake me", "at night while sleeping"],["not at night"]) if extract_bool(text,["wakes me at night", "waking at night", "symptoms wake me", "at night while sleeping"],["not at night"]) is not None else previous.night_time_symptoms,
+        "weight_loss": extract_bool(text,["unexplained weight loss", "losing weight without trying", "weight loss without trying"],["no weight loss", "not losing weight"]) if extract_bool(text,["unexplained weight loss", "losing weight without trying", "weight loss without trying"],["no weight loss", "not losing weight"]) is not None else previous.weight_loss,
+        "dehydration": extract_bool(text,["dehydrated", "dehydration", "very thirsty", "dry mouth and not urinating"],["not dehydrated"]) if extract_bool(text,["dehydrated", "dehydration", "very thirsty", "dry mouth and not urinating"],["not dehydrated"]) is not None else previous.dehydration,
+        "unable_to_pass_stool_and_gas": extract_bool(text,["cannot pass stool or gas", "can't pass stool or gas", "unable to pass stool and gas", "can't pass gas or stool"],["can pass gas", "can pass stool"]) if extract_bool(text,["cannot pass stool or gas", "can't pass stool or gas", "unable to pass stool and gas", "can't pass gas or stool"],["can pass gas", "can pass stool"]) is not None else previous.unable_to_pass_stool_and_gas,
+        "family_history_gi": extract_bool(text,["family history of colon cancer", "family history of colorectal cancer", "family history of ibd", "family history of crohn", "family history of ulcerative colitis", "family history of gi cancer"],["no family history"]) if extract_bool(text,["family history of colon cancer", "family history of colorectal cancer", "family history of ibd", "family history of crohn", "family history of ulcerative colitis", "family history of gi cancer"],["no family history"]) is not None else previous.family_history_gi,
+        "recent_infection": extract_bool(text,["recent stomach infection", "recent gut infection", "recent food poisoning", "recent gastroenteritis", "after an infection"],["no recent infection"]) if extract_bool(text,["recent stomach infection", "recent gut infection", "recent food poisoning", "recent gastroenteritis", "after an infection"],["no recent infection"]) is not None else previous.recent_infection,
+        "water_intake": (extract_lifestyle(text)[0] or previous.water_intake),
+        "fibre_intake": (extract_lifestyle(text)[1] or previous.fibre_intake),
+        "medications": extract_medications(text) or previous.medications,
+        "blood_colour": previous.blood_colour,
+        "blood_location": previous.blood_location,
+        "blood_mixed_with_stool": previous.blood_mixed_with_stool,
+        "pain_location": previous.pain_location,
+        "red_flags": list(dict.fromkeys((previous.red_flags or []) + (red_flags or []))),
+        "asked_fields": list(previous.asked_fields or []),
+        "asked_disambiguation": list(previous.asked_disambiguation or []),
+    }
+    n=normalize(text)
+    if any(x in n for x in ["black stool", "black tarry stool", "tarry stool"]): updates["blood_colour"]="black"
+    elif any(x in n for x in ["bright red", "fresh blood", "red blood"]): updates["blood_colour"]="bright_red"
+    if any(x in n for x in ["on toilet paper", "on tissue"]): updates["blood_location"]="tissue"
+    elif "dripping" in n: updates["blood_location"]="dripping"
+    elif "mixed into stool" in n or "mixed with stool" in n: updates["blood_location"]="mixed"
+    if "bristol" in n:
+        m=re.search(r"bristol\s*(?:stool\s*)?(?:type|scale)?\s*([1-7])",n)
+        if m: updates["stool_form"]=int(m.group(1))
+    return SymptomState(**updates)
 
-    new_state = SymptomState(
-        primary_symptom=primary or previous.primary_symptom,
-        secondary_symptoms=list(dict.fromkeys((previous.secondary_symptoms or []) + secondary)),
-        frequency=frequency or previous.frequency,
-        food_related=food_related if food_related is not None else previous.food_related,
-        food_trigger=food_trigger or previous.food_trigger,
-        severity=previous.severity,
-        duration=previous.duration,
-        red_flags=list(dict.fromkeys((previous.red_flags or []) + (red_flags or []))),
-        asked_fields=list(previous.asked_fields or []),
-        asked_disambiguation=list(previous.asked_disambiguation or []),
-    )
-    return new_state
 
-
-def validate_llm_extraction(raw: dict) -> dict | None:
-    """
-    Validate a dict that an LLM claims represents extracted symptom data.
-    Returns a cleaned dict using only known-good values, or None if the
-    payload is unusable (caller should fall back to rule-based extraction).
-    """
-    if not isinstance(raw, dict):
-        return None
-
-    known_symptoms = set(SYMPTOM_SYNONYMS.keys())
-    known_triggers = set(FOOD_TRIGGER_SYNONYMS.keys())
-    known_frequencies = {f for f, _ in FREQUENCY_PATTERNS}
-
-    cleaned = {}
-    symptom = raw.get("primary_symptom")
-    if isinstance(symptom, str) and symptom in known_symptoms:
-        cleaned["primary_symptom"] = symptom
-    else:
-        return None  # unusable without at least a valid primary symptom
-
-    secondary = raw.get("secondary_symptoms", [])
-    if isinstance(secondary, list):
-        cleaned["secondary_symptoms"] = [s for s in secondary if s in known_symptoms]
-
-    trigger = raw.get("food_trigger")
-    if isinstance(trigger, str) and trigger in known_triggers:
-        cleaned["food_trigger"] = trigger
-
-    freq = raw.get("frequency")
-    if isinstance(freq, str) and freq in known_frequencies:
-        cleaned["frequency"] = freq
-
-    food_related = raw.get("food_related")
-    if isinstance(food_related, bool):
-        cleaned["food_related"] = food_related
-
-    return cleaned
+def validate_llm_extraction(raw):
+    return None

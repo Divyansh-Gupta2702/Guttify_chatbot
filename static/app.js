@@ -57,7 +57,7 @@ async function initSession() {
   const data = await res.json();
   sessionId = data.session_id;
   addMessage(
-    "Hi! I'm Guttify's product recommendation assistant. Tell me what you're experiencing.",
+    "Hi! I'm GutGPT, Guttify's gut-health assessment assistant. Tell me what you're experiencing.",
     "bot"
   );
 }
