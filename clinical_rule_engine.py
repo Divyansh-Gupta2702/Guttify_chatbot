@@ -61,16 +61,16 @@ def evaluate(s):
                 "Possible anal fissure pattern", "moderate",
                 ["bright-red blood", "sharp/tearing pain during or after stool"],
                 ["hemorrhoids", "other causes of rectal bleeding"],
-                "medical_review", False,
-                "Your responses show a pattern that can be seen with an anal fissure. Persistent, recurrent, heavy, or worsening bleeding should be medically assessed."
+                "medical_review", True,
+                "Your responses show a pattern that can be seen with an anal fissure. A suitable Guttify topical product may provide supportive care, but persistent, recurrent, heavy, or worsening bleeding should be medically assessed."
             )
         if s.blood_colour == "bright_red" and s.sharp_pain_during_stool is False and s.lump_or_prolapse is True:
             return _result(
                 "Possible hemorrhoid pattern", "moderate",
                 ["bright-red blood", "lump/prolapse", "no sharp tearing pain"],
                 ["anal fissure", "other causes of rectal bleeding"],
-                "medical_review", False,
-                "Your responses show a pattern that can be seen with hemorrhoids. Persistent or recurrent rectal bleeding should be medically assessed rather than assumed to be hemorrhoids."
+                "medical_review", True,
+                "Your responses show a pattern that can be seen with hemorrhoids. A suitable Guttify hemorrhoid-support product may be relevant, but persistent or recurrent rectal bleeding should be medically assessed rather than assumed to be hemorrhoids."
             )
         return _result(
             "Rectal bleeding of unclear cause", "low", ["rectal bleeding"],

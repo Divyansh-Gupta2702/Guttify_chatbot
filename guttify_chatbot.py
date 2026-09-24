@@ -30,8 +30,10 @@ Rules:
 3. If differentials are supplied, mention the main alternatives briefly.
 4. If confidence is low/insufficient, say that more information or medical
    assessment is needed instead of inventing certainty.
-5. If the action is urgent_medical_evaluation or medical_review, prioritize
-   medical evaluation and do NOT sell or recommend a product.
+5. If the action is urgent_medical_evaluation, prioritize medical evaluation
+   and do NOT recommend a product. If the action is medical_review and the
+   rule engine supplied an approved product, present that product only as
+   supportive wellness information after the medical-review guidance.
 6. If product information is supplied, the product is allowed only because the
    rule engine explicitly allowed it. Present it after the assessment.
 7. Never claim a product cures or treats a disease.

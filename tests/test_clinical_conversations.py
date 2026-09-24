@@ -55,7 +55,7 @@ def test_bright_red_sharp_pain_is_fissure_pattern():
         "on tissue", "sharp tearing pain during stool",
     ])
     assert result["screening"]["pattern"] == "Possible anal fissure pattern"
-    assert result["status"] == "DIAGNOSIS"
+    assert result["status"] in ("RECOMMENDATION_FOUND", "DIAGNOSIS")
 
 
 def test_bright_red_painless_lump_is_hemorrhoid_pattern():
@@ -64,7 +64,8 @@ def test_bright_red_painless_lump_is_hemorrhoid_pattern():
         "on tissue", "no sharp pain", "yes lump",
     ])
     assert result["screening"]["pattern"] == "Possible hemorrhoid pattern"
-    assert result["status"] == "DIAGNOSIS"
+    assert result["status"] == "RECOMMENDATION_FOUND"
+    assert any(p["product_name"] in {"Piloease Anal Care Spray", "Piles Pure"} for p in result["recommendations"])
 
 
 def test_black_stool_is_red_flag():

@@ -22,7 +22,8 @@ from intent_parser import (
 from symptom_questionnaire import next_question
 from clinical_rule_engine import evaluate as evaluate_screening, _duration_days
 from safety_checker import check_safety, detect_red_flags
-from recommendation_engine import evaluate as evaluate_product, find_named_product, has_domain_overlap, IRRELEVANT_MESSAGE
+from recommendation_engine import evaluate as evaluate_product, find_named_product, has_domain_overlap, IRRELEVANT_MESSAGE, products as ALL_PRODUCTS
+from product_concern_router import detect_product_concerns
 
 SESSION_ENDED_MESSAGE = "This conversation has already wrapped up. Please start a new chat if you'd like help with another question."
 MAX_QUESTIONS = 15
@@ -37,8 +38,19 @@ PRODUCT_ELIGIBILITY = {
     "Food-triggered gas/bloating pattern": {"Digest Boost", "Guttify Poopie"},
     "Constipation-associated bloating pattern": {"Digest Boost", "Guttify Poopie"},
     "Functional gas/bloating pattern": {"Digest Boost", "Guttify Poopie"},
-    "Possible food-triggered intolerance pattern": set(),
+    "Possible hemorrhoid pattern": {"Piles Pure", "Piloease Anal Care Spray"},
+    "Possible anal fissure pattern": {"Piloease Anal Care Spray"},
 }
+
+# Product-concern branches are not medical diagnoses. They route explicit
+# product-relevant concerns to the product database (skin, vitamins, weight
+# management, liver support) after the gut-symptom parser has had first pick.
+PRODUCT_CONCERN_QUESTIONS = {
+    frozenset({"Boost Vitamin B12", "Liver Lift"}): (
+        "Fatigue can have more than one relevant Guttify option. Are you mainly looking for B12/energy support (for example low energy, brain fog, or a plant-based diet), or liver/digestion support?"
+    ),
+}
+
 
 
 def _filter_approved_products(result, screening):
@@ -71,6 +83,8 @@ class SessionState:
     awaiting_close: bool = False
     ended: bool = False
     screening: dict | None = None
+    product_candidates: list = field(default_factory=list)
+    product_concern_question_asked: bool = False
 
 
 class ConversationManager:
@@ -314,6 +328,48 @@ class ConversationManager:
 
         return False
 
+    @staticmethod
+    def _product_screening(product, matched_phrase):
+        return {
+            "pattern": f"Product concern: {product['product_name']}",
+            "likely_condition": f"Product concern: {matched_phrase}",
+            "confidence": "high",
+            "evidence": [f"user concern matched: {matched_phrase}"],
+            "differentials": [],
+            "action": "product_support",
+            "product_allowed": True,
+            "message": "This concern matches the product information in the Guttify product database.",
+        }
+
+    def _product_concern_result(self, session, text):
+        matches = detect_product_concerns(text)
+        if not matches and session.product_candidates:
+            return None
+        if matches:
+            names = [name for name, _ in matches]
+            # If a prior ambiguous concern exists, a new explicit concern
+            # narrows it instead of restarting the conversation.
+            if session.product_candidates:
+                names = [n for n in names if n in session.product_candidates] or names
+            unique = list(dict.fromkeys(names))
+            session.product_candidates = unique
+            if len(unique) == 1:
+                product_name = unique[0]
+                product = next((p for p in ALL_PRODUCTS if p.get("product_name") == product_name), None)
+                if product:
+                    matched = next((phrase for name, phrase in matches if name == product_name), product_name)
+                    screening = self._product_screening(product, matched)
+                    session.screening = screening
+                    session.awaiting_close = True
+                    return {"status": "RECOMMENDATION_FOUND", "message": "", "recommendations": [product], "product": product, "screening": screening, "safety": {"red_flag": False}}
+            key = frozenset(unique)
+            question = PRODUCT_CONCERN_QUESTIONS.get(key)
+            if question and not session.product_concern_question_asked:
+                session.product_concern_question_asked = True
+                session.last_question = "product_concern"
+                return {"status": "ASK", "message": question, "recommendations": [], "safety": {"red_flag": False}}
+        return None
+
     def handle_message(self, sid, user_message):
         session = self._get_session(sid)
         if session.ended:
@@ -352,6 +408,19 @@ class ConversationManager:
         else:
             session.symptom_state = merge_state(session.symptom_state, user_message, [])
 
+        # If this is not a gut-symptom branch, route explicit product concerns
+        # such as dull skin, vitamin-D deficiency, B12/energy support, weight
+        # management or liver support to the product database.
+        if session.last_question != "product_concern" and not session.symptom_state.primary_symptom:
+            product_result = self._product_concern_result(session, user_message)
+            if product_result:
+                return product_result
+        elif session.last_question == "product_concern":
+            session.last_question = None
+            product_result = self._product_concern_result(session, user_message)
+            if product_result:
+                return product_result
+
         if not session.symptom_state.primary_symptom and not has_domain_overlap(user_message) and session.last_question is None:
             return {"status": "IRRELEVANT", "message": IRRELEVANT_MESSAGE, "recommendations": []}
 
@@ -362,7 +431,8 @@ class ConversationManager:
             if not screening.get("product_allowed"):
                 return {"status": "DIAGNOSIS", "message": screening["message"], "recommendations": [], "safety": safety, "screening": screening}
 
-            result = evaluate_product(session.symptom_state, user_message)
+            allowed = PRODUCT_ELIGIBILITY.get(screening.get("pattern"))
+            result = evaluate_product(session.symptom_state, user_message, allowed_names=allowed)
             result = _filter_approved_products(result, screening)
             result["screening"] = screening
             result["safety"] = safety

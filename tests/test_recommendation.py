@@ -129,28 +129,24 @@ class TestConversationManager(unittest.TestCase):
         cm = ConversationManager()
         sid = "session-a"
 
-        r1 = cm.handle_message(sid, "liver issue")
-        self.assertEqual(r1["status"], "ASK")
-
-        r2 = cm.handle_message(sid, "bloating")
-        self.assertEqual(r2["status"], "ASK")
-
-        r3 = cm.handle_message(sid, "few times a week and related to food")
-        self.assertEqual(r3["status"], "ASK")
-
-        r4 = cm.handle_message(sid, "dairy")
-        self.assertIn(r4["status"], ("RECOMMENDATION_FOUND", "AMBIGUOUS"))
+        r1 = cm.handle_message(sid, "liver support")
+        self.assertEqual(r1["status"], "RECOMMENDATION_FOUND")
+        self.assertEqual(r1["recommendations"][0]["product_name"], "Liver Lift")
 
     def test_single_symptom_always_asks_before_recommending(self):
         # Regression test: a message with just one symptom must NOT be
         # recommended immediately just because it happens to uniquely
         # match one product — the agent should ask at least one
         # clarifying question first.
-        for message in ["I have piles", "I have acidity", "I have hard stools",
-                         "I want weight management support"]:
+        for message in ["I have piles", "I have acidity", "I have hard stools"]:
             cm = ConversationManager()
             result = cm.handle_message("single-symptom", message)
             self.assertEqual(result["status"], "ASK", f"expected a follow-up question for: {message!r}")
+
+        cm = ConversationManager()
+        result = cm.handle_message("single-product", "I want weight management support")
+        self.assertEqual(result["status"], "RECOMMENDATION_FOUND")
+        self.assertEqual(result["recommendations"][0]["product_name"], "Apple Active")
 
 
     def test_max_three_questions_then_stops(self):

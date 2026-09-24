@@ -89,8 +89,22 @@ def has_domain_overlap(user_query):
 # ------------------------------------------------------------------
 NAME_TOKEN_STOPWORDS = {
     "guttify", "boost", "vitamin", "tablet", "tablets", "spray",
-    "effervescent", "skin", "care", "anal",
+    "effervescent", "skin", "care", "anal", "apple",
 }
+
+# Product-specific aliases. These supplement products.json's exact symptom
+# strings so a natural-language concern can reach the correct product.
+# They do not diagnose a disease; they only improve product retrieval.
+PRODUCT_PRIMARY_ALIASES = {
+    "Guttify Poopie": {"constipation", "hard stools", "irregular bowel movements", "bloating", "feeling backed up", "low fibre intake"},
+    "Piloease Anal Care Spray": {"piles", "haemorrhoids", "hemorrhoids", "anal fissures", "anal fissure", "anal discomfort", "itching", "irritation"},
+    "GloLux GlutaGlow Skin Effervescent Tablets": {"dull skin", "dry skin", "uneven skin tone", "skin elasticity", "early signs of aging", "skin health"},
+    "Boost Vitamin B12": {"fatigue", "low energy", "poor focus", "brain fog", "b12 deficiency", "plant-based diet", "bloating", "constipation"},
+    "Boost Vitamin D3+": {"low immunity", "weak bones", "low mood", "vitamin d deficiency", "low sun exposure"},
+    "Apple Active": {"weight management", "metabolism support", "bloating", "digestion concerns"},
+    "Liver Lift": {"fatigue", "sluggishness", "bloating", "digestion concerns", "liver support"},
+}
+
 
 
 def _build_distinctive_name_tokens(products):
@@ -169,8 +183,9 @@ def score_product(product, state: SymptomState, raw_query: str):
 
     symptom_set = _product_symptom_set(product)
     primary = normalize_text(state.primary_symptom) if state.primary_symptom else None
+    alias_set = {normalize_text(x) for x in PRODUCT_PRIMARY_ALIASES.get(product.get("product_name"), set())}
 
-    if not primary or primary not in symptom_set:
+    if not primary or (primary not in symptom_set and primary not in alias_set):
         return 0
 
     score = PRIMARY_MATCH_POINTS
@@ -341,7 +356,7 @@ NO_MATCH_MESSAGE = (
     "experiencing?"
 )
 
-def evaluate(state: SymptomState, raw_query: str):
+def evaluate(state: SymptomState, raw_query: str, allowed_names=None):
     """
     Deterministic evaluation over the current structured symptom state.
     Returns one of: RECOMMENDATION_FOUND, AMBIGUOUS, NO_MATCH.
@@ -352,6 +367,9 @@ def evaluate(state: SymptomState, raw_query: str):
         return {"status": "NO_MATCH", "recommendations": [], "message": NO_MATCH_MESSAGE}
 
     candidates = score_all_products(state, raw_query)
+    if allowed_names is not None:
+        allowed_names = set(allowed_names)
+        candidates = [c for c in candidates if c["product"].get("product_name") in allowed_names]
     if not candidates:
         return {"status": "NO_MATCH", "recommendations": [], "message": NO_MATCH_MESSAGE}
 
