@@ -33,6 +33,24 @@ def detect_red_flags(text):
     return list(dict.fromkeys(found))
 
 
+def derive_red_flags(state):
+    """Promote structured questionnaire answers into the same safety gate
+    used for free-text messages. Only fields whose questionnaire wording
+    represents a meaningful warning sign are promoted."""
+    flags = list(state.red_flags or [])
+    if state.vomiting is True:
+        flags.append("persistent vomiting")
+    if state.abdominal_distension is True:
+        flags.append("severe abdominal distension")
+    if state.weight_loss is True:
+        flags.append("unexplained significant weight loss")
+    if state.dehydration is True:
+        flags.append("dehydration")
+    if state.unable_to_pass_stool_and_gas is True:
+        flags.append("unable to pass stool and gas")
+    return list(dict.fromkeys(flags))
+
+
 def check_safety(user_query):
     flags = detect_red_flags(user_query)
     if flags:

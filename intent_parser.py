@@ -63,6 +63,36 @@ FREQUENCY_PATTERNS = {
 def normalize(text):
     return re.sub(r"\s+", " ", re.sub(r"[^a-z0-9\s'/.-]", " ", (text or "").lower())).strip()
 
+
+NEGATION_WORD_RE = re.compile(
+    r"\b(?:no|not|never|without|don't|dont|doesn't|doesnt|isn't|isnt|aren't|arent)\b"
+)
+
+
+def is_negated(text, phrase):
+    """Return True when a symptom/trigger occurrence is locally negated."""
+    n = normalize(text)
+    phrase_n = normalize(phrase)
+    if not phrase_n:
+        return False
+    match = re.search(r"(?P<prefix>.*?)(?P<phrase>" + re.escape(phrase_n) + r")\b", n)
+    if not match:
+        return False
+    prefix = match.group("prefix")[-100:]
+    negations = list(NEGATION_WORD_RE.finditer(prefix))
+    if not negations:
+        return False
+    after = prefix[negations[-1].end():].strip()
+    if not after:
+        return True
+    words = after.split()
+    if len(words) > 3:
+        return False
+    if any(w in {"but", "however", "though", "although", "except"} for w in words):
+        return False
+    return True
+
+
 _SORTED = sorted(((c, p) for c, ps in SYMPTOM_SYNONYMS.items() for p in ps), key=lambda x: -len(x[1]))
 _PATTERNS = [(c, re.compile(r"(?<!\w)" + re.escape(p) + r"(?!\w)")) for c, p in _SORTED]
 _FOOD_PATTERNS = {k: [re.compile(r"(?<!\w)" + re.escape(p) + r"(?!\w)") for p in ps] for k, ps in FOOD_TRIGGER_SYNONYMS.items()}
@@ -118,8 +148,13 @@ def extract_symptoms(text):
     n = normalize(text)
     found = []
     for canonical, pattern in _PATTERNS:
-        if canonical not in found and pattern.search(n):
-            found.append(canonical)
+        if canonical in found:
+            continue
+        match = pattern.search(n)
+        if match:
+            phrase = match.group(0)
+            if not is_negated(n, phrase):
+                found.append(canonical)
     if not found:
         return None, []
     return found[0], found[1:]
@@ -128,8 +163,10 @@ def extract_symptoms(text):
 def extract_food_trigger(text):
     n = normalize(text)
     for trigger, patterns in _FOOD_PATTERNS.items():
-        if any(p.search(n) for p in patterns):
-            return trigger
+        for p in patterns:
+            match = p.search(n)
+            if match and not is_negated(n, match.group(0)):
+                return trigger
     return None
 
 

@@ -10,18 +10,19 @@ similarity is never enough on its own.
 """
 import json
 import re
+from pathlib import Path
 
 from gibberish_checker import is_gibberish, random_gibberish_response
 from greeting_checker import is_greeting, random_greeting_response
 from intent_parser import SYMPTOM_SYNONYMS, SymptomState, extract_named_aspect, merge_state
-from safety_checker import check_safety
+from safety_checker import check_safety, derive_red_flags
 
 # Canonical symptom vocabulary (see intent_parser.py) — the only symptom
 # strings that can ever actually be extracted from a user's message, so
 # they're the only ones worth asking a disambiguating question about.
 CANONICAL_SYMPTOMS = set(SYMPTOM_SYNONYMS.keys())
 
-PRODUCTS_FILE = "products.json"
+PRODUCTS_FILE = Path(__file__).resolve().parent / "products.json"
 TOP_K = 2
 MIN_SCORE = 100  # a product must have at least one primary-symptom hit
 AMBIGUITY_MARGIN = 15  # if top two scores are this close, don't force a pick
@@ -91,6 +92,8 @@ def has_domain_overlap(user_query):
 NAME_TOKEN_STOPWORDS = {
     "guttify", "boost", "vitamin", "tablet", "tablets", "spray",
     "effervescent", "skin", "care", "anal", "apple",
+    # Generic English words are not safe product-name aliases.
+    "digest", "ease", "lift", "pure", "active",
 }
 
 # Product-specific aliases. These supplement products.json's exact symptom
@@ -462,6 +465,16 @@ def recommend_product(user_query, state: SymptomState = None):
         }
 
     state = merge_state(state or SymptomState(), user_query, safety_result.get("reasons") if safety_result.get("red_flag") else [])
+    state.red_flags = derive_red_flags(state)
+    if state.red_flags:
+        safety_result = {
+            "safe_to_recommend": False,
+            "requires_doctor": True,
+            "red_flag": True,
+            "reasons": state.red_flags,
+            "message": "This needs medical evaluation rather than only self-treatment. I won't recommend a Guttify product for these symptoms.",
+        }
+        return {"status": "SAFETY_REVIEW", "recommendations": [], "safety": safety_result, "message": safety_result["message"]}
 
     if not state.primary_symptom and not has_domain_overlap(user_query):
         return {

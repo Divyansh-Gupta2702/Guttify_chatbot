@@ -32,9 +32,9 @@ def test_constipation_full_flow_reaches_assessment_and_product():
         "no blood", "no sharp pain", "no weight loss",
         "no vomiting no fever no swelling", "2 litres", "low", "no medicines",
     ])
-    assert result["status"] == "RECOMMENDATION_FOUND"
+    assert result["status"] in ("RECOMMENDATION_FOUND", "AMBIGUOUS")
     assert result["screening"]["pattern"] == "Functional constipation pattern"
-    assert result["recommendations"][0]["product_name"] == "Digest Boost"
+    assert {p["product_name"] for p in result["recommendations"]} >= {"Digest Boost", "Guttify Poopie"}
 
 
 def test_ibs_c_pattern_is_distinguished_from_plain_constipation():
@@ -46,7 +46,8 @@ def test_ibs_c_pattern_is_distinguished_from_plain_constipation():
         "no vomiting, no fever, no severe swelling", "2 litres", "average", "no medicines",
     ])
     assert result["screening"]["pattern"] == "IBS-C pattern"
-    assert result["status"] == "RECOMMENDATION_FOUND"
+    assert result["status"] in ("RECOMMENDATION_FOUND", "AMBIGUOUS")
+    assert {p["product_name"] for p in result["recommendations"]} >= {"Digest Boost", "Guttify Poopie"}
 
 
 def test_bright_red_sharp_pain_is_fissure_pattern():
@@ -64,8 +65,8 @@ def test_bright_red_painless_lump_is_hemorrhoid_pattern():
         "on tissue", "no sharp pain", "yes lump",
     ])
     assert result["screening"]["pattern"] == "Possible hemorrhoid pattern"
-    assert result["status"] == "RECOMMENDATION_FOUND"
-    assert any(p["product_name"] in {"Piloease Anal Care Spray", "Piles Pure"} for p in result["recommendations"])
+    assert result["status"] in ("RECOMMENDATION_FOUND", "AMBIGUOUS")
+    assert {p["product_name"] for p in result["recommendations"]} >= {"Piloease Anal Care Spray", "Piles Pure"}
 
 
 def test_black_stool_is_red_flag():
@@ -83,3 +84,30 @@ def test_reflux_pattern_can_recommend_acid_ease():
     assert result["screening"]["pattern"] == "Reflux/GERD-like symptom pattern"
     assert result["status"] == "RECOMMENDATION_FOUND"
     assert result["recommendations"][0]["product_name"] == "Acid Ease"
+
+
+def test_negated_symptoms_do_not_start_wrong_branch():
+    from intent_parser import extract_symptoms, extract_food_trigger
+    assert extract_symptoms("I don't have constipation, I have bloating")[0] == "bloating"
+    assert extract_symptoms("I don't have piles")[0] is None
+    assert extract_symptoms("I am not constipated")[0] is None
+    assert extract_food_trigger("I don't have bloating after dairy") is None
+    assert extract_food_trigger("not triggered by wheat") is None
+
+
+def test_contrast_after_negation_keeps_positive_symptom():
+    from intent_parser import extract_symptoms
+    assert extract_symptoms("No constipation but hard stools")[0] == "hard stools"
+
+
+def test_structured_vomiting_stops_product_recommendation():
+    bot = ConversationManager()
+    sid = "structured-red-flag"
+    for message in [
+        "I am constipated", "5 months", "23", "2 times a week",
+        "hard and I strain", "no incomplete", "no abdominal pain",
+        "no blood", "no sharp pain", "no weight loss", "yes vomiting",
+    ]:
+        result = bot.handle_message(sid, message)
+    assert result["status"] == "SAFETY_REVIEW"
+    assert result["recommendations"] == []

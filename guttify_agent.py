@@ -21,7 +21,7 @@ from intent_parser import (
 )
 from symptom_questionnaire import next_question
 from clinical_rule_engine import evaluate as evaluate_screening, _duration_days
-from safety_checker import check_safety, detect_red_flags
+from safety_checker import check_safety, detect_red_flags, derive_red_flags
 from recommendation_engine import evaluate as evaluate_product, find_named_product, has_domain_overlap, IRRELEVANT_MESSAGE, products as ALL_PRODUCTS
 from product_concern_router import detect_product_concerns
 
@@ -69,7 +69,9 @@ def _filter_approved_products(result, screening):
     filtered = [p for p in result.get("recommendations", []) if p.get("product_name") in allowed]
     if filtered:
         result["recommendations"] = filtered
-        result["status"] = "RECOMMENDATION_FOUND"
+        # Do not destroy the recommendation engine's ambiguity decision.
+        if result.get("status") != "AMBIGUOUS":
+            result["status"] = "RECOMMENDATION_FOUND"
     else:
         result["recommendations"] = []
         result["status"] = "DIAGNOSIS"
@@ -252,7 +254,9 @@ class ConversationManager:
                     merged_data[key] = value
             elif value is not None and key not in {"duration", "age", "food_related", "food_trigger"}:
                 merged_data[key] = value
-        session.symptom_state = SymptomState(**merged_data)
+        merged_state = SymptomState(**merged_data)
+        merged_state.red_flags = derive_red_flags(merged_state)
+        session.symptom_state = merged_state
 
     def _can_assess(self, session, screening):
         s = session.symptom_state
@@ -408,16 +412,41 @@ class ConversationManager:
             self._apply_answer(session, user_message)
         else:
             session.symptom_state = merge_state(session.symptom_state, user_message, [])
+            session.symptom_state.red_flags = derive_red_flags(session.symptom_state)
 
-        # If this is not a gut-symptom branch, route explicit product concerns
-        # such as dull skin, vitamin-D deficiency, B12/energy support, weight
-        # management or liver support to the product database.
-        if session.last_question != "product_concern" and not session.symptom_state.primary_symptom:
+        # Structured questionnaire answers can reveal a warning sign after the
+        # raw-message safety check has already run. Never continue to product
+        # matching once those facts are present.
+        if session.symptom_state.red_flags:
+            safety = {
+                "safe_to_recommend": False,
+                "requires_doctor": True,
+                "red_flag": True,
+                "reasons": session.symptom_state.red_flags,
+                "message": "This needs medical evaluation rather than only self-treatment. I won't recommend a Guttify product for these symptoms.",
+            }
+            screening = {
+                "pattern": "Red-flag presentation",
+                "likely_condition": "Red-flag presentation",
+                "confidence": "high",
+                "evidence": session.symptom_state.red_flags,
+                "differentials": [],
+                "action": "urgent_medical_evaluation",
+                "product_allowed": False,
+                "message": safety["message"],
+            }
+            return {"status": "SAFETY_REVIEW", "message": safety["message"], "recommendations": [], "safety": safety, "screening": screening}
+
+        # Explicit product concerns should not be lost just because the same
+        # message also contains a gut symptom (for example, "bloating and dull
+        # skin"). Keep this routing small: only the existing product-concern
+        # aliases can activate it.
+        if session.last_question == "product_concern":
+            session.last_question = None
             product_result = self._product_concern_result(session, user_message)
             if product_result:
                 return product_result
-        elif session.last_question == "product_concern":
-            session.last_question = None
+        elif detect_product_concerns(user_message):
             product_result = self._product_concern_result(session, user_message)
             if product_result:
                 return product_result
@@ -437,11 +466,11 @@ class ConversationManager:
             result = _filter_approved_products(result, screening)
             result["screening"] = screening
             result["safety"] = safety
-            if result.get("status") == "RECOMMENDATION_FOUND":
+            if result.get("status") in ("RECOMMENDATION_FOUND", "AMBIGUOUS"):
                 session.awaiting_close = True
                 return result
             # Clinical assessment must never disappear merely because product
-            # data is incomplete or tied.
+            # data is incomplete.
             return {"status": "DIAGNOSIS", "message": screening["message"], "recommendations": [], "safety": safety, "screening": screening}
 
         if session.questions_asked < MAX_QUESTIONS:
@@ -461,6 +490,15 @@ class ConversationManager:
             screening["pattern"] = "Preliminary gut-symptom assessment"
             screening["likely_condition"] = "Preliminary gut-symptom assessment"
             screening["message"] = "The available answers point to a gut-symptom pattern, but they do not support a more specific preliminary assessment yet."
+        if screening.get("product_allowed") and screening.get("pattern") in PRODUCT_ELIGIBILITY:
+            allowed = PRODUCT_ELIGIBILITY.get(screening.get("pattern"))
+            result = evaluate_product(session.symptom_state, user_message, allowed_names=allowed, match_context=screening.get("pattern"))
+            result = _filter_approved_products(result, screening)
+            if result.get("status") in ("RECOMMENDATION_FOUND", "AMBIGUOUS"):
+                session.awaiting_close = True
+                result["screening"] = screening
+                result["safety"] = safety
+                return result
         return {"status": "DIAGNOSIS", "message": screening["message"], "recommendations": [], "safety": safety, "screening": screening}
 
 

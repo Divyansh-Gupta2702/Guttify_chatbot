@@ -240,3 +240,45 @@ class TestMissingOrMalformedData(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def test_generic_product_words_do_not_trigger_named_product_lookup():
+    from recommendation_engine import find_named_product
+    for text in [
+        "I want to digest better", "I want to ease my stomach",
+        "I want pure gut support", "I want to stay active",
+        "I want to lift my energy",
+    ]:
+        assert find_named_product(text) is None
+
+
+def test_multi_intent_product_concern_is_not_lost_to_gut_symptom():
+    from guttify_agent import ConversationManager
+    cases = [
+        ("I have bloating and dull skin", "GloLux GlutaGlow Skin Effervescent Tablets"),
+        ("I have bloating and vitamin D deficiency", "Boost Vitamin D3+"),
+        ("I have constipation and low fibre intake", "Guttify Poopie"),
+    ]
+    for message, product_name in cases:
+        cm = ConversationManager()
+        result = cm.handle_message("multi-intent", message)
+        assert result["status"] == "RECOMMENDATION_FOUND"
+        assert result["recommendations"][0]["product_name"] == product_name
+
+
+def test_ambiguous_products_are_not_collapsed_to_first_product():
+    from guttify_agent import ConversationManager
+    cm = ConversationManager()
+    sid = "ambiguity"
+    answers = [
+        "I am constipated", "5 months", "23", "2 times a week",
+        "hard and I strain", "yes incomplete",
+        "no abdominal pain", "no blood", "no sharp pain", "no weight loss",
+        "no vomiting, no fever, no severe swelling", "2 litres", "average", "no medicines",
+    ]
+    result = None
+    for message in answers:
+        result = cm.handle_message(sid, message)
+    assert result["status"] in ("AMBIGUOUS", "RECOMMENDATION_FOUND")
+    names = {p["product_name"] for p in result.get("recommendations", [])}
+    assert "Digest Boost" in names or "Guttify Poopie" in names
