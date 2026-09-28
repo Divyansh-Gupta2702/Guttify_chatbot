@@ -27,11 +27,13 @@ SYMPTOM_SYNONYMS = {
     "bloating": ["bloating", "bloated", "bloat", "stomach becomes bigger", "stomach gets swollen", "stomach got swollen", "gets swollen", "got swollen", "stomach swollen", "swollen stomach", "distended stomach", "stomach distension", "belly bloat", "gas and bloating"],
     "gas": ["gas", "gassy", "excess gas", "too much gas", "flatulence", "trapped wind", "burping a lot", "belching a lot"],
     "acidity": ["acidity", "acid reflux", "reflux", "gerd", "sour taste", "sour burps", "acid coming up", "gastric problem", "gastric issue"],
-    "heartburn": ["heartburn", "burning in chest", "burning in my chest", "burning chest", "burning after meals", "burning after food", "burning in throat"],
+    "heartburn": ["heartburn", "burning in chest", "burning in my chest", "burning chest", "burning after meals", "burning after food", "burning sensation after meals", "burning sensation after food", "burning in throat"],
     "diarrhea": ["diarrhea", "diarrhoea", "loose motion", "loose motions", "loose stool", "loose stools", "watery stool", "watery stools", "runny stool"],
     "stomach pain": ["stomach pain", "abdominal pain", "belly pain", "abdomen pain", "stomach ache", "stomachache", "abdominal ache", "cramps", "cramping"],
     "piles": ["piles", "hemorrhoid", "hemorrhoids", "haemorrhoid", "haemorrhoids"],
     "anal fissures": ["anal fissure", "anal fissures", "fissure", "tear near anus", "cut near anus"],
+    "anal burning": ["anal burning", "burning around anus", "burning near anus", "burning sensation around anus", "burning sensation near anus"],
+    "anal swelling": ["anal swelling", "swelling around anus", "swelling near anus", "swollen anus"],
     "bleeding": ["blood in stool", "blood in my stool", "blood in the stool", "blood while passing stool", "blood after stool", "blood after bowel movement", "blood on toilet paper", "fresh blood", "rectal bleeding", "bleeding from anus", "bleeding while pooping", "blood when i poop", "blood when pooping"],
     "indigestion": ["indigestion", "indigestion after eating", "upset stomach after eating", "dyspepsia", "fullness after eating", "early fullness"],
     "food intolerance": ["food intolerance", "food sensitivity", "intolerance to milk", "intolerance to dairy", "can't tolerate milk", "cannot tolerate milk"],
@@ -127,6 +129,9 @@ class SymptomState:
     mucus: bool = None
     fever: bool = None
     vomiting: bool = None
+    persistent_vomiting: bool = None
+    vomiting_blood: bool = None
+    difficulty_swallowing: bool = None
     abdominal_distension: bool = None
     night_time_symptoms: bool = None
     weight_loss: bool = None

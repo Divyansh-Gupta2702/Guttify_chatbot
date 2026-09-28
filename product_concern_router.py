@@ -27,6 +27,8 @@ PRODUCT_CONCERN_ALIASES = {
         "metabolism support", "slow metabolism", "metabolism", "weight loss support",
     ],
     "Guttify Poopie": ["low fibre intake", "low fiber intake", "low fibre", "low fiber"],
+    "Piles Pure": ["anal swelling", "swelling around anus", "swelling near anus", "swollen anus", "anal discomfort", "piles discomfort"],
+    "Piloease Anal Care Spray": ["anal burning", "burning around anus", "burning near anus", "anal irritation", "anal itching", "anal discomfort"],
     "Liver Lift": [
         "liver support", "liver health", "sluggishness", "sluggish", "digestion concerns",
         "digestive concerns", "fatigue",

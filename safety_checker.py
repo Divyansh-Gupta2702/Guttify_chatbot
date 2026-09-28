@@ -1,4 +1,5 @@
 """Universal red-flag and product-safety gate for GutGPT."""
+import re
 
 RED_FLAG_PATTERNS = [
     ("vomiting blood", ["vomiting blood", "throwing up blood", "hematemesis"]),
@@ -17,11 +18,17 @@ RED_FLAG_PATTERNS = [
 
 
 def _negative(text, phrase):
-    n = text.lower()
-    for prefix in ["no ", "not ", "without ", "don't have ", "dont have "]:
-        if prefix + phrase in n:
-            return True
-    return False
+    """Detect common natural-language negation immediately before a phrase."""
+    n = (text or "").lower()
+    phrase = phrase.lower()
+    # Keep this local and conservative: we only suppress a flag when a
+    # negation clearly refers to the same phrase.
+    patterns = [
+        rf"\b(?:no|not|never|without)\s+(?:any\s+)?{re.escape(phrase)}\b",
+        rf"\b(?:do not|dont|don't|does not|doesnt|doesn't)\s+(?:have|has)\s+(?:any\s+)?{re.escape(phrase)}\b",
+        rf"\b(?:i am not|im not)\s+{re.escape(phrase)}\b",
+    ]
+    return any(re.search(p, n) for p in patterns)
 
 
 def detect_red_flags(text):
@@ -30,6 +37,19 @@ def detect_red_flags(text):
     for label, phrases in RED_FLAG_PATTERNS:
         if any(p in n and not _negative(n, p) for p in phrases):
             found.append(label)
+
+    # Some warnings are combinations rather than fixed phrases. Detect the
+    # concepts independently so wording/order does not matter.
+    bleeding = any(p in n and not _negative(n, p) for p in [
+        "blood in stool", "blood in my stool", "blood in the stool",
+        "blood while passing stool", "blood after stool", "blood after bowel movement",
+        "blood on toilet paper", "fresh blood", "rectal bleeding", "bleeding from anus",
+        "bleeding while pooping", "blood when i poop", "blood when pooping"
+    ])
+    dizziness = any(p in n for p in ["dizzy", "dizziness", "lightheaded", "light headed", "faint", "fainted", "fainting", "passed out"])
+    if bleeding and dizziness and not _negative(n, "bleeding"):
+        found.append("fainting/dizziness with bleeding")
+
     return list(dict.fromkeys(found))
 
 
@@ -38,8 +58,12 @@ def derive_red_flags(state):
     used for free-text messages. Only fields whose questionnaire wording
     represents a meaningful warning sign are promoted."""
     flags = list(state.red_flags or [])
-    if state.vomiting is True:
+    if state.vomiting is True or getattr(state, "persistent_vomiting", False) is True:
         flags.append("persistent vomiting")
+    if getattr(state, "vomiting_blood", False) is True:
+        flags.append("vomiting blood")
+    if getattr(state, "difficulty_swallowing", False) is True:
+        flags.append("difficulty swallowing")
     if state.abdominal_distension is True:
         flags.append("severe abdominal distension")
     if state.weight_loss is True:

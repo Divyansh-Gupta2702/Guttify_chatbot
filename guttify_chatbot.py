@@ -130,6 +130,8 @@ def format_conversation_history(history):
 def _mentions_unapproved_product(reply_text, approved_product):
     approved = approved_product.get("product_name") if approved_product else None
     low = reply_text.lower()
+    # When no product was approved, no product name is allowed in the LLM
+    # response. This keeps the database as the single source of product truth.
     return any(name.lower() in low for name in _ALL_PRODUCT_NAMES if name and name != approved)
 
 

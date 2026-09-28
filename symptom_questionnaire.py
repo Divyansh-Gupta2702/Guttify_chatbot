@@ -70,7 +70,7 @@ def next_question(state):
             q("reflux", "Do you get a sour taste or acid/food coming back up?", state.food_related is None),
             q("timing", "Is it worse after meals, when lying down, or at night?", state.night_time_symptoms is None),
             q("triggers", "Do tea/coffee, spicy, oily, or particular foods trigger it?", state.food_trigger is None),
-            q("swallowing", "Any difficulty or pain swallowing, persistent vomiting, or vomiting blood?", state.vomiting is None),
+            q("swallowing", "Any difficulty or pain swallowing, persistent vomiting, or vomiting blood?", state.difficulty_swallowing is None or state.persistent_vomiting is None or state.vomiting_blood is None),
             q("weight_loss", "Any unexplained weight loss?", state.weight_loss is None),
         ]
     elif branch in ("bloating", "gas"):
@@ -93,7 +93,7 @@ def next_question(state):
             q("upper_symptoms", "Is it mainly upper-abdominal fullness, early fullness, burning, nausea, or belching?", state.abdominal_pain is None),
             q("food_relation", "Is it triggered or worsened by meals?", state.food_related is None),
             q("reflux", "Any heartburn or acid/food coming back up?", state.secondary_symptoms is None or "heartburn" not in state.secondary_symptoms),
-            q("weight_swallow", "Any unexplained weight loss, difficulty swallowing, persistent vomiting, or vomiting blood?", state.weight_loss is None or state.vomiting is None),
+            q("weight_swallow", "Any unexplained weight loss, difficulty swallowing, persistent vomiting, or vomiting blood?", state.weight_loss is None or state.difficulty_swallowing is None or state.persistent_vomiting is None or state.vomiting_blood is None),
         ]
     elif branch == "food intolerance":
         qs = [

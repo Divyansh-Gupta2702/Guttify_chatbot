@@ -9,6 +9,7 @@ The LLM is never responsible for deciding whether an answer is relevant or
 which condition/pattern was selected.
 """
 from dataclasses import dataclass, field
+import re
 
 from gibberish_checker import is_gibberish, random_gibberish_response
 from greeting_checker import is_greeting, random_greeting_response
@@ -17,7 +18,7 @@ from intent_parser import (
     SymptomState, merge_state, extract_duration, extract_age,
     extract_bowel_frequency, extract_bowel_frequency_per_day,
     extract_severity, extract_lifestyle, extract_medications,
-    extract_bool, extract_stool_form, normalize,
+    extract_bool, extract_stool_form, normalize, extract_symptoms,
 )
 from symptom_questionnaire import next_question
 from clinical_rule_engine import evaluate as evaluate_screening, _duration_days
@@ -36,9 +37,9 @@ PRODUCT_ELIGIBILITY = {
     "Reflux/GERD-like symptom pattern": {"Acid Ease"},
     "Dyspepsia/indigestion pattern": {"Acid Ease"},
     "Upper-abdominal meal-related dyspepsia pattern": {"Acid Ease"},
-    "Food-triggered gas/bloating pattern": {"Digest Boost", "Guttify Poopie"},
+    "Food-triggered gas/bloating pattern": {"Digest Boost", "Acid Ease", "Guttify Poopie"},
     "Constipation-associated bloating pattern": {"Digest Boost", "Guttify Poopie"},
-    "Functional gas/bloating pattern": {"Digest Boost", "Guttify Poopie"},
+    "Functional gas/bloating pattern": {"Digest Boost", "Acid Ease", "Guttify Poopie"},
     "Possible hemorrhoid pattern": {"Piles Pure", "Piloease Anal Care Spray"},
     "Possible anal fissure pattern": {"Piloease Anal Care Spray"},
 }
@@ -217,8 +218,22 @@ class ConversationManager:
             self._set(data, "weight_loss", extract_bool(text, ["weight loss", "losing weight"], ["no weight loss", "not losing weight", "no"]))
             self._set(data, "fever", extract_bool(text, ["fever"], ["no fever", "no"]))
 
-        elif field == "swallowing":
-            self._set(data, "vomiting", extract_bool(text, ["persistent vomiting", "vomiting", "yes", "yeah", "yep"], ["no vomiting", "no"]))
+        elif field in ("swallowing", "weight_swallow"):
+            self._set(data, "difficulty_swallowing", extract_bool(
+                text,
+                ["difficulty swallowing", "trouble swallowing", "painful swallowing", "yes", "yeah", "yep"],
+                ["no difficulty swallowing", "no trouble swallowing", "no painful swallowing", "no"]
+            ))
+            self._set(data, "persistent_vomiting", extract_bool(
+                text,
+                ["persistent vomiting", "vomiting repeatedly", "can't stop vomiting", "cant stop vomiting", "yes", "yeah", "yep"],
+                ["no vomiting", "not vomiting", "no"]
+            ))
+            self._set(data, "vomiting_blood", extract_bool(
+                text,
+                ["vomiting blood", "throwing up blood", "hematemesis"],
+                ["no vomiting blood", "not vomiting blood", "no"]
+            ))
 
         elif field in ("reflux", "timing", "triggers", "food_trigger", "food_relation", "trigger"):
             # merge_state captures food triggers and food association.
@@ -228,7 +243,15 @@ class ConversationManager:
             self._set(data, "stool_form", extract_stool_form(text))
 
         elif field == "severity":
-            self._set(data, "severity", extract_severity(text))
+            value = extract_severity(text)
+            if value is None and re_fullmatch_number(text):
+                try:
+                    score = float(normalize(text))
+                    if 0 <= score <= 10:
+                        value = str(int(score)) if score.is_integer() else str(score)
+                except ValueError:
+                    pass
+            self._set(data, "severity", value)
 
         elif field == "pain_location":
             if "upper" in n: data["pain_location"] = "upper abdomen"
@@ -238,11 +261,29 @@ class ConversationManager:
             elif "navel" in n or "belly button" in n: data["pain_location"] = "around navel"
 
         elif field == "bowel_pattern":
-            if any(x in n for x in ["constipation", "constipated", "hard stool"]):
-                data["secondary_symptoms"] = list(dict.fromkeys((s.secondary_symptoms or []) + ["constipation"]))
-            if any(x in n for x in ["diarrhea", "diarrhoea", "loose stool", "loose motion"]):
-                data["diarrhea"] = True
-                data["secondary_symptoms"] = list(dict.fromkeys((data.get("secondary_symptoms") or []) + ["diarrhea"]))
+            primary, secondary = extract_symptoms(text)
+            symptoms = []
+            if primary:
+                symptoms.append(primary)
+            symptoms.extend(secondary or [])
+            for symptom in symptoms:
+                if symptom == "constipation":
+                    data["secondary_symptoms"] = list(dict.fromkeys((data.get("secondary_symptoms") or []) + ["constipation"]))
+                elif symptom == "hard stools":
+                    data["stool_form"] = data.get("stool_form") or 1
+                    data["secondary_symptoms"] = list(dict.fromkeys((data.get("secondary_symptoms") or []) + ["hard stools"]))
+                elif symptom == "diarrhea":
+                    data["diarrhea"] = True
+                    data["secondary_symptoms"] = list(dict.fromkeys((data.get("secondary_symptoms") or []) + ["diarrhea"]))
+            # Explicit negatives should clear any stale positive collected
+            # from an earlier answer.
+            if re.search(r"\b(?:no|not|never|without|don\'t|dont|doesn\'t|doesnt)\s+(?:have\s+)?(?:constipation|constipated|hard stool|hard stools)\b", n):
+                data["secondary_symptoms"] = [x for x in (data.get("secondary_symptoms") or []) if x not in {"constipation", "hard stools"}]
+                if data.get("stool_form") in (1, 2):
+                    data["stool_form"] = None
+            if re.search(r"\b(?:no|not|never|without|don\'t|dont|doesn\'t|doesnt)\s+(?:have\s+)?(?:diarrhea|diarrhoea|loose stool|loose stools|loose motion)\b", n):
+                data["diarrhea"] = False
+                data["secondary_symptoms"] = [x for x in (data.get("secondary_symptoms") or []) if x != "diarrhea"]
 
         # Generic merge captures facts the user volunteered in addition to the answer.
         # A bare yes/no is already interpreted against the exact pending question
@@ -255,12 +296,11 @@ class ConversationManager:
         else:
             merged = merge_state(SymptomState(**data), text, [])
             merged_data = merged.to_dict()
-        # Contextual values win over generic extraction when the two differ.
+        # Contextual answers always win over generic extraction. This is
+        # important for short numeric answers such as "5" to severity: the
+        # generic parser must not reinterpret them as an age.
         for key, value in data.items():
-            if key in {"primary_symptom", "asked_fields", "red_flags"}:
-                if value is not None:
-                    merged_data[key] = value
-            elif value is not None and key not in {"duration", "age", "food_related", "food_trigger"}:
+            if value is not None:
                 merged_data[key] = value
         merged_state = SymptomState(**merged_data)
         merged_state.red_flags = derive_red_flags(merged_state)
@@ -383,6 +423,16 @@ class ConversationManager:
                 return {"status": "ASK", "message": question, "recommendations": [], "safety": {"red_flag": False}}
         return None
 
+    @staticmethod
+    def _clinical_symptom_present(text):
+        primary, secondary = extract_symptoms(text)
+        symptoms = {x for x in ([primary] if primary else []) + (secondary or [])}
+        return bool(symptoms & {
+            "bleeding", "piles", "anal fissures",
+            "stomach pain", "acidity", "heartburn", "indigestion", "diarrhea",
+            "constipation", "hard stools", "vomiting"
+        })
+
     def handle_message(self, sid, user_message):
         session = self._get_session(sid)
         if session.ended:
@@ -410,14 +460,18 @@ class ConversationManager:
             return {"status": "SAFETY_REVIEW", "message": safety["message"], "recommendations": [], "safety": safety, "screening": screening}
 
         named = find_named_product(user_message)
-        if named and not session.symptom_state.primary_symptom:
+        # A named product request is a shortcut only when the user is not
+        # also reporting a clinical symptom that needs assessment.
+        if named and not session.symptom_state.primary_symptom and not self._clinical_symptom_present(user_message):
             session.awaiting_close = True
             return {"status": "PRODUCT_INFO_FOUND", "message": "", "product": named, "recommendations": [named]}
 
         # First message establishes the branch. Every later message is treated
         # as an answer to the last question when a question is pending.
-        if session.last_question:
+        pending_question = session.last_question
+        if pending_question:
             self._apply_answer(session, user_message)
+            session.last_question = None
         else:
             session.symptom_state = merge_state(session.symptom_state, user_message, [])
             session.symptom_state.red_flags = derive_red_flags(session.symptom_state)
@@ -449,15 +503,18 @@ class ConversationManager:
         # message also contains a gut symptom (for example, "bloating and dull
         # skin"). Keep this routing small: only the existing product-concern
         # aliases can activate it.
-        if session.last_question == "product_concern":
-            session.last_question = None
+        if pending_question == "product_concern":
             product_result = self._product_concern_result(session, user_message)
             if product_result:
                 return product_result
         elif detect_product_concerns(user_message):
-            product_result = self._product_concern_result(session, user_message)
-            if product_result:
-                return product_result
+            # Product concerns can coexist with low-risk gut symptoms (for
+            # example, "bloating and dull skin"), but a clinically relevant
+            # symptom must not be bypassed by the product router.
+            if not self._clinical_symptom_present(user_message):
+                product_result = self._product_concern_result(session, user_message)
+                if product_result:
+                    return product_result
 
         if not session.symptom_state.primary_symptom and not has_domain_overlap(user_message) and session.last_question is None:
             return {"status": "IRRELEVANT", "message": IRRELEVANT_MESSAGE, "recommendations": []}
