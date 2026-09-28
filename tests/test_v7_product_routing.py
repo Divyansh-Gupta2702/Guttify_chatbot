@@ -136,3 +136,25 @@ class TestV8AllActiveProductEntryPoints(unittest.TestCase):
                 result = ConversationManager().handle_message(expected, query)
                 self.assertEqual(result["status"], "RECOMMENDATION_FOUND")
                 self.assertIn(expected, [x["product_name"] for x in result["recommendations"]])
+
+    def test_bare_yes_only_answers_pending_anal_pain_question(self):
+        """A bare Yes must not turn every boolean field into a red flag."""
+        from guttify_agent import ConversationManager
+
+        cm = ConversationManager()
+        sid = "bare-yes-anal-pain"
+        for msg in ["Piles", "2 months", "45", "Bright red", "Tissue"]:
+            cm.handle_message(sid, msg)
+
+        result = cm.handle_message(sid, "Yes")
+        state = cm.sessions[sid].symptom_state
+
+        self.assertNotEqual(result["status"], "SAFETY_REVIEW")
+        self.assertEqual(state.sharp_pain_during_stool, True)
+        self.assertIsNone(state.vomiting)
+        self.assertIsNone(state.fever)
+        self.assertIsNone(state.weight_loss)
+        self.assertIsNone(state.dehydration)
+        self.assertIsNone(state.unable_to_pass_stool_and_gas)
+        self.assertEqual(result["screening"]["pattern"], "Possible anal fissure pattern")
+        self.assertTrue(any(p["product_name"] == "Piloease Anal Care Spray" for p in result["recommendations"]))

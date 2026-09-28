@@ -245,8 +245,16 @@ class ConversationManager:
                 data["secondary_symptoms"] = list(dict.fromkeys((data.get("secondary_symptoms") or []) + ["diarrhea"]))
 
         # Generic merge captures facts the user volunteered in addition to the answer.
-        merged = merge_state(SymptomState(**data), text, [])
-        merged_data = merged.to_dict()
+        # A bare yes/no is already interpreted against the exact pending question
+        # above. Passing it through generic extraction would otherwise make every
+        # boolean field True/False (e.g. "Yes" to anal pain becomes vomiting,
+        # fever, weight loss, etc.).
+        if n in {"yes", "yeah", "yep", "yup", "sure", "true", "no", "nope", "nah", "none", "false"}:
+            merged_state = SymptomState(**data)
+            merged_data = merged_state.to_dict()
+        else:
+            merged = merge_state(SymptomState(**data), text, [])
+            merged_data = merged.to_dict()
         # Contextual values win over generic extraction when the two differ.
         for key, value in data.items():
             if key in {"primary_symptom", "asked_fields", "red_flags"}:
