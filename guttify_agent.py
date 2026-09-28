@@ -89,6 +89,10 @@ class SessionState:
     screening: dict | None = None
     product_candidates: list = field(default_factory=list)
     product_concern_question_asked: bool = False
+    # Once a recommendation is delivered, follow-up messages must not restart
+    # the clinical/product-matching pipeline. Keep the approved product here
+    # so short follow-ups can stay in product-conversation mode.
+    last_product: dict | None = None
 
 
 class ConversationManager:
@@ -424,8 +428,8 @@ class ConversationManager:
                     matched = next((phrase for name, phrase in matches if name == product_name), product_name)
                     screening = self._product_screening(product, matched)
                     session.screening = screening
-                    session.awaiting_close = True
-                    return {"status": "RECOMMENDATION_FOUND", "message": "", "recommendations": [product], "product": product, "screening": screening, "safety": {"red_flag": False}}
+                    result = {"status": "RECOMMENDATION_FOUND", "message": "", "recommendations": [product], "product": product, "screening": screening, "safety": {"red_flag": False}}
+                    return self._remember_recommendation(session, result)
             key = frozenset(unique)
             question = PRODUCT_CONCERN_QUESTIONS.get(key)
             if question and not session.product_concern_question_asked:
@@ -446,6 +450,15 @@ class ConversationManager:
             "bleeding", "piles", "anal fissures",
             "stomach pain", "acidity", "heartburn", "indigestion", "vomiting"
         })
+
+    @staticmethod
+    def _remember_recommendation(session, result):
+        """Record the product already shown so later messages do not rerun diagnosis."""
+        recommendations = result.get("recommendations") or []
+        if recommendations:
+            session.last_product = recommendations[0]
+        session.awaiting_close = True
+        return result
 
     def handle_message(self, sid, user_message):
         session = self._get_session(sid)
@@ -474,6 +487,36 @@ class ConversationManager:
             return {"status": "SAFETY_REVIEW", "message": safety["message"], "recommendations": [], "safety": safety, "screening": screening}
 
         named = find_named_product(user_message)
+
+        # A recommendation has already been delivered. Do not feed subsequent
+        # messages back into diagnosis/recommendation matching: doing so can
+        # reproduce the same product block for messages such as "Piles Pure",
+        # "stop", or a short follow-up. Explicit product names stay in the
+        # product-information path; other follow-ups use the last approved
+        # product without changing the clinical assessment.
+        if session.awaiting_close:
+            if named:
+                return {
+                    "status": "PRODUCT_INFO_FOUND",
+                    "message": "",
+                    "product": named,
+                    "recommendations": [named],
+                    "screening": session.screening,
+                }
+
+            # A genuine new/clarifying symptom is still allowed to continue
+            # the clinical flow. Short non-clinical follow-ups (for example
+            # "why?", "stop", or casual text) must not rerun matching.
+            if not has_domain_overlap(user_message):
+                if session.last_product:
+                    return {
+                        "status": "PRODUCT_INFO_FOUND",
+                        "message": "",
+                        "product": session.last_product,
+                        "recommendations": [session.last_product],
+                        "screening": session.screening,
+                    }
+
         # A named product request is a shortcut only when the user is not
         # also reporting a clinical symptom that needs assessment.
         if named and not session.symptom_state.primary_symptom and not self._clinical_symptom_present(user_message):
@@ -546,8 +589,7 @@ class ConversationManager:
             result["screening"] = screening
             result["safety"] = safety
             if result.get("status") in ("RECOMMENDATION_FOUND", "AMBIGUOUS"):
-                session.awaiting_close = True
-                return result
+                return self._remember_recommendation(session, result)
             # Clinical assessment must never disappear merely because product
             # data is incomplete.
             return {"status": "DIAGNOSIS", "message": screening["message"], "recommendations": [], "safety": safety, "screening": screening}
@@ -574,10 +616,9 @@ class ConversationManager:
             result = evaluate_product(session.symptom_state, user_message, allowed_names=allowed, match_context=screening.get("pattern"))
             result = _filter_approved_products(result, screening)
             if result.get("status") in ("RECOMMENDATION_FOUND", "AMBIGUOUS"):
-                session.awaiting_close = True
                 result["screening"] = screening
                 result["safety"] = safety
-                return result
+                return self._remember_recommendation(session, result)
         return {"status": "DIAGNOSIS", "message": screening["message"], "recommendations": [], "safety": safety, "screening": screening}
 
 

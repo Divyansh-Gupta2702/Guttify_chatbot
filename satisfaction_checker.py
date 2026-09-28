@@ -58,6 +58,17 @@ CORE_CLOSING_PATTERNS = [
     r"this (looks|sounds) good",
     r"looks good",
     r"this works? for me",
+    # Explicit requests to stop/end the chat. This checker only runs after a
+    # recommendation has already been delivered, so these phrases are safe
+    # to interpret as conversation-closing instructions here.
+    r"stop",
+    r"stop now",
+    r"please stop",
+    r"please can (you|u) stop",
+    r"can (you|u) stop",
+    r"end (the )?chat",
+    r"close (the )?chat",
+    r"cancel",
 ]
 _CORE_RE = re.compile(r"^(" + "|".join(CORE_CLOSING_PATTERNS) + r")$")
 

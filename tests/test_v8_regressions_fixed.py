@@ -72,5 +72,39 @@ class TestV8RegressionFixes(unittest.TestCase):
         self.assertIn("Boost Vitamin B12", [p["product_name"] for p in second["recommendations"]])
 
 
+    def test_recommendation_does_not_repeat_after_follow_up(self):
+        cm = ConversationManager()
+        sid = "post-recommendation"
+        result = None
+        for msg in [
+            "I have bright red blood when I poop",
+            "2 months",
+            "23",
+            "on tissue",
+            "no sharp pain",
+            "yes lump",
+        ]:
+            result = cm.handle_message(sid, msg)
+
+        self.assertIn(result["status"], ("RECOMMENDATION_FOUND", "AMBIGUOUS"))
+        self.assertTrue(cm.sessions[sid].awaiting_close)
+        self.assertIsNotNone(cm.sessions[sid].last_product)
+
+        # Naming a product after the recommendation must not restart diagnosis.
+        follow_up = cm.handle_message(sid, "Piles Pure")
+        self.assertEqual(follow_up["status"], "PRODUCT_INFO_FOUND")
+        self.assertEqual(follow_up["recommendations"][0]["product_name"], "Piles Pure")
+
+        # An explicit stop request must close the post-recommendation chat.
+        follow_up = cm.handle_message(sid, "please can u stop")
+        self.assertEqual(follow_up["status"], "SESSION_ENDED")
+
+    def test_post_recommendation_stop_phrases_close_chat(self):
+        from satisfaction_checker import is_satisfied_closing
+
+        for phrase in ["stop", "please stop", "please can u stop", "end chat", "cancel"]:
+            self.assertTrue(is_satisfied_closing(phrase))
+
+
 if __name__ == "__main__":
     unittest.main()
