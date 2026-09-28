@@ -347,6 +347,17 @@ class ConversationManager:
                     return False
             return True
 
+        if branch == "piles":
+            # Explicit piles/haemorrhoids can be assessed without forcing the
+            # user through a constipation-style questionnaire. If bleeding is
+            # present, retain the stricter differentiating questions.
+            if s.blood_present:
+                if s.blood_colour is None or s.sharp_pain_during_stool is None:
+                    return False
+                if s.blood_colour == "bright_red" and not s.sharp_pain_during_stool and s.lump_or_prolapse is None:
+                    return False
+            return s.duration != "unknown" and s.age is not None and s.blood_present is not None
+
         if branch == "diarrhea":
             return all([
                 s.duration != "unknown", s.bowel_frequency_per_day is not None,
@@ -427,10 +438,13 @@ class ConversationManager:
     def _clinical_symptom_present(text):
         primary, secondary = extract_symptoms(text)
         symptoms = {x for x in ([primary] if primary else []) + (secondary or [])}
+        # Only symptoms that should force clinical/safety assessment block an
+        # otherwise legitimate product-concern route. Routine constipation,
+        # gas, bloating and diarrhea can coexist with an explicit product
+        # concern without preventing that concern from being handled.
         return bool(symptoms & {
             "bleeding", "piles", "anal fissures",
-            "stomach pain", "acidity", "heartburn", "indigestion", "diarrhea",
-            "constipation", "hard stools", "vomiting"
+            "stomach pain", "acidity", "heartburn", "indigestion", "vomiting"
         })
 
     def handle_message(self, sid, user_message):

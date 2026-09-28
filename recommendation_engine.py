@@ -101,6 +101,7 @@ NAME_TOKEN_STOPWORDS = {
 # They do not diagnose a disease; they only improve product retrieval.
 PRODUCT_PRIMARY_ALIASES = {
     "Guttify Poopie": {"constipation", "hard stools", "irregular bowel movements", "bloating", "feeling backed up", "low fibre intake"},
+    "Piles Pure": {"piles", "haemorrhoids", "hemorrhoids", "piles discomfort", "hemorrhoid discomfort", "anal swelling", "swelling around anus", "swollen anus"},
     "Piloease Anal Care Spray": {"piles", "haemorrhoids", "hemorrhoids", "anal fissures", "anal fissure", "anal discomfort", "itching", "irritation"},
     "GloLux GlutaGlow Skin Effervescent Tablets": {"dull skin", "dry skin", "uneven skin tone", "skin elasticity", "early signs of aging", "skin health"},
     "Boost Vitamin B12": {"fatigue", "low energy", "poor focus", "brain fog", "b12 deficiency", "plant-based diet", "bloating", "constipation"},

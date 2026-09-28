@@ -82,6 +82,23 @@ def evaluate(s):
     primary = s.primary_symptom
     symptoms = {primary, *(s.secondary_symptoms or [])}
     days = _duration_days(s.duration)
+
+    # An explicit piles/haemorrhoids complaint should have a reachable
+    # hemorrhoid-support pattern even when the user does not report bleeding.
+    # Bleeding is still handled by the stricter branch above, so this does not
+    # turn generic rectal bleeding into a piles diagnosis.
+    if primary == "piles" and not s.blood_present:
+        evidence = ["piles/haemorrhoids reported"]
+        if s.lump_or_prolapse is True:
+            evidence.append("lump/prolapse reported")
+        if s.anal_pain is True:
+            evidence.append("anal discomfort/pain reported")
+        return _result(
+            "Possible hemorrhoid pattern", "moderate", evidence,
+            ["anal fissure", "other causes of anal symptoms"],
+            "medical_review", True,
+            "Your symptoms are consistent with a possible hemorrhoid/piles pattern. A Guttify hemorrhoid-support product may be relevant, but persistent, worsening, or bleeding symptoms should be medically assessed."
+        )
     chronic = days is not None and days >= 90
 
     constipation = (

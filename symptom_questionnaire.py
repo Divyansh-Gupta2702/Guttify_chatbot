@@ -103,8 +103,9 @@ def next_question(state):
         ]
     elif branch in ("piles", "anal fissures", "bleeding"):
         qs = [
-            q("blood_colour", "Is the blood bright/fresh red, or dark/black/tarry?", state.blood_colour is None),
-            q("blood_location", "If bright red, is it on tissue, dripping into the toilet, or mixed into the stool?", state.blood_location is None),
+            q("blood", "Have you noticed any bleeding or blood around/after a bowel movement?", state.blood_present is None),
+            q("blood_colour", "Is the blood bright/fresh red, or dark/black/tarry?", state.blood_present is True and state.blood_colour is None),
+            q("blood_location", "If it is bright red, is it on tissue, dripping into the toilet, or mixed into the stool?", state.blood_present is True and state.blood_colour == "bright_red" and state.blood_location is None),
             q("anal_pain", "Is there sharp or tearing pain during or just after a bowel movement?", state.sharp_pain_during_stool is None),
             q("lump", "Is there a lump or something protruding from the anus?", state.lump_or_prolapse is None),
             q("constipation", "Do you have hard stools or strain when passing stool?", state.stool_form is None or state.straining is None),
