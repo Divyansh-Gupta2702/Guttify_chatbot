@@ -79,6 +79,19 @@ CLOSING_RESPONSES = [
 ]
 
 
+
+def is_gratitude_only(text):
+    """Return True for a pure thank-you/thanks acknowledgement.
+
+    Gratitude is intentionally NOT a conversation-ending event. The UI must
+    remain usable after messages such as "thank you", "thanks a lot", "thx",
+    or "appreciate it".
+    """
+    cleaned = re.sub(r"[^a-zA-Z'\s]", " ", text or "").strip().lower()
+    cleaned = re.sub(r"\s+", " ", cleaned)
+    return bool(cleaned and PURE_GRATITUDE_RE.fullmatch(cleaned))
+
+
 def is_satisfied_closing(text):
     """Return True if `text`, taken as a whole, is just a closing/thanks
     remark (nothing else meaningful in it)."""

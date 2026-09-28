@@ -13,7 +13,7 @@ import re
 
 from gibberish_checker import is_gibberish, random_gibberish_response
 from greeting_checker import is_greeting, random_greeting_response
-from satisfaction_checker import is_satisfied_closing, random_closing_response
+from satisfaction_checker import is_satisfied_closing, is_gratitude_only, random_closing_response
 from intent_parser import (
     SymptomState, merge_state, extract_duration, extract_age,
     extract_bowel_frequency, extract_bowel_frequency_per_day,
@@ -86,6 +86,10 @@ class SessionState:
     last_question: str | None = None
     awaiting_close: bool = False
     ended: bool = False
+    # True after a final clinical assessment has already been delivered.
+    # Once set, later messages must not restart the questionnaire/diagnosis
+    # pipeline in the same session.
+    diagnosis_complete: bool = False
     screening: dict | None = None
     product_candidates: list = field(default_factory=list)
     product_concern_question_asked: bool = False
@@ -464,13 +468,46 @@ class ConversationManager:
         session = self._get_session(sid)
         if session.ended:
             return {"status": "SESSION_ENDED", "message": SESSION_ENDED_MESSAGE, "recommendations": []}
+
+        # Thank-you messages are acknowledgements, not a reason to lock the
+        # conversation. Keep the session usable after "thank you", "thanks",
+        # "thx", "appreciate it", etc.
+        if is_gratitude_only(user_message):
+            return {
+                "status": "ACKNOWLEDGEMENT",
+                "message": "You're welcome! If you have another question, just ask.",
+                "recommendations": [],
+            }
+
         if session.awaiting_close and is_satisfied_closing(user_message):
             session.ended = True
             return {"status": "SESSION_ENDED", "message": random_closing_response(), "recommendations": []}
+
         if is_greeting(user_message):
             return {"status": "GREETING", "message": random_greeting_response(), "recommendations": []}
         if is_gibberish(user_message):
             return {"status": "GIBBERISH", "message": random_gibberish_response(), "recommendations": []}
+
+        # A final diagnosis is a terminal state for the clinical pipeline.
+        # Do not re-run symptom extraction, questionnaire questions, or
+        # diagnosis on later messages in the same session. Product-name
+        # lookups remain available as non-diagnostic follow-ups.
+        if session.diagnosis_complete:
+            named_after_diagnosis = find_named_product(user_message)
+            if named_after_diagnosis:
+                return {
+                    "status": "PRODUCT_INFO_FOUND",
+                    "message": "",
+                    "product": named_after_diagnosis,
+                    "recommendations": [named_after_diagnosis],
+                    "screening": session.screening,
+                }
+            return {
+                "status": "DIAGNOSIS_COMPLETE",
+                "message": "Your assessment is already complete. I won't start a new diagnosis in this chat. If you want information about a Guttify product or the assessment already given, ask me directly.",
+                "recommendations": [],
+                "screening": session.screening,
+            }
 
         safety = check_safety(user_message)
         if safety["red_flag"]:
@@ -581,6 +618,7 @@ class ConversationManager:
 
         if self._can_assess(session, screening):
             if not screening.get("product_allowed"):
+                session.diagnosis_complete = True
                 return {"status": "DIAGNOSIS", "message": screening["message"], "recommendations": [], "safety": safety, "screening": screening}
 
             allowed = PRODUCT_ELIGIBILITY.get(screening.get("pattern"))
@@ -592,6 +630,7 @@ class ConversationManager:
                 return self._remember_recommendation(session, result)
             # Clinical assessment must never disappear merely because product
             # data is incomplete.
+            session.diagnosis_complete = True
             return {"status": "DIAGNOSIS", "message": screening["message"], "recommendations": [], "safety": safety, "screening": screening}
 
         if session.questions_asked < MAX_QUESTIONS:
@@ -619,6 +658,7 @@ class ConversationManager:
                 result["screening"] = screening
                 result["safety"] = safety
                 return self._remember_recommendation(session, result)
+        session.diagnosis_complete = True
         return {"status": "DIAGNOSIS", "message": screening["message"], "recommendations": [], "safety": safety, "screening": screening}
 
 

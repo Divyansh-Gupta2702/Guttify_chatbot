@@ -86,6 +86,8 @@ def chat(req: ChatRequest):
         "NO_MATCH",
         "AMBIGUOUS",
         "GREETING",
+        "ACKNOWLEDGEMENT",
+        "DIAGNOSIS_COMPLETE",
         "SESSION_ENDED",
     ):
         reply = result["message"]

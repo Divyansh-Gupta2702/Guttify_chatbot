@@ -106,5 +106,40 @@ class TestV8RegressionFixes(unittest.TestCase):
             self.assertTrue(is_satisfied_closing(phrase))
 
 
+    def test_thank_you_does_not_end_or_lock_chat(self):
+        cm = ConversationManager()
+        sid = "gratitude-does-not-lock"
+
+        # Force a completed assessment state to exercise the post-diagnosis path.
+        session = cm.sessions.setdefault(sid, __import__("guttify_agent").SessionState())
+        session.diagnosis_complete = True
+        session.screening = {
+            "pattern": "Functional constipation pattern",
+            "likely_condition": "Functional constipation",
+        }
+
+        for phrase in ["thank you", "thanks", "thanks a lot", "thank you so much", "thx", "ty", "appreciate it"]:
+            result = cm.handle_message(sid, phrase)
+            self.assertEqual(result["status"], "ACKNOWLEDGEMENT")
+            self.assertFalse(cm.sessions[sid].ended)
+            self.assertTrue(cm.sessions[sid].diagnosis_complete)
+
+    def test_completed_diagnosis_does_not_restart_diagnosis(self):
+        cm = ConversationManager()
+        sid = "diagnosis-terminal-state"
+        session = cm.sessions.setdefault(sid, __import__("guttify_agent").SessionState())
+        session.diagnosis_complete = True
+        session.screening = {
+            "pattern": "Functional constipation pattern",
+            "likely_condition": "Functional constipation",
+        }
+        before_questions = session.questions_asked
+
+        result = cm.handle_message(sid, "I am still bloated and constipated")
+        self.assertEqual(result["status"], "DIAGNOSIS_COMPLETE")
+        self.assertEqual(cm.sessions[sid].questions_asked, before_questions)
+        self.assertTrue(cm.sessions[sid].diagnosis_complete)
+
+
 if __name__ == "__main__":
     unittest.main()

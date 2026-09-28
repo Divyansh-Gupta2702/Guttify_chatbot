@@ -95,7 +95,7 @@ form.addEventListener("submit", async (event) => {
     if (data.status === "SESSION_ENDED") {
       lockChat();
       showFeedbackModal();
-      return; // leave the input locked — no further messages this session
+      return; // only explicit conversation-ending events lock the chat
     }
   } catch (err) {
     thinking.remove();
