@@ -20,9 +20,25 @@ import random
 import re
 
 # A trailing (or standalone) expression of gratitude.
-_GRATITUDE_CORE = r"thanks?( you)?( so much| a lot| a ton| very much)?|appreciate it|ty|thx"
-PURE_GRATITUDE_RE = re.compile(r"^(" + _GRATITUDE_CORE + r")$")
-GRATITUDE_SUFFIX_RE = re.compile(r"\s+(" + _GRATITUDE_CORE + r")$")
+_GRATITUDE_CORE = (
+    r"thanks?( you)?( so much| a lot| a ton| very much)?"
+    r"|thank you( so much| very much| a lot)?"
+    r"|appreciate it|much appreciated|ty|thx"
+)
+
+# These are still acknowledgements, not chat-ending commands. Keeping the
+# allowed words deliberately small prevents a real follow-up question from
+# being swallowed as a thank-you.
+_GRATITUDE_ACK_RE = re.compile(
+    r"^(?:"
+    r"(?:ok(?:ay)?|alright|cool|great|perfect|awesome|nice)\s*,?\s*"
+    r")?(?:" + _GRATITUDE_CORE + r")$"
+    r"|^(?:" + _GRATITUDE_CORE + r")\s*,?\s*"
+    r"(?:ok(?:ay)?|got it|alright|cool|great|perfect|awesome|nice)$",
+    re.IGNORECASE,
+)
+PURE_GRATITUDE_RE = re.compile(r"^(" + _GRATITUDE_CORE + r")$", re.IGNORECASE)
+GRATITUDE_SUFFIX_RE = re.compile(r"\s+(" + _GRATITUDE_CORE + r")$", re.IGNORECASE)
 
 # Single closing/acknowledgement words that are often stacked together
 # ("ok great", "cool, perfect thanks") — matched as a repeatable group so
@@ -89,23 +105,37 @@ def is_gratitude_only(text):
     """
     cleaned = re.sub(r"[^a-zA-Z'\s]", " ", text or "").strip().lower()
     cleaned = re.sub(r"\s+", " ", cleaned)
-    return bool(cleaned and PURE_GRATITUDE_RE.fullmatch(cleaned))
+    return bool(cleaned and _GRATITUDE_ACK_RE.fullmatch(cleaned))
 
 
 def is_satisfied_closing(text):
-    """Return True if `text`, taken as a whole, is just a closing/thanks
-    remark (nothing else meaningful in it)."""
-    cleaned = re.sub(r"[^a-zA-Z'\s]", " ", text).strip().lower()
+    """Return True only for an explicit request to end/stop the chat.
+
+    Gratitude and ordinary acknowledgements (including combinations such as
+    "thanks, got it" or "ok thanks") are deliberately NOT closing events.
+    The chat must remain usable after a thank-you message.
+    """
+    cleaned = re.sub(r"[^a-zA-Z'\s]", " ", text or "").strip().lower()
     cleaned = re.sub(r"\s+", " ", cleaned)
     if not cleaned:
         return False
 
-    if PURE_GRATITUDE_RE.match(cleaned):
-        return True
-
-    core = GRATITUDE_SUFFIX_RE.sub("", cleaned)
-    return bool(_CORE_RE.match(core))
-
+    # Only explicit stop/end/cancel commands may close the session.
+    explicit_end_patterns = [
+        r"stop",
+        r"stop now",
+        r"please stop",
+        r"please can (you|u) stop",
+        r"can (you|u) stop",
+        r"end (the )?chat",
+        r"close (the )?chat",
+        r"cancel",
+        r"i want to end (the )?chat",
+        r"i want to stop",
+        r"end this conversation",
+    ]
+    explicit_end_re = re.compile(r"^(?:" + "|".join(explicit_end_patterns) + r")$")
+    return bool(explicit_end_re.fullmatch(cleaned))
 
 def random_closing_response():
     return random.choice(CLOSING_RESPONSES)

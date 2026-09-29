@@ -16,21 +16,25 @@ def test_explicit_piles_reaches_piles_pure_without_bleeding():
     sid = "explicit-piles"
     result = cm.handle_message(sid, "I have piles")
     assert result["status"] == "ASK"
-    for message in ["2 months", "23", "no bleeding", "no sharp pain", "yes lump", "no hard stools"]:
+    for message in ["2 months", "23", "no bleeding"]:
         result = cm.handle_message(sid, message)
     assert result["status"] in ("RECOMMENDATION_FOUND", "AMBIGUOUS")
     names = {p["product_name"] for p in result["recommendations"]}
     assert "Piles Pure" in names
+    assert cm.sessions[sid].diagnosis_complete
+    follow_up = cm.handle_message(sid, "no sharp pain")
+    assert follow_up["status"] == "DIAGNOSIS_COMPLETE"
 
 
 def test_explicit_hemorrhoids_reaches_piles_pure():
     cm = ConversationManager()
     sid = "hemorrhoids"
     result = cm.handle_message(sid, "I have hemorrhoids")
-    for message in ["1 month", "30", "no bleeding", "no sharp pain", "yes lump"]:
+    for message in ["1 month", "30", "no bleeding"]:
         result = cm.handle_message(sid, message)
     names = {p["product_name"] for p in result["recommendations"]}
     assert "Piles Pure" in names
+    assert cm.sessions[sid].diagnosis_complete
 
 
 def test_piles_with_bright_red_blood_and_lump_reaches_piles_pure():

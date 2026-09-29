@@ -617,6 +617,14 @@ class ConversationManager:
         session.screening = screening
 
         if self._can_assess(session, screening):
+            # Reaching an assessable clinical pattern is the end of the
+            # diagnostic pipeline for this session. This MUST be set before
+            # product evaluation as well as for diagnosis-only outcomes;
+            # otherwise a recommendation response can be followed by another
+            # symptom message that re-enters the questionnaire and generates
+            # another long diagnosis.
+            session.diagnosis_complete = True
+
             if not screening.get("product_allowed"):
                 session.diagnosis_complete = True
                 return {"status": "DIAGNOSIS", "message": screening["message"], "recommendations": [], "safety": safety, "screening": screening}

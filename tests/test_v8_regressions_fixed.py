@@ -118,7 +118,12 @@ class TestV8RegressionFixes(unittest.TestCase):
             "likely_condition": "Functional constipation",
         }
 
-        for phrase in ["thank you", "thanks", "thanks a lot", "thank you so much", "thx", "ty", "appreciate it"]:
+        for phrase in [
+            "thank you", "thanks", "thanks a lot", "thank you so much",
+            "thank you very much", "thx", "ty", "appreciate it",
+            "much appreciated", "ok thanks", "okay thanks",
+            "thanks, got it", "great thanks",
+        ]:
             result = cm.handle_message(sid, phrase)
             self.assertEqual(result["status"], "ACKNOWLEDGEMENT")
             self.assertFalse(cm.sessions[sid].ended)
