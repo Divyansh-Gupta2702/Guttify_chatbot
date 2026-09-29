@@ -495,6 +495,7 @@ class ConversationManager:
         if session.diagnosis_complete:
             named_after_diagnosis = find_named_product(user_message)
             if named_after_diagnosis:
+                session.last_product = named_after_diagnosis
                 return {
                     "status": "PRODUCT_INFO_FOUND",
                     "message": "",
@@ -536,6 +537,7 @@ class ConversationManager:
         # product without changing the clinical assessment.
         if session.awaiting_close:
             if named:
+                session.last_product = named
                 return {
                     "status": "PRODUCT_INFO_FOUND",
                     "message": "",
@@ -546,20 +548,33 @@ class ConversationManager:
                     "screening": None,
                 }
 
-            # A genuine new/clarifying symptom is still allowed to continue
-            # the clinical flow. Short non-clinical follow-ups (for example
-            # "why?", "stop", or casual text) must not rerun matching.
-            if not has_domain_overlap(user_message):
-                if session.last_product:
-                    return {
-                        "status": "PRODUCT_INFO_FOUND",
-                        "message": "",
-                        "product": session.last_product,
-                        "recommendations": [session.last_product],
-                        # Product-information fallback is intentionally
-                        # independent of the previous diagnosis.
-                        "screening": None,
-                    }
+            # Once a recommendation has been delivered, this session is
+            # finished from the clinical/recommendation pipeline's perspective.
+            # Do NOT allow a later symptom (e.g. "constipation") to restart
+            # diagnosis. Previously this branch only blocked non-clinical text,
+            # so a new symptom could re-enter the questionnaire and set
+            # diagnosis_complete=True, after which every later message was
+            # incorrectly treated as a completed diagnosis.
+            #
+            # Product-name lookups above remain available. For ordinary
+            # product follow-ups ("what is it for?", "how do I take it?"),
+            # keep using the last approved product. Only a new clinical/domain
+            # symptom is blocked.
+            if not has_domain_overlap(user_message) and session.last_product:
+                return {
+                    "status": "PRODUCT_INFO_FOUND",
+                    "message": "",
+                    "product": session.last_product,
+                    "recommendations": [session.last_product],
+                    "screening": None,
+                }
+
+            return {
+                "status": "RECOMMENDATION_COMPLETE",
+                "message": "That recommendation has already been provided. If you want information about a Guttify product, ask me about the product by name. To discuss a new health concern, please start a new chat.",
+                "recommendations": [],
+                "screening": None,
+            }
 
         # A named product request is a shortcut only when the user is not
         # also reporting a clinical symptom that needs assessment.

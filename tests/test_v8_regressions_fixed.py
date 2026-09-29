@@ -99,6 +99,31 @@ class TestV8RegressionFixes(unittest.TestCase):
         follow_up = cm.handle_message(sid, "please can u stop")
         self.assertEqual(follow_up["status"], "SESSION_ENDED")
 
+
+
+    def test_product_recommendation_does_not_restart_diagnosis_on_new_symptom(self):
+        cm = ConversationManager()
+        sid = "product-then-new-symptom"
+
+        first = cm.handle_message(sid, "dry skin")
+        self.assertEqual(first["status"], "RECOMMENDATION_FOUND")
+        self.assertEqual(first["recommendations"][0]["product_name"], "GloLux GlutaGlow Skin Effervescent Tablets")
+        self.assertTrue(cm.sessions[sid].awaiting_close)
+        self.assertFalse(cm.sessions[sid].diagnosis_complete)
+
+        second = cm.handle_message(sid, "constipation")
+        self.assertEqual(second["status"], "RECOMMENDATION_COMPLETE")
+        self.assertFalse(cm.sessions[sid].diagnosis_complete)
+        self.assertEqual(cm.sessions[sid].questions_asked, 0)
+
+        third = cm.handle_message(sid, "What are the ingredients of Digest Boost?")
+        self.assertEqual(third["status"], "PRODUCT_INFO_FOUND")
+        self.assertEqual(third["product"]["product_name"], "Digest Boost")
+
+        fourth = cm.handle_message(sid, "What is it for?")
+        self.assertEqual(fourth["status"], "PRODUCT_INFO_FOUND")
+        self.assertEqual(fourth["product"]["product_name"], "Digest Boost")
+
     def test_post_recommendation_stop_phrases_close_chat(self):
         from satisfaction_checker import is_satisfied_closing
 
