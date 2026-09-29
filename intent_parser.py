@@ -25,7 +25,7 @@ SYMPTOM_SYNONYMS = {
         "pellet-like stools", "pellet stools", "pellets in stool",
     ],
     "bloating": ["bloating", "bloated", "bloat", "stomach becomes bigger", "stomach gets swollen", "stomach got swollen", "gets swollen", "got swollen", "stomach swollen", "swollen stomach", "distended stomach", "stomach distension", "belly bloat", "gas and bloating"],
-    "gas": ["gas", "gassy", "excess gas", "too much gas", "flatulence", "trapped wind", "burping a lot", "belching a lot"],
+    "gas": ["gas", "stomach discomfort", "gassy", "excess gas", "too much gas", "flatulence", "trapped wind", "burping a lot", "belching a lot"],
     "acidity": ["acidity", "acid reflux", "reflux", "gerd", "sour taste", "sour burps", "acid coming up", "gastric problem", "gastric issue"],
     "heartburn": ["heartburn", "burning in chest", "burning in my chest", "burning chest", "burning after meals", "burning after food", "burning sensation after meals", "burning sensation after food", "burning in throat"],
     "diarrhea": ["diarrhea", "diarrhoea", "loose motion", "loose motions", "loose stool", "loose stools", "watery stool", "watery stools", "runny stool"],
