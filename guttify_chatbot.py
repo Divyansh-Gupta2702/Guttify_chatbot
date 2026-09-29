@@ -158,7 +158,65 @@ def _deterministic_screening_reply(screening, product=None):
     return "\n".join(parts)
 
 
-def generate_response(llm, user_query, conversation_history, product=None, screening=None):
+
+def _deterministic_product_reply(product, user_query=""):
+    """Product-only fallback. Never includes clinical screening/history."""
+    if not product:
+        return "I don't have product information available for that request."
+
+    q = (user_query or "").lower()
+    name = product.get("product_name", "this product")
+
+    if "ingredient" in q or "contents" in q or "contain" in q:
+        parts = [f"Ingredients in {name}:"]
+        parts += [f"- {x}" for x in product.get("ingredients", [])]
+        if product.get("warnings"):
+            parts += ["", "Important warning:", f"- {product['warnings'][0]}"]
+        return "\n".join(parts)
+
+    parts = [f"{name}"]
+    if product.get("intended_support"):
+        parts += ["", "What it supports:", "- " + "\n- ".join(product["intended_support"][:5])]
+    if product.get("ingredients"):
+        parts += ["", "Ingredients:", "- " + "\n- ".join(product["ingredients"])]
+    if product.get("how_to_use"):
+        parts += ["", "How to use:", product["how_to_use"]]
+    if product.get("warnings"):
+        parts += ["", "Important warnings:", "- " + "\n- ".join(product["warnings"])]
+    if product.get("product_url"):
+        parts += ["", "Product link:", product["product_url"]]
+    return "\n".join(parts)
+
+def generate_response(llm, user_query, conversation_history, product=None, screening=None, mode="ASSESSMENT"):
+    # PRODUCT_INFO mode deliberately excludes conversation history and the
+    # prior screening result. A product question after diagnosis must answer
+    # the product question only; old clinical text is not relevant context.
+    if mode == "PRODUCT_INFO":
+        product_info = format_product_information(product)
+        product_prompt = f"""
+You are GutGPT, a Guttify product information assistant.
+
+Answer ONLY the user's current product-information question using the supplied product data.
+Do NOT mention, repeat, summarize, or infer any previous diagnosis, assessment, symptoms, or clinical reasoning.
+Do NOT recommend a different Guttify product.
+Do NOT invent ingredients, benefits, dosage, warnings, links, or other product facts.
+If the user asks for ingredients, give the ingredients from the supplied data directly.
+Keep the answer concise and focused on what the user asked.
+
+CURRENT USER QUESTION:
+{user_query}
+
+APPROVED PRODUCT DATA:
+{product_info}
+"""
+        try:
+            candidate = llm.invoke(product_prompt).content
+            if not _mentions_unapproved_product(candidate, product):
+                return candidate
+        except Exception:
+            pass
+        return _deterministic_product_reply(product, user_query)
+
     history_text = format_conversation_history(conversation_history)
     screening = screening or {}
     product_info = format_product_information(product)

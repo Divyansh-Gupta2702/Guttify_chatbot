@@ -500,7 +500,10 @@ class ConversationManager:
                     "message": "",
                     "product": named_after_diagnosis,
                     "recommendations": [named_after_diagnosis],
-                    "screening": session.screening,
+                    # Product follow-ups are informational, not a continuation
+                    # of the clinical assessment. Do not pass the old screening
+                    # result to the response layer.
+                    "screening": None,
                 }
             return {
                 "status": "DIAGNOSIS_COMPLETE",
@@ -538,7 +541,9 @@ class ConversationManager:
                     "message": "",
                     "product": named,
                     "recommendations": [named],
-                    "screening": session.screening,
+                    # Keep this product-only. The previous clinical assessment
+                    # must not be attached to a product-information answer.
+                    "screening": None,
                 }
 
             # A genuine new/clarifying symptom is still allowed to continue
@@ -551,7 +556,9 @@ class ConversationManager:
                         "message": "",
                         "product": session.last_product,
                         "recommendations": [session.last_product],
-                        "screening": session.screening,
+                        # Product-information fallback is intentionally
+                        # independent of the previous diagnosis.
+                        "screening": None,
                     }
 
         # A named product request is a shortcut only when the user is not

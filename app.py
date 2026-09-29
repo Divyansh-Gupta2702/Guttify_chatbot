@@ -96,7 +96,17 @@ def chat(req: ChatRequest):
         reply = generate_response(llm, req.message, history, None, result.get("screening"))
 
     elif status == "PRODUCT_INFO_FOUND":
-        reply = generate_response(llm, req.message, history, result["product"], result.get("screening"))
+        # Product-information questions are a separate conversation mode.
+        # Never send the previous clinical screening/diagnosis to the LLM,
+        # otherwise it can repeat the old diagnosis alongside the answer.
+        reply = generate_response(
+            llm,
+            req.message,
+            history,
+            result["product"],
+            None,
+            mode="PRODUCT_INFO",
+        )
 
     elif status == "RECOMMENDATION_FOUND":
         best_product = result["recommendations"][0]
