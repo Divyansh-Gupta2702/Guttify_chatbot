@@ -46,8 +46,8 @@ def detect_red_flags(text):
         "blood on toilet paper", "fresh blood", "rectal bleeding", "bleeding from anus",
         "bleeding while pooping", "blood when i poop", "blood when pooping"
     ])
-    dizziness = any(p in n for p in ["dizzy", "dizziness", "lightheaded", "light headed", "faint", "fainted", "fainting", "passed out"])
-    if bleeding and dizziness and not _negative(n, "bleeding"):
+    dizziness = any(p in n and not _negative(n, p) for p in ["dizzy", "dizziness", "lightheaded", "light headed", "faint", "fainted", "fainting", "passed out"])
+    if bleeding and dizziness:
         found.append("fainting/dizziness with bleeding")
 
     return list(dict.fromkeys(found))

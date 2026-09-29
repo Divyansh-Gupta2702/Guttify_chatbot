@@ -32,7 +32,8 @@ class TestV9ProductInfoIsolation(unittest.TestCase):
         self.assertIsNone(result.get("screening"))
 
     def test_product_info_mode_isolation_is_present_in_response_layer(self):
-        source = open("guttify_chatbot.py", encoding="utf-8").read()
+        with open("guttify_chatbot.py", encoding="utf-8") as f:
+            source = f.read()
         self.assertIn('if mode == "PRODUCT_INFO":', source)
         self.assertIn("Do NOT mention, repeat, summarize, or infer any previous diagnosis", source)
         self.assertIn("PRODUCT_INFO mode deliberately excludes conversation history", source)

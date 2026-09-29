@@ -119,9 +119,11 @@ class TestRecommendationEngine(unittest.TestCase):
         state = SymptomState(primary_symptom="constipation")
         result = evaluate(state, "I have constipation")
         self.assertIn(result["status"], ("RECOMMENDATION_FOUND", "AMBIGUOUS"))
+        # Use products already loaded by recommendation_engine
+        from recommendation_engine import products as ALL_PRODUCTS
+        all_names = {p["product_name"] for p in ALL_PRODUCTS}
         for rec in result["recommendations"]:
-            self.assertIn(rec["product_name"], [p["product_name"] for p in __import__("json").load(open(
-                os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "products.json")))])
+            self.assertIn(rec["product_name"], all_names)
 
 
 class TestConversationManager(unittest.TestCase):
