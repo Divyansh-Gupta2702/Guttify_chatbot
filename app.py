@@ -75,7 +75,6 @@ def chat(req: ChatRequest):
         "SCREENING_REVIEW",
         "ASK",
         "NO_MATCH",
-        "AMBIGUOUS",
         "GREETING",
         "ACKNOWLEDGEMENT",
         "DIAGNOSIS_COMPLETE",
@@ -100,9 +99,19 @@ def chat(req: ChatRequest):
             mode="PRODUCT_INFO",
         )
 
-    elif status == "RECOMMENDATION_FOUND":
-        best_product = result["recommendations"][0]
-        reply = generate_response(llm, req.message, history, best_product, result.get("screening"))
+    elif status in ("RECOMMENDATION_FOUND", "AMBIGUOUS"):
+        # Both a single recommendation and a tied/ambiguous recommendation
+        # must go through the assessment response layer. This preserves the
+        # clinical screening/diagnosis while allowing all approved tied
+        # products to be shown together.
+        products = result.get("recommendations") or []
+        reply = generate_response(
+            llm,
+            req.message,
+            history,
+            products,
+            result.get("screening"),
+        )
 
     else:
         reply = "Sorry, something went wrong. Could you rephrase that?"

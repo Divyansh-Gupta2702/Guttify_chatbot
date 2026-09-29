@@ -34,12 +34,12 @@ Rules:
    and do NOT recommend a product. If the action is medical_review and the
    rule engine supplied an approved product, present that product only as
    supportive wellness information after the medical-review guidance.
-6. If product information is supplied, the product is allowed only because the
-   rule engine explicitly allowed it. Present it after the assessment.
+6. If product information is supplied, the products are allowed only because
+   the rule engine explicitly allowed them. Present them after the assessment.
 7. Never claim a product cures or treats a disease.
 8. Never invent product facts, ingredients, dosage, warnings, price, links, or
-   benefits. Use only CURRENT APPROVED PRODUCT.
-9. Do not mention any Guttify product other than CURRENT APPROVED PRODUCT.
+   benefits. Use only CURRENT APPROVED PRODUCT(S).
+9. Do not mention any Guttify product other than CURRENT APPROVED PRODUCT(S).
 10. Do not diagnose a disease solely because a product exists for it.
 11. Keep the answer clear and reasonably concise.
 12. Do not append a generic wellness/medical disclaimer footer.
@@ -53,7 +53,7 @@ CURRENT USER MESSAGE:
 SCREENING RESULT:
 {screening_result}
 
-CURRENT APPROVED PRODUCT:
+CURRENT APPROVED PRODUCT(S):
 {product_information}
 
 FORMAT when a likely assessment exists:
@@ -71,11 +71,11 @@ What to do next:
 Possible alternatives:
 [only if supplied and useful]
 
-If a product is approved:
-Guttify product that matches this assessment:
-[product name]
+If products are approved:
+Guttify product(s) that match this assessment:
+[list each approved product name]
 
-[brief relevant product support]
+[brief relevant support for each product, using only supplied product information]
 [usage/warnings/link only from supplied product information]
 """
 
@@ -98,25 +98,35 @@ def _bullets(items):
 
 
 def format_product_information(product):
+    """Format one approved product or a list of approved products.
+
+    A tied recommendation (AMBIGUOUS) can contain multiple products. Keep all
+    of them in the same assessment response so the diagnosis is not lost and
+    the LLM cannot invent products outside the deterministic allow-list.
+    """
     if not product:
         return "NO APPROVED PRODUCT."
-    flavor_line = ""
-    if product.get("flavors"):
-        flavor_line = f"\nFlavors: {', '.join(product['flavors'])}"
-    elif product.get("variants"):
-        flavor_line = "\nVariants:\n" + "\n".join(
-            f"- {v['flavor']}: {v['url']}" for v in product["variants"]
+    products = product if isinstance(product, list) else [product]
+    blocks = []
+    for item in products:
+        flavor_line = ""
+        if item.get("flavors"):
+            flavor_line = f"\nFlavors: {', '.join(item['flavors'])}"
+        elif item.get("variants"):
+            flavor_line = "\nVariants:\n" + "\n".join(
+                f"- {v['flavor']}: {v['url']}" for v in item["variants"]
+            )
+        blocks.append(
+            f"Product name: {item.get('product_name','')}\n"
+            f"Category: {item.get('category','')}\n"
+            f"Intended support:\n{_bullets(item.get('intended_support', []))}\n"
+            f"Ingredients:\n{_bullets(item.get('ingredients', []))}\n"
+            f"How to use: {item.get('how_to_use','')}\n"
+            f"Warnings:\n{_bullets(item.get('warnings', []))}\n"
+            f"Product link: {item.get('product_url','')}"
+            f"{flavor_line}"
         )
-    return (
-        f"Product name: {product.get('product_name','')}\n"
-        f"Category: {product.get('category','')}\n"
-        f"Intended support:\n{_bullets(product.get('intended_support', []))}\n"
-        f"Ingredients:\n{_bullets(product.get('ingredients', []))}\n"
-        f"How to use: {product.get('how_to_use','')}\n"
-        f"Warnings:\n{_bullets(product.get('warnings', []))}\n"
-        f"Product link: {product.get('product_url','')}"
-        f"{flavor_line}"
-    )
+    return "\n\n--- APPROVED PRODUCT ---\n\n".join(blocks)
 
 
 def format_conversation_history(history):
@@ -128,11 +138,16 @@ def format_conversation_history(history):
 
 
 def _mentions_unapproved_product(reply_text, approved_product):
-    approved = approved_product.get("product_name") if approved_product else None
+    approved_products = approved_product if isinstance(approved_product, list) else [approved_product]
+    approved_names = {
+        p.get("product_name", "").lower()
+        for p in approved_products
+        if p and p.get("product_name")
+    }
     low = reply_text.lower()
     # When no product was approved, no product name is allowed in the LLM
     # response. This keeps the database as the single source of product truth.
-    return any(name.lower() in low for name in _ALL_PRODUCT_NAMES if name and name != approved)
+    return any(name.lower() in low for name in _ALL_PRODUCT_NAMES if name and name.lower() not in approved_names)
 
 
 def _deterministic_screening_reply(screening, product=None):
@@ -146,15 +161,18 @@ def _deterministic_screening_reply(screening, product=None):
     if screening.get("differentials"):
         parts += ["", "Possible alternatives:", ", ".join(screening["differentials"])]
     if product:
-        parts += ["", f"Guttify product that matches this assessment:\n{product.get('product_name','')}"]
-        if product.get("intended_support"):
-            parts += ["", "Relevant support:", "- " + "\n- ".join(product["intended_support"][:4])]
-        if product.get("how_to_use"):
-            parts += ["", "How to use:", product["how_to_use"]]
-        if product.get("warnings"):
-            parts += ["", "Important warnings:", "- " + "\n- ".join(product["warnings"])]
-        if product.get("product_url"):
-            parts += ["", "Product link:", product["product_url"]]
+        products = product if isinstance(product, list) else [product]
+        parts += ["", "Guttify product(s) that match this assessment:"]
+        for item in products:
+            parts += ["", item.get("product_name", "")]
+            if item.get("intended_support"):
+                parts += ["Relevant support:", "- " + "\n- ".join(item["intended_support"][:4])]
+            if item.get("how_to_use"):
+                parts += ["How to use:", item["how_to_use"]]
+            if item.get("warnings"):
+                parts += ["Important warnings:", "- " + "\n- ".join(item["warnings"])]
+            if item.get("product_url"):
+                parts += ["Product link:", item["product_url"]]
     return "\n".join(parts)
 
 
