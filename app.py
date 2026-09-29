@@ -10,12 +10,11 @@ Run with:
 """
 import uuid
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 
-from feedback_store import DuplicateFeedbackError, save_feedback
 from guttify_agent import ConversationManager
 from guttify_chatbot import generate_response, load_llm
 
@@ -44,14 +43,6 @@ class ChatResponse(BaseModel):
     reply: str
     status: str
 
-
-class FeedbackRequest(BaseModel):
-    session_id: str
-    rating: int = Field(ge=1, le=5)
-
-
-class FeedbackResponse(BaseModel):
-    status: str
 
 
 @app.get("/")
@@ -121,18 +112,3 @@ def chat(req: ChatRequest):
 
     return ChatResponse(reply=reply, status=status)
 
-
-@app.post("/api/feedback", response_model=FeedbackResponse)
-def feedback(req: FeedbackRequest):
-    """
-    Called by the post-chat rating popup once the conversation has ended.
-    Stores exactly one rating per session — a repeat call for a session
-    that already submitted one is rejected with 409 rather than silently
-    overwriting it, so an accidental double-submit from the UI can't
-    corrupt the log.
-    """
-    try:
-        save_feedback(req.session_id, req.rating)
-    except DuplicateFeedbackError:
-        raise HTTPException(status_code=409, detail="Feedback already submitted for this session.")
-    return FeedbackResponse(status="ok")

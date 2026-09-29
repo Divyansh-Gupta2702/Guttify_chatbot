@@ -2,10 +2,6 @@ const messagesEl = document.getElementById("messages");
 const form = document.getElementById("chat-form");
 const input = document.getElementById("chat-input");
 
-const feedbackOverlay = document.getElementById("feedback-overlay");
-const feedbackConfirmation = document.getElementById("feedback-confirmation");
-const ratingButtons = Array.from(document.querySelectorAll(".rating-btn"));
-
 // A fresh session id every page load — refreshing the page means the
 // server starts a brand-new (empty) conversation_history for this session.
 let sessionId = null;
@@ -17,11 +13,6 @@ let sessionId = null;
 // script from scratch, requests a brand-new session, and the chat is
 // fully usable again.
 let chatEnded = false;
-
-// Guards against the rating popup ever showing twice in one chat
-// session, and against a second rating being submitted for one.
-let feedbackShown = false;
-let feedbackSubmitted = false;
 
 function escapeHtml(text) {
   const div = document.createElement("div");
@@ -94,7 +85,6 @@ form.addEventListener("submit", async (event) => {
 
     if (data.status === "SESSION_ENDED") {
       lockChat();
-      showFeedbackModal();
       return; // only explicit conversation-ending events lock the chat
     }
   } catch (err) {
@@ -118,40 +108,5 @@ function lockChat() {
   input.blur();
 }
 
-function showFeedbackModal() {
-  if (feedbackShown) return; // only ever shown once per chat session
-  feedbackShown = true;
-  feedbackOverlay.hidden = false;
-}
-
-function hideFeedbackModal() {
-  feedbackOverlay.hidden = true;
-}
-
-ratingButtons.forEach((btn) => {
-  btn.addEventListener("click", async () => {
-    if (feedbackSubmitted) return; // prevents accidental multiple submissions
-    feedbackSubmitted = true;
-
-    const rating = Number(btn.dataset.rating);
-    ratingButtons.forEach((b) => {
-      b.disabled = true;
-      b.classList.toggle("selected", b === btn);
-    });
-
-    try {
-      await fetch("/api/feedback", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ session_id: sessionId, rating }),
-      });
-    } catch (err) {
-      console.error("Feedback submit failed:", err);
-    }
-
-    feedbackConfirmation.hidden = false;
-    setTimeout(hideFeedbackModal, 1800);
-  });
-});
 
 initSession();
