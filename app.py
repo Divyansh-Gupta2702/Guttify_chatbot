@@ -9,8 +9,10 @@ Run with:
     uvicorn app:app --reload
 """
 import uuid
+import os
 
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -19,6 +21,23 @@ from guttify_agent import ConversationManager
 from guttify_chatbot import generate_response, load_llm
 
 app = FastAPI(title="GutGPT")
+
+# CORS: allows the local Shopify/frontend development server to call
+# the Render-hosted FastAPI backend.
+allowed_origins = [
+    origin.strip()
+    for origin in os.getenv("ALLOWED_ORIGINS", "").split(",")
+    if origin.strip()
+]
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=allowed_origins,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
 # Per-session conversation history + structured symptom state, held in
