@@ -150,6 +150,19 @@ def _mentions_unapproved_product(reply_text, approved_product):
     return any(name.lower() in low for name in _ALL_PRODUCT_NAMES if name and name.lower() not in approved_names)
 
 
+def _all_approved_links_mentioned(reply_text, approved_product):
+    """Check if all approved products' URLs are mentioned in the reply."""
+    approved_products = approved_product if isinstance(approved_product, list) else [approved_product]
+    if not approved_products:
+        return True
+    low = reply_text.lower()
+    for p in approved_products:
+        url = p.get("product_url", "")
+        if url and url.lower() not in low:
+            return False
+    return True
+
+
 def _deterministic_screening_reply(screening, product=None):
     if not screening:
         return "I need a little more information before I can assess the pattern."
@@ -250,7 +263,7 @@ APPROVED PRODUCT DATA:
             prompt_text += "\n\nCorrection: stay strictly within the supplied screening result and approved product."
         try:
             candidate = llm.invoke(prompt_text).content
-            if not product or not _mentions_unapproved_product(candidate, product):
+            if not product or (not _mentions_unapproved_product(candidate, product) and _all_approved_links_mentioned(candidate, product)):
                 return candidate
         except Exception:
             break
