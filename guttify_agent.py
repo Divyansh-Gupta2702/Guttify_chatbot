@@ -693,4 +693,4 @@ class ConversationManager:
 
 
 def re_fullmatch_number(text):
-    return bool(__import__("re").fullmatch(r"\s*\d+(?:\.\d+)?\s*", text or ""))
+    return bool(re.fullmatch(r"\s*\d+(?:\.\d+)?\s*", text or ""))

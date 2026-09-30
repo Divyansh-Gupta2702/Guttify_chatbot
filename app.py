@@ -9,10 +9,8 @@ Run with:
     uvicorn app:app --reload
 """
 import uuid
-import os
 
 from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -21,23 +19,6 @@ from guttify_agent import ConversationManager
 from guttify_chatbot import generate_response, load_llm
 
 app = FastAPI(title="GutGPT")
-
-# CORS: allows the local Shopify/frontend development server to call
-# the Render-hosted FastAPI backend.
-allowed_origins = [
-    origin.strip()
-    for origin in os.getenv("ALLOWED_ORIGINS", "").split(",")
-    if origin.strip()
-]
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=allowed_origins,
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
 # Per-session conversation history + structured symptom state, held in
@@ -50,7 +31,15 @@ app.mount("/static", StaticFiles(directory="static"), name="static")
 HISTORY: dict[str, list[dict]] = {}
 conversation_manager = ConversationManager()
 
-llm = load_llm()
+# Lazy-load LLM to avoid import-time failure if GROQ_API_KEY is not set.
+# This also makes testing easier.
+_llm = None
+
+def get_llm():
+    global _llm
+    if _llm is None:
+        _llm = load_llm()
+    return _llm
 
 
 class ChatRequest(BaseModel):
@@ -103,7 +92,7 @@ def chat(req: ChatRequest):
         reply = result["message"]
 
     elif status == "DIAGNOSIS":
-        reply = generate_response(llm, req.message, history, None, result.get("screening"))
+        reply = generate_response(get_llm(), req.message, history, None, result.get("screening"))
 
     elif status == "PRODUCT_INFO_FOUND":
         # Product-information questions are a separate conversation mode.
@@ -125,7 +114,7 @@ def chat(req: ChatRequest):
         # products to be shown together.
         products = result.get("recommendations") or []
         reply = generate_response(
-            llm,
+            get_llm(),
             req.message,
             history,
             products,

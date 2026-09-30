@@ -108,7 +108,7 @@
       if (!this.apiUrl) { this.addMessage("GutGPT is not configured yet.", "bot", "safety"); return; }
       this.sessionId = `guttify_${crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(36).slice(2)}`;
       try {
-        const res = await fetch(`${this.apiUrl}/api/session?session_id=${encodeURIComponent(this.sessionId)}`, { method:"POST" });
+        const res = await fetch(`${this.apiUrl}/api/session`, { method: "POST" });
         if (!res.ok) throw new Error("session");
         const data = await res.json();
         this.sessionId = data.session_id || this.sessionId;
@@ -135,7 +135,7 @@
         const data = await res.json();
         thinking.remove();
         this.addMessage(data.reply || "", "bot", data.status === "SAFETY_REVIEW" ? "safety" : "");
-        if (data.status === "RECOMMENDATION_FOUND" || data.status === "AMBIGUOUS") this.addProducts(data.products || []);
+        if (data.status === "RECOMMENDATION_FOUND" || data.status === "AMBIGUOUS") this.addProducts(data.recommendations || []);
         if (data.status === "SESSION_ENDED") this.ended = true;
       } catch {
         thinking.remove();
@@ -161,16 +161,16 @@
       const wrap = document.createElement("div"); wrap.className = "products";
       products.forEach(p => {
         const card = document.createElement("article"); card.className = "card";
-        if (p.image) {
-          const img = document.createElement("img"); img.className="pic"; img.src=p.image; img.alt=""; img.loading="lazy"; card.appendChild(img);
-        } else {
-          const placeholder=document.createElement("div"); placeholder.className="pic"; card.appendChild(placeholder);
-        }
+        // API returns product_name, not image - use placeholder
+        const placeholder=document.createElement("div"); placeholder.className="pic"; card.appendChild(placeholder);
         const body=document.createElement("div");
-        const h=document.createElement("h3"); h.textContent=p.name || "Guttify product";
-        const d=document.createElement("p"); d.textContent=p.description || "";
+        const h=document.createElement("h3"); h.textContent=p.product_name || "Guttify product";
+        // Use first intended_support item as description
+        const desc = (p.intended_support && p.intended_support[0]) || "";
+        const d=document.createElement("p"); d.textContent=desc;
         body.append(h,d);
-        if (p.url) { const a=document.createElement("a"); a.href=p.url; a.target="_blank"; a.rel="noopener noreferrer"; a.textContent="View Product"; body.appendChild(a); }
+        const url = p.product_url || p.url;
+        if (url) { const a=document.createElement("a"); a.href=url; a.target="_blank"; a.rel="noopener noreferrer"; a.textContent="View Product"; body.appendChild(a); }
         card.appendChild(body); wrap.appendChild(card);
       });
       this.shadowRoot.querySelector(".messages").appendChild(wrap);

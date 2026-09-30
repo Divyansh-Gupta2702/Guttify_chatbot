@@ -4,8 +4,20 @@ verify_ssl = true
 name = "pypi"
 
 [packages]
+fastapi = "*"
+uvicorn = {extras = ["standard"], version = "*"}
+langchain-core = "*"
+langchain-groq = "*"
+langchain-community = "*"
+langchain-huggingface = "*"
+langchain-text-splitters = "*"
+pypdf = "*"
+faiss-cpu = "*"
+huggingface-hub = "*"
+python-dotenv = "*"
 
 [dev-packages]
+pytest = "*"
 
 [requires]
 python_version = "3.11"

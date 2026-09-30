@@ -2,7 +2,7 @@
   const TAG = "guttify-gutgpt";
 
   class GuttifyGutGPT extends HTMLElement {
-    static get observedAttributes() { return ["api-url","title","subtitle","position","theme"]; }
+    static get observedAttributes() { return ["api-url","title","subtitle","position","theme","avatar"]; }
 
     constructor() {
       super();
@@ -27,6 +27,7 @@
     get titleText() { return this.getAttribute("title") || "GutGPT"; }
     get subtitleText() { return this.getAttribute("subtitle") || "Your gut health assistant"; }
     get position() { return this.getAttribute("position") || "bottom-right"; }
+    get avatarUrl() { return this.getAttribute("avatar") || "/vendor/gutgpt-avatar.png"; }
 
     render() {
       const right = this.position !== "bottom-left";
@@ -36,12 +37,15 @@
           *, *::before, *::after { box-sizing: border-box; }
           .launcher {
             position: fixed; z-index: 2147483000; bottom: 22px; ${right ? "right:22px" : "left:22px"};
-            width: 58px; height: 58px; border: 0; border-radius: 50%;
-            cursor: pointer; color:#fff; font:600 14px/1 Inter,system-ui,sans-serif;
-            background:linear-gradient(135deg,#c93f8f,#6a3f96);
-            box-shadow:0 10px 30px rgba(50,25,70,.25);
+            width: 68px; height: 68px; padding: 0; border: 3px solid #fff; border-radius: 50%;
+            cursor: pointer; background: linear-gradient(135deg,#7b2cff,#5d19d8);
+            box-shadow:0 10px 30px rgba(50,25,70,.30), 0 0 0 4px rgba(106,63,150,.12);
+            overflow: hidden; display:flex; align-items:center; justify-content:center;
+            transition:transform .2s ease, box-shadow .2s ease;
           }
-          .launcher span { display:block; font-size:11px; margin-top:2px; }
+          .launcher:hover { transform:scale(1.06); box-shadow:0 14px 35px rgba(50,25,70,.38), 0 0 0 5px rgba(106,63,150,.16); }
+          .launcher:active { transform:scale(.96); }
+          .launcher img { width:100%; height:100%; object-fit:cover; display:block; border-radius:50%; }
           .panel {
             position:fixed; z-index:2147483001; bottom:92px; ${right ? "right:22px" : "left:22px"};
             width:min(390px,calc(100vw - 28px)); height:min(650px,calc(100vh - 120px));
@@ -70,14 +74,16 @@
           form { display:flex; gap:8px; padding:11px; background:#fff; border-top:1px solid #ece3f0; }
           input { min-width:0; flex:1; border:1px solid #e2d8e7; border-radius:999px; padding:11px 13px; font:inherit; outline:none; }
           input:focus { border-color:#6a3f96; box-shadow:0 0 0 2px rgba(106,63,150,.12); }
-          button.send { width:42px; height:42px; border:0; border-radius:50%; background:#6a3f96; color:#fff; cursor:pointer; }
+          button.send { width:42px; height:42px; border:0; border-radius:50%; background:linear-gradient(135deg,#8134ed,#6020cf); color:#fff; cursor:pointer; font-size:23px; font-weight:700; line-height:1; display:flex; align-items:center; justify-content:center; padding:0; transition:transform .15s ease; }
+          button.send:hover { transform:scale(1.05); }
+          button.send:active { transform:scale(.94); }
           button:disabled, input:disabled { opacity:.55; cursor:not-allowed; }
           @media (max-width:560px) {
             .launcher { bottom:16px; ${right ? "right:16px" : "left:16px"}; }
             .panel { bottom:0; ${right ? "right:0" : "left:0"}; width:100vw; height:100dvh; max-height:100dvh; border-radius:0; }
           }
         </style>
-        <button class="launcher" aria-label="Open GutGPT">Gut<span>GPT</span></button>
+        <button class="launcher" type="button" aria-label="Open GutGPT"><img src="${this.escape(this.avatarUrl)}" alt="GutGPT" /></button>
         <section class="panel" role="dialog" aria-label="${this.escape(this.titleText)}">
           <header class="head">
             <div><h2>${this.escape(this.titleText)}</h2><p>${this.escape(this.subtitleText)}</p></div>
@@ -86,7 +92,7 @@
           <main class="messages" aria-live="polite"></main>
           <form autocomplete="off">
             <input aria-label="Message GutGPT" placeholder="Tell me what you're experiencing…" required />
-            <button class="send" type="submit" aria-label="Send">↑</button>
+            <button class="send" type="submit" aria-label="Send">✓</button>
           </form>
         </section>`;
     }

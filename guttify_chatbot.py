@@ -4,6 +4,7 @@ Clinical pattern selection is performed by clinical_rule_engine.py. Groq only
 turns the structured result into a clear conversational answer.
 """
 import os
+import re
 from langchain_core.prompts import PromptTemplate
 from langchain_groq import ChatGroq
 from recommendation_engine import products as ALL_PRODUCTS
