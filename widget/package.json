@@ -1,0 +1,8 @@
+{
+  "name": "guttify-gutgpt-widget",
+  "private": true,
+  "version": "1.0.0",
+  "scripts": {
+    "build": "node -e \"require('fs').copyFileSync('src/gutgpt-widget.js','dist/gutgpt-widget.js')\""
+  }
+}
