@@ -60,7 +60,6 @@ def next_question(state):
             q("pain_relation", "If you have abdominal pain, does it improve, worsen, or change after you pass stool?", state.abdominal_pain is True and state.pain_related_to_bowel_movement is None),
             q("blood", "Have you noticed any blood in or around the stool?", state.blood_present is None),
             q("anal_pain", "Do you have severe or sharp anal pain during or just after a bowel movement?", state.sharp_pain_during_stool is None),
-            q("weight_loss", "Have you had unexplained weight loss?", state.weight_loss is None),
             q("vomiting_fever_swelling", "Any repeated vomiting, fever, or severe abdominal swelling?", state.vomiting is None or state.fever is None or state.abdominal_distension is None),
             q("water", "Roughly how much water do you drink each day?", state.water_intake is None),
             q("fibre", "Would you describe your fibre/fruit/vegetable intake as low, average, or high?", state.fibre_intake is None),
@@ -82,7 +81,6 @@ def next_question(state):
             q("timing", "Is it worse after meals, when lying down, or at night?", state.night_time_symptoms is None),
             q("triggers", "Do tea/coffee, spicy, oily, or particular foods trigger it?", state.food_trigger is None),
             q("swallowing", "Any difficulty or pain swallowing, persistent vomiting, or vomiting blood?", state.difficulty_swallowing is None or state.persistent_vomiting is None or state.vomiting_blood is None),
-            q("weight_loss", "Any unexplained weight loss?", state.weight_loss is None),
         ]
     elif branch in ("bloating", "gas"):
         qs = [
