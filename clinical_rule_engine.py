@@ -1,7 +1,7 @@
 """Deterministic clinical-pattern screening for GutGPT.
 
 This module does not invent diagnoses. It selects the most supported
-preliminary pattern from the structured answers, records the evidence, and
+preliminary pattern from the structured answers,records the evidence, and
 separates that assessment from product eligibility.
 """
 import re
