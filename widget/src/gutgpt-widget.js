@@ -27,7 +27,12 @@
     get titleText() { return this.getAttribute("title") || "GutGPT"; }
     get subtitleText() { return this.getAttribute("subtitle") || "Your gut health assistant"; }
     get position() { return this.getAttribute("position") || "bottom-right"; }
-    get avatarUrl() { return this.getAttribute("avatar") || "/vendor/gutgpt-avatar.png"; }
+    get avatarUrl() { 
+      const base = this.getAttribute("avatar") || "/vendor/gutgpt-avatar.png";
+      // Allow cache-busting via avatar-version attribute, or use a fixed version
+      const version = this.getAttribute("avatar-version") || "1";
+      return base + (base.includes("?") ? "&" : "?") + "v=" + version;
+    }
 
     render() {
       const right = this.position !== "bottom-left";
