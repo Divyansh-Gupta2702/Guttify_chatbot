@@ -16,16 +16,6 @@ class TestV7ProductCoverage(unittest.TestCase):
         self.assertEqual(r["status"], "RECOMMENDATION_FOUND")
         self.assert_rec(r, "GloLux GlutaGlow Skin Effervescent Tablets")
 
-    def test_vitamin_d_concern(self):
-        r = ConversationManager().handle_message("d3", "I have vitamin D deficiency")
-        self.assertEqual(r["status"], "RECOMMENDATION_FOUND")
-        self.assert_rec(r, "Boost Vitamin D3+")
-
-    def test_vitamin_b12_concern(self):
-        r = ConversationManager().handle_message("b12", "I have low energy and brain fog")
-        self.assertEqual(r["status"], "RECOMMENDATION_FOUND")
-        self.assert_rec(r, "Boost Vitamin B12")
-
     def test_weight_management_concern(self):
         r = ConversationManager().handle_message("weight", "I want weight management support")
         self.assertEqual(r["status"], "RECOMMENDATION_FOUND")
@@ -44,13 +34,11 @@ class TestV7ProductCoverage(unittest.TestCase):
         self.assertEqual(r["status"], "RECOMMENDATION_FOUND")
         self.assert_rec(r, "Liver Lift")
 
-    def test_fatigue_is_clarified_not_randomly_assigned(self):
-        cm = ConversationManager()
-        r1 = cm.handle_message("fatigue", "I have fatigue")
-        self.assertEqual(r1["status"], "ASK")
-        r2 = cm.handle_message("fatigue", "I also have brain fog")
-        self.assertEqual(r2["status"], "RECOMMENDATION_FOUND")
-        self.assert_rec(r2, "Boost Vitamin B12")
+    def test_fatigue_recommends_liver_lift_directly(self):
+        """Fatigue should directly recommend Liver Lift (the only remaining fatigue-related product)."""
+        r = ConversationManager().handle_message("fatigue", "I have fatigue")
+        self.assertEqual(r["status"], "RECOMMENDATION_FOUND")
+        self.assert_rec(r, "Liver Lift")
 
     def test_constipation_maps_to_digest_products(self):
         s = SymptomState(primary_symptom="constipation")
@@ -125,8 +113,6 @@ class TestV8AllActiveProductEntryPoints(unittest.TestCase):
     def test_all_product_specific_routes_have_a_match(self):
         cases = [
             ("GloLux GlutaGlow Skin Effervescent Tablets", "I have dull skin"),
-            ("Boost Vitamin B12", "I have brain fog"),
-            ("Boost Vitamin D3+", "I have low immunity"),
             ("Apple Active", "I want weight management support"),
             ("Liver Lift", "I need liver support"),
             ("Guttify Poopie", "I have low fibre intake"),

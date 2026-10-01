@@ -13,15 +13,6 @@ PRODUCT_CONCERN_ALIASES = {
         "loss of skin elasticity", "early signs of aging", "early aging", "aging skin",
         "glowing skin", "skin glow", "skin health", "glutaglow", "glolux",
     ],
-    "Boost Vitamin B12": [
-        "b12 deficiency", "vitamin b12 deficiency", "low b12", "b12", "low energy",
-        "poor focus", "brain fog", "fatigue", "tiredness", "plant based diet",
-        "plant-based diet", "vegan diet", "vegetarian diet", "nutrient gap",
-    ],
-    "Boost Vitamin D3+": [
-        "vitamin d deficiency", "vitamin d", "low vitamin d", "low immunity", "weak bones",
-        "low mood", "low sun exposure", "not getting enough sunlight", "little sunlight",
-    ],
     "Apple Active": [
         "weight management", "weight management support", "manage my weight", "weight control",
         "metabolism support", "slow metabolism", "metabolism", "weight loss support",

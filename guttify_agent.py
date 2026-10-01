@@ -48,9 +48,6 @@ PRODUCT_ELIGIBILITY = {
 # product-relevant concerns to the product database (skin, vitamins, weight
 # management, liver support) after the gut-symptom parser has had first pick.
 PRODUCT_CONCERN_QUESTIONS = {
-    frozenset({"Boost Vitamin B12", "Liver Lift"}): (
-        "Fatigue can have more than one relevant Guttify option. Are you mainly looking for B12/energy support (for example low energy, brain fog, or a plant-based diet), or liver/digestion support?"
-    ),
 }
 
 

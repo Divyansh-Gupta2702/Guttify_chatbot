@@ -65,13 +65,12 @@ class TestV8RegressionFixes(unittest.TestCase):
         self.assertEqual(r["status"], "ASK")
 
     def test_product_concern_still_works_after_clarifying_question(self):
+        """Fatigue should directly recommend Liver Lift since Boost Vitamin B12 was removed."""
         cm = ConversationManager()
         sid = "fatigue-clarify"
         first = cm.handle_message(sid, "I have fatigue")
-        self.assertEqual(first["status"], "ASK")
-        second = cm.handle_message(sid, "I also have brain fog")
-        self.assertEqual(second["status"], "RECOMMENDATION_FOUND")
-        self.assertIn("Boost Vitamin B12", [p["product_name"] for p in second["recommendations"]])
+        self.assertEqual(first["status"], "RECOMMENDATION_FOUND")
+        self.assertIn("Liver Lift", [p["product_name"] for p in first["recommendations"]])
 
 
     def test_recommendation_does_not_repeat_after_follow_up(self):

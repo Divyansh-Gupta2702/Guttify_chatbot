@@ -104,8 +104,6 @@ PRODUCT_PRIMARY_ALIASES = {
     "Piles Pure": {"piles", "haemorrhoids", "hemorrhoids", "piles discomfort", "hemorrhoid discomfort", "anal swelling", "swelling around anus", "swollen anus"},
     "Piloease Anal Care Spray": {"piles", "haemorrhoids", "hemorrhoids", "anal fissures", "anal fissure", "anal discomfort", "itching", "irritation"},
     "GloLux GlutaGlow Skin Effervescent Tablets": {"dull skin", "dry skin", "uneven skin tone", "skin elasticity", "early signs of aging", "skin health"},
-    "Boost Vitamin B12": {"fatigue", "low energy", "poor focus", "brain fog", "b12 deficiency", "plant-based diet", "bloating", "constipation"},
-    "Boost Vitamin D3+": {"low immunity", "weak bones", "low mood", "vitamin d deficiency", "low sun exposure"},
     "Apple Active": {"weight management", "metabolism support", "bloating", "digestion concerns"},
     "Liver Lift": {"fatigue", "sluggishness", "bloating", "digestion concerns", "liver support"},
 }

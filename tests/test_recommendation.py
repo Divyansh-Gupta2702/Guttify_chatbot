@@ -258,7 +258,6 @@ def test_multi_intent_product_concern_is_not_lost_to_gut_symptom():
     from guttify_agent import ConversationManager
     cases = [
         ("I have bloating and dull skin", "GloLux GlutaGlow Skin Effervescent Tablets"),
-        ("I have bloating and vitamin D deficiency", "Boost Vitamin D3+"),
         ("I have constipation and low fibre intake", "Guttify Poopie"),
     ]
     for message, product_name in cases:
