@@ -457,6 +457,8 @@ class SymptomState:
     family_history_gi: bool = None
     red_flags: list = field(default_factory=list)
     asked_fields: list = field(default_factory=list)
+    # Track if the conditional weight-loss question (triggered by duration >= 1 month) has been asked
+    weight_loss_duration_asked: bool = False
 
     def to_dict(self):
         return asdict(self)
@@ -517,8 +519,75 @@ def extract_named_aspect(text):
 
 def extract_duration(text):
     n = normalize(text)
+    # First try the standard format (e.g., "1 month", "2 weeks", "6 months")
     m = re.search(r"\b(\d+(?:\.\d+)?)\s*(day|days|week|weeks|month|months|year|years)\b", n)
-    return m.group(0) if m else None
+    if m:
+        return m.group(0)
+    
+    # Handle natural language expressions
+    # "about a month", "around a month", "roughly a month"
+    if re.search(r"\b(about|around|roughly)\s+a\s+(month|months)\b", n):
+        return "1 month"
+    # "more than a month", "over a month", "greater than a month"
+    if re.search(r"\b(more than|over|greater than)\s+a\s+(month|months)\b", n):
+        return "1 month"
+    # "several months", "a few months", "many months"
+    if re.search(r"\b(several|a few|many)\s+months?\b", n):
+        return "3 months"
+    # "about X months", "around X months"
+    m = re.search(r"\b(about|around|roughly)\s+(\d+)\s+months?\b", n)
+    if m:
+        return f"{m.group(2)} months"
+    # "since January", "since Feb", etc. - estimate from current date
+    m = re.search(r"\bsince\s+(january|february|march|april|may|june|july|august|september|october|november|december|jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)\b", n)
+    if m:
+        month_name = m.group(1).lower()
+        month_map = {
+            "january": 1, "jan": 1,
+            "february": 2, "feb": 2,
+            "march": 3, "mar": 3,
+            "april": 4, "apr": 4,
+            "may": 5,
+            "june": 6, "jun": 6,
+            "july": 7, "jul": 7,
+            "august": 8, "aug": 8,
+            "september": 9, "sep": 9,
+            "october": 10, "oct": 10,
+            "november": 11, "nov": 11,
+            "december": 12, "dec": 12,
+        }
+        target_month = month_map.get(month_name)
+        if target_month:
+            from datetime import datetime
+            now = datetime.now()
+            current_month = now.month
+            # Calculate months difference
+            if target_month <= current_month:
+                months_diff = current_month - target_month
+            else:
+                months_diff = (12 - target_month) + current_month
+            # If months_diff is 0, it's less than a month - return a small value
+            if months_diff >= 1:
+                return f"{months_diff} months"
+            else:
+                return "2 weeks"  # Same month, treat as less than 1 month
+    
+    # "for a month", "for months", "for years"
+    if re.search(r"\bfor\s+a\s+month\b", n):
+        return "1 month"
+    if re.search(r"\bfor\s+months?\b", n):
+        return "2 months"
+    if re.search(r"\bfor\s+years?\b", n):
+        return "1 year"
+    # "a month ago", "months ago", "years ago"
+    if re.search(r"\ba\s+month\s+ago\b", n):
+        return "1 month"
+    if re.search(r"\bmonths?\s+ago\b", n):
+        return "2 months"
+    if re.search(r"\byears?\s+ago\b", n):
+        return "1 year"
+    
+    return None
 
 
 def extract_age(text):

@@ -186,7 +186,12 @@ class ConversationManager:
             self._set(data, "lump_or_prolapse", v)
 
         elif field == "weight_loss":
-            self._set(data, "weight_loss", extract_bool(text, ["weight loss", "losing weight"], ["no weight loss", "not losing weight", "no"]))
+            self._set(data, "weight_loss", extract_bool(text, ["weight loss", "losing weight", "lost weight", "have lost weight", "i lost weight", "yes", "yeah", "yep"], ["no weight loss", "not losing weight", "no"]))
+
+        elif field == "weight_loss_duration":
+            # Conditional weight-loss question triggered by duration >= 1 month
+            self._set(data, "weight_loss", extract_bool(text, ["weight loss", "losing weight", "lost weight", "have lost weight", "i lost weight", "yes", "yeah", "yep"], ["no weight loss", "not losing weight", "no"]))
+            data["weight_loss_duration_asked"] = True
 
         elif field == "vomiting_fever_swelling":
             self._set(data, "vomiting", extract_bool(text, ["vomiting", "vomit", "throwing up"], ["no vomiting", "not vomiting", "no"]))

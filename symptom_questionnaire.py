@@ -4,6 +4,8 @@ Questions are branch-specific and answerable in normal language. The agent
 records the exact field it asked, so replies like "5 months", "23", "no", or
 "yes, hard stools" are never treated as unrelated messages.
 """
+from clinical_rule_engine import _duration_days
+
 
 def next_question(state):
     asked = set(state.asked_fields or [])
@@ -16,12 +18,21 @@ def next_question(state):
     branch = state.primary_symptom
 
     # If the user has supplied enough information up front, these are skipped.
-    for item in [
-        q("duration", "How long has this been happening?", state.duration == "unknown"),
-        q("age", "What is your age?", state.age is None),
-    ]:
-        if item:
-            return item
+    # First ask duration, then conditionally ask weight-loss if duration >= 1 month,
+    # then ask age.
+    if state.duration == "unknown":
+        return q("duration", "How long has this been happening?", True)
+
+    # Duration is known - check if we should ask the conditional weight-loss question
+    if (state.weight_loss is None
+            and not state.weight_loss_duration_asked
+            and state.duration != "unknown"):
+        days = _duration_days(state.duration)
+        if days is not None and days >= 30:
+            return q("weight_loss_duration", "Have you lost any significant weight?", True)
+
+    if state.age is None:
+        return q("age", "What is your age?", True)
 
     if branch in ("constipation", "hard stools"):
         # If bleeding is reported during the constipation interview, switch
