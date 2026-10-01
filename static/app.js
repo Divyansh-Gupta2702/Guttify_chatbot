@@ -20,11 +20,23 @@ function escapeHtml(text) {
   return div.innerHTML;
 }
 
-// Turns any http(s)/www URL in bot text into a clickable link. Everything
-// else is HTML-escaped first, so this cannot be used to inject markup.
+// Safely render a minimal subset of Markdown (bold, line breaks)
+// after HTML-escaping to prevent XSS.
+function renderMarkdown(text) {
+  // First escape all HTML
+  let html = escapeHtml(text);
+  // Convert **text** to <strong>text</strong>
+  html = html.replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>");
+  // Convert line breaks to <br>
+  html = html.replace(/\n/g, "<br>");
+  return html;
+}
+
+// Turns any http(s)/www URL in bot text into a clickable link.
+// Runs after Markdown rendering so links inside bold text work.
 function linkify(text) {
   const urlPattern = /((https?:\/\/|www\.)[^\s<]+)/gi;
-  return escapeHtml(text).replace(urlPattern, (match) => {
+  return text.replace(urlPattern, (match) => {
     const href = match.startsWith("http") ? match : `https://${match}`;
     return `<a href="${href}" target="_blank" rel="noopener noreferrer">${match}</a>`;
   });
@@ -34,7 +46,8 @@ function addMessage(text, sender, variant = "") {
   const div = document.createElement("div");
   div.className = `msg ${sender} ${variant}`.trim();
   if (sender === "bot") {
-    div.innerHTML = linkify(text);
+    // Render markdown (bold, line breaks) then linkify URLs
+    div.innerHTML = linkify(renderMarkdown(text));
   } else {
     div.textContent = text;
   }

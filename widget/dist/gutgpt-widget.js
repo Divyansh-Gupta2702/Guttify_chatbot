@@ -152,10 +152,26 @@
       }
     }
 
+    // Safely render a minimal subset of Markdown (bold, line breaks)
+    // after HTML-escaping to prevent XSS.
+    renderMarkdown(text) {
+      // First escape all HTML
+      let html = this.escape(text);
+      // Convert **text** to <strong>text</strong>
+      html = html.replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>");
+      // Convert line breaks to <br>
+      html = html.replace(/\n/g, "<br>");
+      return html;
+    }
+
     addMessage(text, sender, variant="") {
       const el = document.createElement("div");
       el.className = `msg ${sender} ${variant}`;
-      el.textContent = text;
+      if (sender === "bot") {
+        el.innerHTML = this.renderMarkdown(text);
+      } else {
+        el.textContent = text;
+      }
       this.shadowRoot.querySelector(".messages").appendChild(el);
       const box = this.shadowRoot.querySelector(".messages"); box.scrollTop = box.scrollHeight;
       return el;
