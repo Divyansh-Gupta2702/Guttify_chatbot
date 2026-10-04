@@ -101,6 +101,53 @@ body {
   font-weight: 600;
 }
 
+/* Product recommendation cards */
+.products {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 8px;
+}
+
+.product-card {
+  background: white;
+  border: 1px solid var(--surface-border);
+  border-radius: 12px;
+  padding: 14px;
+  box-shadow: 0 2px 8px rgba(35,25,45,0.08);
+}
+
+.product-card h3 {
+  margin: 0 0 6px;
+  font-size: 1rem;
+  font-weight: 600;
+  color: var(--ink-900);
+}
+
+.product-card p {
+  margin: 0 0 10px;
+  font-size: 0.85rem;
+  color: var(--ink-500);
+  line-height: 1.4;
+}
+
+.product-link {
+  display: inline-block;
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: var(--magenta-500);
+  text-decoration: none;
+  padding: 6px 12px;
+  border: 1px solid var(--magenta-500);
+  border-radius: 6px;
+  transition: background 0.15s, color 0.15s;
+}
+
+.product-link:hover {
+  background: var(--magenta-500);
+  color: white;
+}
+
 .msg.bot.safety {
   background: var(--danger-50);
   border-color: #e8cdb8;

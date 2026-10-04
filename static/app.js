@@ -56,6 +56,38 @@ function addMessage(text, sender, variant = "") {
   return div;
 }
 
+// Display product recommendation cards with clickable links
+function addProducts(products) {
+  if (!products || !products.length) return;
+  const wrap = document.createElement("div");
+  wrap.className = "products";
+  products.forEach(p => {
+    const card = document.createElement("article");
+    card.className = "product-card";
+    const body = document.createElement("div");
+    const h = document.createElement("h3");
+    h.textContent = p.product_name || "Guttify product";
+    const desc = (p.intended_support && p.intended_support[0]) || "";
+    const d = document.createElement("p");
+    d.textContent = desc;
+    body.append(h, d);
+    const url = p.product_url || p.url;
+    if (url) {
+      const a = document.createElement("a");
+      a.href = url;
+      a.target = "_blank";
+      a.rel = "noopener noreferrer";
+      a.textContent = "View Product";
+      a.className = "product-link";
+      body.appendChild(a);
+    }
+    card.appendChild(body);
+    wrap.appendChild(card);
+  });
+  messagesEl.appendChild(wrap);
+  messagesEl.scrollTop = messagesEl.scrollHeight;
+}
+
 async function initSession() {
   const res = await fetch("/api/session", { method: "POST" });
   const data = await res.json();
@@ -95,6 +127,11 @@ form.addEventListener("submit", async (event) => {
 
     thinking.remove();
     addMessage(data.reply, "bot", data.status === "SAFETY_REVIEW" ? "safety" : "");
+
+    // Display product cards for recommendations
+    if (data.status === "RECOMMENDATION_FOUND" || data.status === "AMBIGUOUS") {
+      addProducts(data.recommendations || []);
+    }
 
     if (data.status === "SESSION_ENDED") {
       lockChat();
