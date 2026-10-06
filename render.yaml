@@ -1,9 +1,0 @@
-services:
-  - type: web
-    name: gutgpt
-    runtime: docker
-    dockerfilePath: ./Dockerfile
-    dockerContext: .
-    envVars:
-      - key: GROQ_API_KEY
-        sync: false
