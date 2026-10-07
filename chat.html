@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>GutGPT Chat</title>
+  <style>
+    *{box-sizing:border-box} body{margin:0;background:#f5f1f7;color:#241f2b;font-family:Inter,system-ui,-apple-system,Segoe UI,sans-serif}
+    .app{width:min(760px,100%);height:100dvh;margin:auto;display:flex;flex-direction:column;background:#faf8fb;box-shadow:0 0 35px #00000012}
+    header{padding:16px 18px;background:linear-gradient(135deg,#c93f8f,#6a3f96);color:#fff;display:flex;align-items:center;justify-content:space-between}
+    h1{font:600 20px Georgia,serif;margin:0}.sub{font-size:11px;opacity:.85;margin-top:3px}
+    select{border:1px solid #ffffff55;border-radius:9px;background:#ffffff18;color:#fff;padding:8px;outline:0}select option{color:#222;background:#fff}
+    #messages{flex:1;overflow:auto;padding:20px;display:flex;flex-direction:column;gap:10px}.msg{max-width:82%;padding:11px 13px;border-radius:14px;white-space:pre-wrap;overflow-wrap:anywhere}.bot{align-self:flex-start;background:#fff;border:1px solid #e8dfea;border-bottom-left-radius:4px}.user{align-self:flex-end;background:#6a3f96;color:#fff;border-bottom-right-radius:4px}.error{background:#fff1eb;color:#a9552e;border-color:#edcdbd}.typing{opacity:.65;font-style:italic}
+    .products{display:flex;flex-direction:column;gap:8px;max-width:82%}.card{background:#fff;border:1px solid #e8dfea;border-radius:12px;padding:11px}.card b{font-size:14px}.card p{font-size:12px;color:#665f70;margin:5px 0}.card a{font-size:12px;color:#a82e78;font-weight:600;text-decoration:none}
+    .status{min-height:18px;padding:0 16px 7px;color:#706979;font-size:11px}.composer{display:flex;gap:8px;padding:12px;background:#fff;border-top:1px solid #e8dfea}.composer input{flex:1;min-width:0;border:1px solid #ded3e4;border-radius:24px;padding:12px 14px;font:inherit;outline:0}.composer input:focus{border-color:#6a3f96;box-shadow:0 0 0 3px #6a3f9618}.composer button{width:46px;border:0;border-radius:50%;background:#6a3f96;color:#fff;font-size:20px;cursor:pointer}.composer button:disabled,.composer input:disabled{opacity:.5;cursor:not-allowed}
+    @media(max-width:600px){.app{width:100%}.msg,.products{max-width:90%}}
+  </style>
+</head>
+<body>
+<div class="app">
+  <header><div><h1>GutGPT</h1><div class="sub">Guttify's gut-health assessment assistant</div></div>
+    <select id="language" aria-label="Language"><option value="en">English</option><option value="hi">हिन्दी</option><option value="hinglish">Hinglish</option><option value="bn">বাংলা</option><option value="mr">मराठी</option><option value="ta">தமிழ்</option><option value="te">తెలుగు</option><option value="gu">ગુજરાતી</option><option value="kn">ಕನ್ನಡ</option><option value="ml">മലയാളം</option><option value="pa">ਪੰਜਾਬੀ</option><option value="or">ଓଡ଼ିଆ</option></select>
+  </header>
+  <main id="messages" aria-live="polite"></main>
+  <div class="status" id="status"></div>
+  <form class="composer" id="form"><input id="input" maxlength="4000" placeholder="Tell me what you're experiencing…" autocomplete="off" required><button id="send" type="submit">✓</button></form>
+</div>
+<script>
+(() => {
+  const API = window.GUTGPT_API_URL || location.origin;
+  const messages=document.getElementById('messages'), input=document.getElementById('input'), send=document.getElementById('send'), form=document.getElementById('form'), status=document.getElementById('status'), language=document.getElementById('language');
+  let sessionId=null,busy=false,ended=false;
+  const labels={en:{hello:"Hi! I'm GutGPT, Guttify's gut-health assessment assistant. Tell me what you're experiencing.",placeholder:'Tell me what you’re experiencing…'},hi:{hello:'नमस्ते! मैं GutGPT हूँ। आपको क्या परेशानी हो रही है, बताइए।',placeholder:'बताइए आपको क्या परेशानी हो रही है…'},hinglish:{hello:'Hi! Main GutGPT hoon. Aapko kya problem ho rahi hai, bataiye.',placeholder:'Batayein aapko kya problem ho rahi hai…'}};
+  function add(text,who='bot',cls=''){const e=document.createElement('div');e.className=`msg ${who} ${cls}`;e.textContent=text;messages.appendChild(e);messages.scrollTop=messages.scrollHeight;return e}
+  function products(items){if(!Array.isArray(items)||!items.length)return;const w=document.createElement('div');w.className='products';items.forEach(p=>{const c=document.createElement('div');c.className='card';const b=document.createElement('b');b.textContent=p.product_name||'Guttify product';c.appendChild(b);const d=Array.isArray(p.intended_support)?p.intended_support[0]:'';if(d){const x=document.createElement('p');x.textContent=d;c.appendChild(x)}const u=p.product_url||p.url;if(typeof u==='string'&&/^https?:\\/\\//i.test(u)){const a=document.createElement('a');a.href=u;a.target='_blank';a.rel='noopener';a.textContent='View Product';c.appendChild(a)}w.appendChild(c)});messages.appendChild(w);messages.scrollTop=messages.scrollHeight}
+  async function request(path,opts={}){const r=await fetch(API+path,opts);if(!r.ok)throw Error('HTTP '+r.status);return r.json()}
+  async function newSession(){busy=true;input.disabled=true;send.disabled=true;status.textContent='Starting assessment…';try{const d=await request('/api/session',{method:'POST'});sessionId=d.session_id;messages.innerHTML='';add(labels[language.value]?.hello||labels.en.hello);status.textContent='';ended=false}catch(e){status.textContent='';add('Could not connect to GutGPT. Check that the backend is running.','bot','error')}finally{busy=false;input.disabled=false;send.disabled=false;input.focus()}}
+  async function sendMessage(){if(busy||ended||!sessionId)return;const text=input.value.trim();if(!text)return;add(text,'user');input.value='';busy=true;input.disabled=true;send.disabled=true;const t=add('Thinking…','bot','typing');try{const d=await request('/api/chat',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({session_id:sessionId,message:text})});t.remove();add(d.reply,'bot',d.status==='SAFETY_REVIEW'?'error':'');products(d.recommendations);if(d.status==='SESSION_ENDED')ended=true}catch(e){t.remove();add('Something went wrong reaching GutGPT. Please try again.','bot','error')}finally{busy=false;if(!ended){input.disabled=false;send.disabled=false;input.focus()}}}
+  language.addEventListener('change',newSession);form.addEventListener('submit',e=>{e.preventDefault();sendMessage()});newSession();
+})();
+</script>
+</body>
+</html>

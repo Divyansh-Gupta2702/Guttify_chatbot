@@ -138,22 +138,6 @@
         font-size: 11px;
       }
 
-      .language-select {
-        margin-top: 7px;
-        padding: 5px 8px;
-        border: 1px solid rgba(255,255,255,.45);
-        border-radius: 8px;
-        background: rgba(255,255,255,.14);
-        color: #fff;
-        font: 11px/1.2 Inter, system-ui, sans-serif;
-        outline: none;
-      }
-
-      .language-select option {
-        color: #241f2b;
-        background: #fff;
-      }
-
       .close {
         border: 0;
         background: transparent;
@@ -319,20 +303,6 @@
         <div class="head-copy">
           <h2>GutGPT</h2>
           <p>Guttify's gut-health assistant</p>
-          <select class="language-select" aria-label="Choose language">
-            <option value="en">English</option>
-            <option value="hi">हिन्दी</option>
-            <option value="hinglish">Hinglish</option>
-            <option value="bn">বাংলা</option>
-            <option value="mr">मराठी</option>
-            <option value="ta">தமிழ்</option>
-            <option value="te">తెలుగు</option>
-            <option value="gu">ગુજરાતી</option>
-            <option value="kn">ಕನ್ನಡ</option>
-            <option value="ml">മലയാളം</option>
-            <option value="pa">ਪੰਜਾਬੀ</option>
-            <option value="or">ଓଡ଼ିଆ</option>
-          </select>
         </div>
         <button class="close" type="button" aria-label="Close GutGPT">×</button>
       </header>
@@ -361,12 +331,10 @@
   const input = $("input");
   const sendButton = $(".send");
   const status = $(".status");
-  const languageSelect = $(".language-select");
 
   let sessionId = null;
   let busy = false;
   let ended = false;
-  let selectedLanguage = languageSelect.value || "en";
 
   function escapeHtml(value) {
     const div = document.createElement("div");
@@ -469,28 +437,22 @@
   }
 
   async function initSession() {
-    // A page refresh starts a new assessment. The selected language is pinned
-    // to this new session so every question/answer remains consistent.
+    // A page refresh must always start a completely new assessment.
+    // Do not restore an old session from localStorage: the backend session
+    // contains assessment-completion state.
     status.textContent = "Connecting…";
-    selectedLanguage = languageSelect.value || "en";
 
     try {
-      const data = await fetchJson("/api/session", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ language: selectedLanguage }),
-      });
+      const data = await fetchJson("/api/session", { method: "POST" });
 
       if (typeof data.session_id !== "string" || !data.session_id) {
         throw new Error("INVALID_SESSION");
       }
 
       sessionId = data.session_id;
-      ended = false;
+
       addMessage(
-        typeof data.greeting === "string"
-          ? data.greeting
-          : "Hi! I'm GutGPT, Guttify's gut-health assessment assistant. Tell me what you're experiencing.",
+        "Hi! I'm GutGPT, Guttify's gut-health assessment assistant. Tell me what you're experiencing.",
         "bot"
       );
       status.textContent = "";
@@ -520,7 +482,6 @@
         body: JSON.stringify({
           session_id: sessionId,
           message,
-          language: selectedLanguage,
         }),
       });
 
@@ -563,17 +524,6 @@
       if (!ended) input.focus();
     }
   }
-
-  languageSelect.addEventListener("change", () => {
-    // Changing language starts a fresh assessment so language state and
-    // question context are never mixed.
-    selectedLanguage = languageSelect.value || "en";
-    messages.innerHTML = "";
-    sessionId = null;
-    ended = false;
-    setBusy(true);
-    void initSession().finally(() => setBusy(false));
-  });
 
   launcher.addEventListener("click", () => {
     const isOpen = panel.classList.toggle("open");
