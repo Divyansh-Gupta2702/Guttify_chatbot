@@ -23,7 +23,7 @@
 
   const STORAGE_KEY = `gutgpt_session_${encodeURIComponent(GUTGPT_API_URL)}_${encodeURIComponent(window.location.hostname)}`;
   const ROOT_ID = "gutgpt-embeddable-widget";
-  const REQUEST_TIMEOUT_MS = 30000;
+  const REQUEST_TIMEOUT_MS = 90000;
 
   if (document.getElementById(ROOT_ID)) return;
 
