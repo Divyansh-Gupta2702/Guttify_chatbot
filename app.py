@@ -31,7 +31,7 @@ from guttify_chatbot import _deterministic_product_reply, _deterministic_screeni
 
 BASE_DIR = Path(__file__).resolve().parent
 WIDGET_FILE = BASE_DIR / "gutgpt-widget.js"
-CHAT_FILE = BASE_DIR / "chat.html"
+FRONTEND_FILE = BASE_DIR / "index.html"
 
 app = FastAPI(title="GutGPT API", version="1.0.0")
 
@@ -71,19 +71,19 @@ class ChatResponse(BaseModel):
     recommendations: list[dict] = Field(default_factory=list)
 
 
-@app.get("/", response_model=str)
+@app.get("/")
+def frontend():
+    """Serve the basic browser chat frontend at the backend root."""
+    if not FRONTEND_FILE.exists():
+        from fastapi import HTTPException
+        raise HTTPException(status_code=500, detail="GutGPT frontend is not installed.")
+    return FileResponse(FRONTEND_FILE, media_type="text/html")
+
+
+@app.get("/api/health", response_model=str)
 def health():
     """Simple backend health response."""
     return "GutGPT chatbot backend is running."
-
-
-@app.get("/chat")
-def chat_frontend():
-    """Serve a lightweight browser frontend for testing the live backend."""
-    if not CHAT_FILE.exists():
-        from fastapi import HTTPException
-        raise HTTPException(status_code=500, detail="GutGPT chat frontend is not installed.")
-    return FileResponse(CHAT_FILE, media_type="text/html", headers={"Cache-Control": "no-store"})
 
 
 @app.get("/gutgpt-widget.js")

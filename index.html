@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>GutGPT</title>
+<style>
+*{box-sizing:border-box}body{margin:0;font-family:Inter,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:#f7f3f8;color:#241f2b;display:flex;justify-content:center;min-height:100vh}.app{width:min(760px,100%);height:100vh;background:#fff;display:flex;flex-direction:column;box-shadow:0 0 35px rgba(60,30,70,.12)}header{padding:18px 20px;background:linear-gradient(135deg,#c93f8f,#6a3f96);color:#fff}header h1{margin:0;font:600 23px Georgia,serif}header p{margin:4px 0 0;font-size:12px;opacity:.9}.messages{flex:1;overflow:auto;padding:20px;display:flex;flex-direction:column;gap:12px;background:#faf8fb}.msg{max-width:82%;padding:11px 14px;border-radius:15px;white-space:pre-wrap;overflow-wrap:anywhere;line-height:1.5}.bot{align-self:flex-start;background:#fff;border:1px solid #eadfee;border-bottom-left-radius:4px}.user{align-self:flex-end;background:#6a3f96;color:#fff;border-bottom-right-radius:4px}.error{background:#fff3ed;color:#a9552e;border-color:#e8cdb8}.thinking{color:#766e7d;font-style:italic}.products{display:flex;flex-direction:column;gap:9px;max-width:82%}.product{padding:12px;background:#fff;border:1px solid #e5dbea;border-radius:12px}.product strong{display:block;margin-bottom:4px}.product small{display:block;color:#665f70;margin-bottom:7px}.product a{color:#a82e78;text-decoration:none;font-weight:600;font-size:13px}.status{min-height:18px;padding:0 18px 7px;color:#766e7d;font-size:11px}form{display:flex;gap:9px;padding:12px;border-top:1px solid #eee5f0;background:#fff}input{flex:1;min-width:0;border:1px solid #ddd1e3;border-radius:999px;padding:12px 15px;font:inherit;outline:none}input:focus{border-color:#6a3f96;box-shadow:0 0 0 3px rgba(106,63,150,.1)}button{border:0;border-radius:999px;background:#6a3f96;color:#fff;padding:0 20px;font-weight:700;cursor:pointer}button:disabled,input:disabled{opacity:.55;cursor:not-allowed}@media(max-width:600px){.app{height:100dvh}.messages{padding:14px}.msg,.products{max-width:90%}}
+</style>
+</head>
+<body>
+<div class="app">
+<header><h1>GutGPT</h1><p>Guttify's gut-health assessment assistant</p></header>
+<main id="messages" class="messages"></main>
+<div id="status" class="status"></div>
+<form id="form"><input id="input" maxlength="4000" autocomplete="off" placeholder="Tell me what you're experiencing…" required><button id="send" type="submit">Send</button></form>
+</div>
+<script>
+(() => {
+const messages=document.getElementById('messages'), status=document.getElementById('status'), input=document.getElementById('input'), send=document.getElementById('send');
+let sessionId=null,busy=false,ended=false;
+const add=(text,who='bot',extra='')=>{const e=document.createElement('div');e.className=`msg ${who} ${extra}`;e.textContent=text;messages.appendChild(e);messages.scrollTop=messages.scrollHeight;return e};
+const products=(items)=>{if(!Array.isArray(items)||!items.length)return;const wrap=document.createElement('div');wrap.className='products';items.forEach(p=>{const e=document.createElement('div');e.className='product';const n=document.createElement('strong');n.textContent=p.product_name||'Guttify product';const d=document.createElement('small');const s=Array.isArray(p.intended_support)?p.intended_support[0]:'';d.textContent=s||'';e.append(n,d);const u=p.product_url||p.url;if(typeof u==='string'&&/^https?:\\/\\//i.test(u)){const a=document.createElement('a');a.href=u;a.target='_blank';a.rel='noopener noreferrer';a.textContent='View Product';e.appendChild(a)}wrap.appendChild(e)});messages.appendChild(wrap);messages.scrollTop=messages.scrollHeight};
+async function api(path,options={}){const r=await fetch(path,options);let data=null;try{data=await r.json()}catch{}if(!r.ok)throw new Error(data?.detail||`HTTP ${r.status}`);return data}
+async function init(){status.textContent='Connecting to GutGPT…';try{const d=await api('/api/session',{method:'POST'});if(!d.session_id)throw new Error('No session id returned');sessionId=d.session_id;add("Hi! I'm GutGPT, Guttify's gut-health assessment assistant. Tell me what you're experiencing.");status.textContent='';input.focus()}catch(e){console.error(e);status.textContent='';add('I could not connect to the GutGPT backend. Please check that the backend is running.','bot','error')}}
+async function sendMessage(){if(busy||ended||!sessionId)return;const message=input.value.trim();if(!message)return;add(message,'user');input.value='';busy=true;input.disabled=send.disabled=true;const thinking=add('Thinking…','bot','thinking');try{const d=await api('/api/chat',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({session_id:sessionId,message})});thinking.remove();add(d.reply||'No response received.');products(d.recommendations);if(d.status==='SESSION_ENDED'){ended=true;status.textContent='Session ended.'}}catch(e){console.error(e);thinking.remove();add(`Something went wrong: ${e.message}`,'bot','error')}finally{busy=false;input.disabled=send.disabled=ended;if(!ended)input.focus()}}
+form.addEventListener('submit',e=>{e.preventDefault();sendMessage()});init();
+})();
+</script>
+</body>
+</html>
