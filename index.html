@@ -32,9 +32,17 @@
     }
 
     header {
-      padding: 18px 20px;
+      padding: 15px 18px;
       background: linear-gradient(135deg, #c93f8f, #6a3f96);
       color: #fff;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 14px;
+    }
+
+    .brand {
+      min-width: 0;
     }
 
     header h1 {
@@ -45,6 +53,48 @@
     header p {
       margin: 4px 0 0;
       font-size: 12px;
+      opacity: 0.9;
+    }
+
+    .language-control {
+      position: relative;
+      flex-shrink: 0;
+    }
+
+    .language-select {
+      appearance: none;
+      -webkit-appearance: none;
+      border: 1px solid rgba(255, 255, 255, 0.35);
+      border-radius: 999px;
+      background: rgba(255, 255, 255, 0.14);
+      color: #fff;
+      padding: 9px 34px 9px 13px;
+      font: inherit;
+      font-size: 13px;
+      font-weight: 600;
+      cursor: pointer;
+      outline: none;
+      min-width: 116px;
+    }
+
+    .language-select:hover,
+    .language-select:focus {
+      background: rgba(255, 255, 255, 0.22);
+      border-color: rgba(255, 255, 255, 0.55);
+    }
+
+    .language-select option {
+      color: #241f2b;
+      background: #fff;
+    }
+
+    .language-arrow {
+      position: absolute;
+      right: 13px;
+      top: 50%;
+      transform: translateY(-55%);
+      pointer-events: none;
+      font-size: 11px;
       opacity: 0.9;
     }
 
@@ -184,6 +234,24 @@
         height: 100dvh;
       }
 
+      header {
+        padding: 13px 14px;
+      }
+
+      header h1 {
+        font-size: 21px;
+      }
+
+      header p {
+        font-size: 11px;
+      }
+
+      .language-select {
+        min-width: 100px;
+        padding: 8px 30px 8px 11px;
+        font-size: 12px;
+      }
+
       .messages {
         padding: 14px;
       }
@@ -207,12 +275,34 @@
 
 <body>
   <div class="app">
-    <header>
-      <h1>GutGPT</h1>
-      <p>Guttify's gut-health assessment assistant</p>
-    </header>
+<header>
+  <div class="brand">
+    <h1>GutGPT</h1>
+    <p id="subtitle">Guttify's gut-health assessment assistant</p>
+  </div>
 
-```
+  <div class="language-control">
+    <select
+      id="language"
+      class="language-select"
+      aria-label="Select language"
+    >
+      <option value="en">English</option>
+      <option value="hi">हिन्दी</option>
+      <option value="bn">বাংলা</option>
+      <option value="ta">தமிழ்</option>
+      <option value="te">తెలుగు</option>
+      <option value="mr">मराठी</option>
+      <option value="gu">ગુજરાતી</option>
+      <option value="kn">ಕನ್ನಡ</option>
+      <option value="ml">മലയാളം</option>
+      <option value="pa">ਪੰਜਾਬੀ</option>
+    </select>
+
+    <span class="language-arrow">▼</span>
+  </div>
+</header>
+
 <main id="messages" class="messages"></main>
 
 <div id="status" class="status"></div>
@@ -226,10 +316,11 @@
     placeholder="Tell me what you're experiencing…"
     required
   >
-  <button id="send" type="submit">Send</button>
-</form>
-```
 
+  <button id="send" type="submit">
+    Send
+  </button>
+</form>
   </div>
 
   <script>
@@ -239,10 +330,138 @@
       const input = document.getElementById("input");
       const send = document.getElementById("send");
       const form = document.getElementById("form");
+      const language = document.getElementById("language");
+      const subtitle = document.getElementById("subtitle");
 
       let sessionId = crypto.randomUUID();
       let busy = false;
       let ended = false;
+
+      const translations = {
+        en: {
+          subtitle: "Guttify's gut-health assessment assistant",
+          greeting:
+            "Hi! I'm GutGPT, Guttify's gut-health assessment assistant. Tell me what you're experiencing.",
+          placeholder: "Tell me what you're experiencing…",
+          send: "Send",
+          thinking: "Thinking…",
+          sessionEnded: "Session ended.",
+          noResponse: "No response received.",
+          error: "Something went wrong"
+        },
+
+        hi: {
+          subtitle: "Guttify का पेट और पाचन स्वास्थ्य सहायक",
+          greeting:
+            "नमस्ते! मैं GutGPT हूँ, Guttify का पेट और पाचन स्वास्थ्य सहायक। कृपया बताएं कि आपको क्या परेशानी हो रही है।",
+          placeholder: "बताएं कि आपको क्या परेशानी हो रही है…",
+          send: "भेजें",
+          thinking: "सोच रहा हूँ…",
+          sessionEnded: "सेशन समाप्त हो गया।",
+          noResponse: "कोई जवाब नहीं मिला।",
+          error: "कुछ गलत हो गया"
+        },
+
+        bn: {
+          subtitle: "Guttify-এর অন্ত্র ও হজম স্বাস্থ্য সহকারী",
+          greeting:
+            "হ্যালো! আমি GutGPT, Guttify-এর অন্ত্র ও হজম স্বাস্থ্য সহকারী। আপনার কী সমস্যা হচ্ছে তা বলুন।",
+          placeholder: "আপনার কী সমস্যা হচ্ছে তা বলুন…",
+          send: "পাঠান",
+          thinking: "ভাবছি…",
+          sessionEnded: "সেশন শেষ হয়েছে।",
+          noResponse: "কোনো উত্তর পাওয়া যায়নি।",
+          error: "কিছু ভুল হয়েছে"
+        },
+
+        ta: {
+          subtitle: "Guttify-ன் குடல் மற்றும் செரிமான ஆரோக்கிய உதவியாளர்",
+          greeting:
+            "வணக்கம்! நான் GutGPT, Guttify-ன் குடல் மற்றும் செரிமான ஆரோக்கிய உதவியாளர். உங்களுக்கு என்ன பிரச்சனை உள்ளது என்பதைச் சொல்லுங்கள்.",
+          placeholder: "உங்களுக்கு என்ன பிரச்சனை உள்ளது என்பதைச் சொல்லுங்கள்…",
+          send: "அனுப்பு",
+          thinking: "சிந்திக்கிறேன்…",
+          sessionEnded: "அமர்வு முடிந்தது.",
+          noResponse: "பதில் எதுவும் கிடைக்கவில்லை.",
+          error: "ஏதோ தவறு நடந்துள்ளது"
+        },
+
+        te: {
+          subtitle: "Guttify యొక్క జీర్ణ ఆరోగ్య సహాయకుడు",
+          greeting:
+            "నమస్కారం! నేను GutGPT, Guttify యొక్క జీర్ణ ఆరోగ్య సహాయకుడిని. మీకు ఎదురవుతున్న సమస్యను వివరించండి.",
+          placeholder: "మీకు ఎదురవుతున్న సమస్యను వివరించండి…",
+          send: "పంపండి",
+          thinking: "ఆలోచిస్తున్నాను…",
+          sessionEnded: "సెషన్ ముగిసింది.",
+          noResponse: "సమాధానం అందలేదు.",
+          error: "ఏదో తప్పు జరిగింది"
+        },
+
+        mr: {
+          subtitle: "Guttify चा पचन आरोग्य सहाय्यक",
+          greeting:
+            "नमस्कार! मी GutGPT, Guttify चा पचन आरोग्य सहाय्यक आहे. तुम्हाला काय त्रास होत आहे ते सांगा.",
+          placeholder: "तुम्हाला काय त्रास होत आहे ते सांगा…",
+          send: "पाठवा",
+          thinking: "विचार करत आहे…",
+          sessionEnded: "सत्र समाप्त झाले.",
+          noResponse: "उत्तर मिळाले नाही.",
+          error: "काहीतरी चूक झाली"
+        },
+
+        gu: {
+          subtitle: "Guttify નું પાચન સ્વાસ્થ્ય સહાયક",
+          greeting:
+            "નમસ્તે! હું GutGPT, Guttify નો પાચન સ્વાસ્થ્ય સહાયક છું. તમને શું તકલીફ થઈ રહી છે તે જણાવો.",
+          placeholder: "તમને શું તકલીફ થઈ રહી છે તે જણાવો…",
+          send: "મોકલો",
+          thinking: "વિચારી રહ્યો છું…",
+          sessionEnded: "સેશન સમાપ્ત થયું.",
+          noResponse: "કોઈ જવાબ મળ્યો નથી.",
+          error: "કંઈક ખોટું થયું"
+        },
+
+        kn: {
+          subtitle: "Guttify ನ ಜೀರ್ಣಕ್ರಿಯೆ ಆರೋಗ್ಯ ಸಹಾಯಕ",
+          greeting:
+            "ನಮಸ್ಕಾರ! ನಾನು GutGPT, Guttify ನ ಜೀರ್ಣಕ್ರಿಯೆ ಆರೋಗ್ಯ ಸಹಾಯಕ. ನಿಮಗೆ ಏನು ತೊಂದರೆ ಆಗುತ್ತಿದೆ ಎಂದು ತಿಳಿಸಿ.",
+          placeholder: "ನಿಮಗೆ ಏನು ತೊಂದರೆ ಆಗುತ್ತಿದೆ ಎಂದು ತಿಳಿಸಿ…",
+          send: "ಕಳುಹಿಸಿ",
+          thinking: "ಯೋಚಿಸುತ್ತಿದ್ದೇನೆ…",
+          sessionEnded: "ಸೆಷನ್ ಮುಗಿದಿದೆ.",
+          noResponse: "ಯಾವುದೇ ಉತ್ತರ ಸಿಗಲಿಲ್ಲ.",
+          error: "ಏನೋ ತಪ್ಪಾಗಿದೆ"
+        },
+
+        ml: {
+          subtitle: "Guttify-യുടെ ദഹന ആരോഗ്യ സഹായി",
+          greeting:
+            "നമസ്കാരം! ഞാൻ GutGPT, Guttify-യുടെ ദഹന ആരോഗ്യ സഹായിയാണ്. നിങ്ങൾക്ക് എന്താണ് ബുദ്ധിമുട്ടെന്ന് പറയൂ.",
+          placeholder: "നിങ്ങൾക്ക് എന്താണ് ബുദ്ധിമുട്ടെന്ന് പറയൂ…",
+          send: "അയയ്ക്കുക",
+          thinking: "ചിന്തിക്കുന്നു…",
+          sessionEnded: "സെഷൻ അവസാനിച്ചു.",
+          noResponse: "മറുപടി ലഭിച്ചില്ല.",
+          error: "എന്തോ തെറ്റ് സംഭവിച്ചു"
+        },
+
+        pa: {
+          subtitle: "Guttify ਦਾ ਪਾਚਨ ਸਿਹਤ ਸਹਾਇਕ",
+          greeting:
+            "ਸਤ ਸ੍ਰੀ ਅਕਾਲ! ਮੈਂ GutGPT ਹਾਂ, Guttify ਦਾ ਪਾਚਨ ਸਿਹਤ ਸਹਾਇਕ। ਦੱਸੋ ਤੁਹਾਨੂੰ ਕੀ ਸਮੱਸਿਆ ਆ ਰਹੀ ਹੈ।",
+          placeholder: "ਦੱਸੋ ਤੁਹਾਨੂੰ ਕੀ ਸਮੱਸਿਆ ਆ ਰਹੀ ਹੈ…",
+          send: "ਭੇਜੋ",
+          thinking: "ਸੋਚ ਰਿਹਾ ਹਾਂ…",
+          sessionEnded: "ਸੈਸ਼ਨ ਸਮਾਪਤ ਹੋ ਗਿਆ।",
+          noResponse: "ਕੋਈ ਜਵਾਬ ਨਹੀਂ ਮਿਲਿਆ।",
+          error: "ਕੁਝ ਗਲਤ ਹੋ ਗਿਆ"
+        }
+      };
+
+      function getTranslation() {
+        return translations[language.value] || translations.en;
+      }
 
       function scrollToBottom() {
         messages.scrollTop = messages.scrollHeight;
@@ -342,19 +561,36 @@
         busy = value;
         input.disabled = value || ended;
         send.disabled = value || ended;
+        language.disabled = value || ended;
       }
 
       function endSession() {
         ended = true;
+
         input.disabled = true;
         send.disabled = true;
-        status.textContent = "Session ended.";
+        language.disabled = true;
+
+        status.textContent = getTranslation().sessionEnded;
+      }
+
+      function updateLanguage() {
+        const t = getTranslation();
+
+        subtitle.textContent = t.subtitle;
+        input.placeholder = t.placeholder;
+        send.textContent = t.send;
+
+        /*
+         * The greeting is intentionally not replaced after the conversation
+         * has started, so changing language doesn't erase chat history.
+         */
       }
 
       async function init() {
-        addMessage(
-          "Hi! I'm GutGPT, Guttify's gut-health assessment assistant. Tell me what you're experiencing."
-        );
+        updateLanguage();
+
+        addMessage(getTranslation().greeting);
 
         status.textContent = "";
         input.focus();
@@ -371,13 +607,16 @@
           return;
         }
 
+        const selectedLanguage = language.value;
+        const t = getTranslation();
+
         addMessage(message, "user");
 
         input.value = "";
         setBusy(true);
 
         const thinking = addMessage(
-          "Thinking…",
+          t.thinking,
           "bot",
           "thinking"
         );
@@ -390,14 +629,15 @@
             },
             body: JSON.stringify({
               session_id: sessionId,
-              message: message
+              message: message,
+              language: selectedLanguage
             })
           });
 
           thinking.remove();
 
           addMessage(
-            data?.reply || "No response received."
+            data?.reply || t.noResponse
           );
 
           addProducts(data?.recommendations);
@@ -411,7 +651,7 @@
           thinking.remove();
 
           addMessage(
-            `Something went wrong: ${
+            `${t.error}: ${
               error?.message || "Unable to contact the server."
             }`,
             "bot",
@@ -424,6 +664,10 @@
           }
         }
       }
+
+      language.addEventListener("change", () => {
+        updateLanguage();
+      });
 
       form.addEventListener("submit", (event) => {
         event.preventDefault();
