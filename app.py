@@ -195,14 +195,7 @@ def chat(req: ChatRequest):
     # Translate the final deterministic response only after the engine has
     # completed. Product names/URLs are preserved by the translation prompt.
     output_translation_start = time.perf_counter()
-    translated_reply = translate_from_english(reply, language)
-    # A translation failure must never erase a valid diagnosis/recommendation.
-    reply = translated_reply.strip() if isinstance(translated_reply, str) else ""
-    if not reply:
-        reply = result.get("message") or _deterministic_screening_reply(
-            result.get("screening"),
-            result.get("recommendations") or []
-        )
+    reply = translate_from_english(reply, language)
     output_translation_ms = (time.perf_counter() - output_translation_start) * 1000
     logger.info("[PERF][%s] Output translation language=%s: %.2f ms", request_id, language, output_translation_ms)
 

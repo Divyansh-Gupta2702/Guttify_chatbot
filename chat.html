@@ -19,7 +19,7 @@
 <body>
 <div class="app">
   <header><div><h1>GutGPT</h1><div class="sub">Guttify's gut-health assessment assistant</div></div>
-    <select id="language" aria-label="Language"><option value="en">English</option><option value="hi">हिन्दी</option><option value="hinglish">Hinglish</option><option value="bn">বাংলা</option><option value="mr">मराठी</option><option value="ta">தமிழ்</option><option value="te">తెలుగు</option><option value="gu">ગુજરાતી</option><option value="kn">ಕನ್ನಡ</option><option value="ml">മലയാളം</option><option value="pa">ਪੰਜਾਬੀ</option><option value="or">ଓଡ଼ିଆ</option></select>
+    <select id="language" aria-label="Language"><option value="en">English</option><option value="hi">हिन्दी</option><option value="bn">বাংলা</option><option value="mr">मराठी</option><option value="ta">தமிழ்</option><option value="te">తెలుగు</option><option value="gu">ગુજરાતી</option><option value="kn">ಕನ್ನಡ</option><option value="ml">മലയാളം</option><option value="pa">ਪੰਜਾਬੀ</option><option value="or">ଓଡ଼ିଆ</option></select>
   </header>
   <main id="messages" aria-live="polite"></main>
   <div class="status" id="status"></div>
@@ -30,7 +30,7 @@
   const API = window.GUTGPT_API_URL || location.origin;
   const messages=document.getElementById('messages'), input=document.getElementById('input'), send=document.getElementById('send'), form=document.getElementById('form'), status=document.getElementById('status'), language=document.getElementById('language');
   let sessionId=null,busy=false,ended=false;
-  const labels={en:{hello:"Hi! I'm GutGPT, Guttify's gut-health assessment assistant. Tell me what you're experiencing.",placeholder:'Tell me what you’re experiencing…'},hi:{hello:'नमस्ते! मैं GutGPT हूँ। आपको क्या परेशानी हो रही है, बताइए।',placeholder:'बताइए आपको क्या परेशानी हो रही है…'},hinglish:{hello:'Hi! Main GutGPT hoon. Aapko kya problem ho rahi hai, bataiye.',placeholder:'Batayein aapko kya problem ho rahi hai…'}};
+  const labels={en:{hello:"Hi! I'm GutGPT, Guttify's gut-health assessment assistant. Tell me what you're experiencing.",placeholder:'Tell me what you’re experiencing…'},hi:{hello:'नमस्ते! मैं GutGPT हूँ। आपको क्या परेशानी हो रही है, बताइए।',placeholder:'बताइए आपको क्या परेशानी हो रही है…'},};
   function add(text,who='bot',cls=''){const e=document.createElement('div');e.className=`msg ${who} ${cls}`;e.textContent=text;messages.appendChild(e);messages.scrollTop=messages.scrollHeight;return e}
   function products(items){if(!Array.isArray(items)||!items.length)return;const w=document.createElement('div');w.className='products';items.forEach(p=>{const c=document.createElement('div');c.className='card';const b=document.createElement('b');b.textContent=p.product_name||'Guttify product';c.appendChild(b);const d=Array.isArray(p.intended_support)?p.intended_support[0]:'';if(d){const x=document.createElement('p');x.textContent=d;c.appendChild(x)}const u=p.product_url||p.url;if(typeof u==='string'&&/^https?:\\/\\//i.test(u)){const a=document.createElement('a');a.href=u;a.target='_blank';a.rel='noopener';a.textContent='View Product';c.appendChild(a)}w.appendChild(c)});messages.appendChild(w);messages.scrollTop=messages.scrollHeight}
   async function request(path,opts={}){const r=await fetch(API+path,opts);if(!r.ok)throw Error('HTTP '+r.status);return r.json()}

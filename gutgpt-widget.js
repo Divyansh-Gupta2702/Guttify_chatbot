@@ -138,6 +138,19 @@
         font-size: 11px;
       }
 
+      .head-actions { display: flex; align-items: center; gap: 7px; }
+      .language {
+        max-width: 118px;
+        border: 1px solid rgba(255,255,255,.45);
+        border-radius: 8px;
+        padding: 6px 8px;
+        background: rgba(255,255,255,.12);
+        color: #fff;
+        font: 12px/1.2 Inter, system-ui, sans-serif;
+        outline: none;
+      }
+      .language option { color: #241f2b; background: #fff; }
+
       .close {
         border: 0;
         background: transparent;
@@ -304,7 +317,23 @@
           <h2>GutGPT</h2>
           <p>Guttify's gut-health assistant</p>
         </div>
-        <button class="close" type="button" aria-label="Close GutGPT">×</button>
+        <div class="head-actions">
+          <select class="language" aria-label="Language">
+            <option value="en">English</option>
+            <option value="hi">हिन्दी</option>
+            
+            <option value="bn">বাংলা</option>
+            <option value="mr">मराठी</option>
+            <option value="ta">தமிழ்</option>
+            <option value="te">తెలుగు</option>
+            <option value="gu">ગુજરાતી</option>
+            <option value="kn">ಕನ್ನಡ</option>
+            <option value="ml">മലയാളം</option>
+            <option value="pa">ਪੰਜਾਬੀ</option>
+            <option value="or">ଓଡ଼ିଆ</option>
+          </select>
+          <button class="close" type="button" aria-label="Close GutGPT">×</button>
+        </div>
       </header>
 
       <main class="messages" aria-live="polite" aria-label="GutGPT conversation"></main>
@@ -331,6 +360,7 @@
   const input = $("input");
   const sendButton = $(".send");
   const status = $(".status");
+  const language = $(".language");
 
   let sessionId = null;
   let busy = false;
@@ -482,6 +512,7 @@
         body: JSON.stringify({
           session_id: sessionId,
           message,
+          language: language.value,
         }),
       });
 
@@ -539,6 +570,16 @@
   form.addEventListener("submit", (event) => {
     event.preventDefault();
     void sendMessage();
+  });
+
+  language.addEventListener("change", () => {
+    if (busy) return;
+    // A language change starts a clean assessment so state from the previous
+    // language cannot leak into the new conversation.
+    sessionId = null;
+    ended = false;
+    messages.innerHTML = "";
+    void initSession();
   });
 
   // The widget performs only lightweight DOM work synchronously. Network

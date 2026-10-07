@@ -15,7 +15,7 @@ GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
 GROQ_MODEL = os.environ.get("GROQ_TRANSLATION_MODEL", "openai/gpt-oss-20b")
 
 SUPPORTED_LANGUAGES = {
-    "en": "English", "hi": "Hindi", "hinglish": "Hinglish", "bn": "Bengali",
+    "en": "English", "hi": "Hindi", "bn": "Bengali",
     "mr": "Marathi", "ta": "Tamil", "te": "Telugu", "gu": "Gujarati",
     "kn": "Kannada", "ml": "Malayalam", "pa": "Punjabi", "or": "Odia",
 }
@@ -54,7 +54,6 @@ Translate only. Do not diagnose, summarize, explain, add, remove, or infer.
 Preserve every symptom, duration, number, yes/no answer, severity, body part,
 medication name, food name, uncertainty, and negation exactly.
 Convert local-language number words into Arabic numerals when appropriate.
-Hinglish means Hindi written in Latin script mixed with English.
 Return ONLY the English translation. No quotes or commentary.
 
 USER MESSAGE:

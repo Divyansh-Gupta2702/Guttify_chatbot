@@ -15,7 +15,6 @@ GROQ_MODEL = os.environ.get("GROQ_TRANSLATION_MODEL", "openai/gpt-oss-20b")
 SUPPORTED_LANGUAGES = {
     "en": "English",
     "hi": "Hindi",
-    "hinglish": "Hinglish",
     "bn": "Bengali",
     "mr": "Marathi",
     "ta": "Tamil",
@@ -46,125 +45,132 @@ def _llm():
 
 
 def _invoke(prompt: str) -> str:
-    """Call the translation model and always return a non-empty string.
+    response = _llm().invoke(prompt)
+    content = getattr(response, "content", response)
+    if isinstance(content, list):
+        content = "".join(
+            part.get("text", "") if isinstance(part, dict) else str(part)
+            for part in content
+        )
+    return str(content).strip()
 
-    Translation is an enhancement layer, not part of the clinical decision.
-    A translation failure must never erase a valid diagnosis/recommendation.
-    """
-    try:
-        response = _llm().invoke(prompt)
-        content = getattr(response, "content", response)
-
-        if isinstance(content, list):
-            parts = []
-            for part in content:
-                if isinstance(part, dict):
-                    parts.append(str(part.get("text", "")))
-                else:
-                    parts.append(str(part))
-            content = "".join(parts)
-
-        content = str(content or "").strip()
-        if not content:
-            raise RuntimeError("Translation model returned an empty response.")
-
-        return content
-    except Exception:
-        # Let the caller decide which safe source text to preserve.
-        raise
 
 def translate_to_english(text: str, language: str) -> str:
-    """Translate user input to English without breaking the clinical pipeline.
-
-    If translation is unavailable, return the original text. This keeps the
-    request alive and lets the existing English parser handle English/mixed
-    input instead of turning the response into an empty result.
-    """
     language = normalize_language(language)
     if language == "en" or not text.strip():
         return text
 
     language_name = SUPPORTED_LANGUAGES[language]
-    prompt = f"""
+    return _invoke(f"""
 Translate the user's message from {language_name} to clear, natural English.
-
-This translation is consumed by a deterministic gut-health symptom parser.
-Preserve EXACTLY:
-- symptoms and negations
-- yes/no meaning
-- numbers and severity scores
-- durations such as days, weeks, months and years
-- medicine/product names
-- body parts
-- frequency and bowel-movement information
-
-Do not answer the user.
-Do not diagnose.
-Do not add, remove, summarize, or interpret information.
-For Hinglish, understand both Roman Hindi and mixed Hindi/English.
-
+This translation will be used by a deterministic gut-health symptom parser.
+Preserve the exact meaning of symptoms, yes/no answers, numbers, durations,
+severity scores, medicine names, and body-part references.
+Do not answer the user. Do not add, remove, diagnose, or interpret anything.
 Return ONLY the English translation.
 
 USER MESSAGE:
 {text}
-"""
-    try:
-        translated = _invoke(prompt)
-        return translated if translated else text
-    except Exception:
-        return text
+""")
 
 
-def translate_from_english(text: str, language: str) -> str:
-    """Translate a completed GutGPT response safely.
+def _looks_translated(text: str, source: str, language: str) -> bool:
+    """Best-effort guard against the LLM returning the English source unchanged."""
+    if not text or not text.strip():
+        return False
+    if language == "en":
+        return True
 
-    The clinical engine has already produced the answer before this function
-    runs. Therefore an unavailable/empty translation must return the original
-    English answer rather than an empty string.
-    """
-    language = normalize_language(language)
-    if language == "en" or not text.strip():
-        return text
+    # Exact/near-exact English output is the most common failure mode we need
+    # to catch. Product names and URLs are allowed to remain in Latin script.
+    if text.strip().lower() == source.strip().lower():
+        return False
 
+    script_ranges = {
+        "hi": ("\u0900", "\u097f"),
+        "mr": ("\u0900", "\u097f"),
+        "bn": ("\u0980", "\u09ff"),
+        "pa": ("\u0a00", "\u0a7f"),
+        "gu": ("\u0a80", "\u0aff"),
+        "ta": ("\u0b80", "\u0bff"),
+        "te": ("\u0c00", "\u0c7f"),
+        "kn": ("\u0c80", "\u0cff"),
+        "ml": ("\u0d00", "\u0d7f"),
+        "or": ("\u0b00", "\u0b7f"),
+    }
+    if language in script_ranges:
+        lo, hi = script_ranges[language]
+        script_letters = sum(1 for ch in text if lo <= ch <= hi)
+        alphabetic = sum(1 for ch in text if ch.isalpha())
+        # Product names/URLs can be English, so require only a modest amount
+        # of target-script text rather than demanding every word be translated.
+        return script_letters >= 3 and script_letters >= max(3, alphabetic * 0.08)
+
+    return text.strip() != source.strip()
+
+
+def _translation_prompt(text: str, language: str) -> str:
     language_name = SUPPORTED_LANGUAGES[language]
-    if language == "hinglish":
-        target_instruction = (
-            "Write natural Indian Hinglish in Roman script. Mix Hindi and English "
-            "the way an Indian user would naturally chat; never use Devanagari."
-        )
-    else:
-        target_instruction = (
-            f"Write natural, easy-to-understand {language_name}. "
-            "Use the native script where appropriate."
-        )
+    target_instruction = (
+        f"Write the entire user-facing response in natural, easy-to-understand {language_name}. "
+        "Use the native script for normal words and sentences."
+    )
 
-    prompt = f"""
-Translate the following completed GutGPT response from English into {language_name}.
+    return f"""
+You are the final language renderer for GutGPT.
 
+Translate ONLY the response below from English into {language_name}.
 {target_instruction}
 
-This is a completed clinical-pattern assessment. Preserve its meaning exactly.
-Do NOT change the assessment, diagnosis/pattern, evidence, warnings, questions,
-or recommendations.
-Keep the same headings, bullet structure, numbers, and medical caution.
-Do not add, remove, or invent medical claims.
-
-CRITICAL:
-- NEVER translate or alter product names or brand names.
-- NEVER translate or alter URLs.
-- NEVER translate email addresses.
-- Preserve product names exactly as written.
-- Preserve every product URL exactly as written.
-- Return ONLY the translated response.
-- The response MUST NOT be empty.
+CRITICAL REQUIREMENTS:
+- The output MUST be in {language_name}; do NOT return the English source unchanged.
+- Translate headings, explanations, questions, bullet text, warnings, and next steps.
+- Preserve the clinical meaning exactly. Do not add, remove, reinterpret, diagnose, or soften claims.
+- Keep condition/product names recognizable. Product/brand names may remain unchanged.
+- Never translate or alter URLs, email addresses, or product links.
+- Preserve Markdown bullets and line breaks.
+- Do not add a disclaimer that is not in the source.
+- Return ONLY the translated response. No preamble, no quotation marks, no explanation.
 
 ENGLISH RESPONSE:
 {text}
 """
-    try:
-        translated = _invoke(prompt)
-        return translated if translated else text
-    except Exception:
-        # Most important safeguard: never lose a valid diagnosis because
-        # the optional output-translation call failed.
+
+
+def translate_from_english(text: str, language: str) -> str:
+    language = normalize_language(language)
+    if language == "en" or not text.strip():
         return text
+
+    # First attempt.
+    try:
+        translated = _invoke(_translation_prompt(text, language))
+        if _looks_translated(translated, text, language):
+            return translated
+    except Exception:
+        translated = ""
+
+    # Retry once with an even more explicit instruction. This prevents a model
+    # that ignored the target-language instruction from silently returning the
+    # English diagnosis.
+    retry_prompt = f"""
+Translate this GutGPT response into {SUPPORTED_LANGUAGES[language]}.
+THIS IS A TRANSLATION TASK. YOUR ANSWER MUST NOT BE IN ENGLISH.
+Use the native {SUPPORTED_LANGUAGES[language]} script for the sentences.
+Keep product names and URLs unchanged. Preserve the exact medical meaning and formatting.
+Output ONLY the translation.
+
+SOURCE:
+{text}
+"""
+    try:
+        translated = _invoke(retry_prompt)
+        if _looks_translated(translated, text, language):
+            return translated
+    except Exception:
+        pass
+
+    # Never turn a successful diagnosis into a blank response. If translation
+    # is unavailable, return the deterministic English response as a last-resort
+    # safety fallback.
+    return text
