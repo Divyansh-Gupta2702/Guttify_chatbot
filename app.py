@@ -2,7 +2,7 @@
 GutGPT FastAPI backend.
 
 The diagnosis/recommendation business logic remains in the existing Python
-modules. This layer handles HTTP, sessions, CORS, LLM invocation, and serves
+modules. This layer handles HTTP, sessions, CORS, and serves
 the single embeddable JavaScript widget.
 
 Run locally:
@@ -18,7 +18,7 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
 from guttify_agent import ConversationManager
-from guttify_chatbot import generate_response, load_llm
+from guttify_chatbot import _deterministic_product_reply, _deterministic_screening_reply
 
 BASE_DIR = Path(__file__).resolve().parent
 WIDGET_FILE = BASE_DIR / "gutgpt-widget.js"
@@ -48,8 +48,6 @@ app.add_middleware(
 HISTORY: dict[str, list[dict]] = {}
 conversation_manager = ConversationManager()
 
-# The LLM is initialized once when the application starts.
-llm = load_llm()
 
 
 class ChatRequest(BaseModel):
@@ -124,31 +122,21 @@ def chat(req: ChatRequest):
         reply = result["message"]
 
     elif status == "DIAGNOSIS":
-        reply = generate_response(
-            llm, message, history, None, result.get("screening")
-        )
+        # The diagnosis has already been selected by the deterministic rule
+        # engine. Do not send this request through the LLM; doing so adds a
+        # network round trip without adding diagnostic value.
+        reply = _deterministic_screening_reply(result.get("screening"))
 
     elif status == "PRODUCT_INFO_FOUND":
-        # Product-information questions are intentionally isolated from prior
-        # clinical screening, preserving the existing behavior.
-        reply = generate_response(
-            llm,
-            message,
-            history,
-            result["product"],
-            None,
-            mode="PRODUCT_INFO",
-        )
+        # Product data is already structured and validated. Answer directly
+        # from that data instead of waiting for an LLM generation call.
+        reply = _deterministic_product_reply(result["product"], message)
 
     elif status in ("RECOMMENDATION_FOUND", "AMBIGUOUS"):
+        # Preserve the exact rule-engine recommendation. The LLM is not used
+        # to rewrite or reinterpret the approved diagnosis/product routing.
         products = result.get("recommendations") or []
-        reply = generate_response(
-            llm,
-            message,
-            history,
-            products,
-            result.get("screening"),
-        )
+        reply = _deterministic_screening_reply(result.get("screening"), products)
 
     else:
         reply = "Sorry, something went wrong. Could you rephrase that?"

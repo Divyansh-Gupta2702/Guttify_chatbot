@@ -437,18 +437,9 @@
   }
 
   async function initSession() {
-    /*
-     * Every widget page load starts a completely new assessment.
-     *
-     * Do NOT restore a previous session from localStorage here. A browser
-     * refresh must reset the GutGPT assessment so that a new symptom starts
-     * a new questionnaire/diagnosis.
-     *
-     * The session remains active while this widget instance is open, so
-     * normal messages in the same chat still use the same backend session.
-     */
-    sessionId = null;
-    ended = false;
+    // A page refresh must always start a completely new assessment.
+    // Do not restore an old session from localStorage: the backend session
+    // contains assessment-completion state.
     status.textContent = "Connecting…";
 
     try {
@@ -528,7 +519,6 @@
 
       // If a previously stored session became invalid after a backend restart,
       // clear it and obtain a new session on the next attempt.
-      if (!sessionId) clearStoredSession();
     } finally {
       setBusy(false);
       if (!ended) input.focus();
