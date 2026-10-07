@@ -436,40 +436,19 @@
     }
   }
 
-  function getStoredSession() {
-    try {
-      return window.localStorage.getItem(STORAGE_KEY);
-    } catch {
-      return null;
-    }
-  }
-
-  function storeSession(id) {
-    try {
-      window.localStorage.setItem(STORAGE_KEY, id);
-    } catch {
-      // localStorage can be unavailable in privacy-restricted browsers.
-    }
-  }
-
-  function clearStoredSession() {
-    try {
-      window.localStorage.removeItem(STORAGE_KEY);
-    } catch {}
-  }
-
   async function initSession() {
-    const stored = getStoredSession();
-
-    if (stored) {
-      sessionId = stored;
-      addMessage(
-        "Hi! I'm GutGPT, Guttify's gut-health assessment assistant. Tell me what you're experiencing.",
-        "bot"
-      );
-      return;
-    }
-
+    /*
+     * Every widget page load starts a completely new assessment.
+     *
+     * Do NOT restore a previous session from localStorage here. A browser
+     * refresh must reset the GutGPT assessment so that a new symptom starts
+     * a new questionnaire/diagnosis.
+     *
+     * The session remains active while this widget instance is open, so
+     * normal messages in the same chat still use the same backend session.
+     */
+    sessionId = null;
+    ended = false;
     status.textContent = "Connecting…";
 
     try {
@@ -480,7 +459,6 @@
       }
 
       sessionId = data.session_id;
-      storeSession(sessionId);
 
       addMessage(
         "Hi! I'm GutGPT, Guttify's gut-health assessment assistant. Tell me what you're experiencing.",

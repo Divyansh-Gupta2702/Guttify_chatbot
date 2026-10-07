@@ -1,8 +1,9 @@
-"""Deterministic clinical-pattern screening for GutGPT.
+"""Deterministic, conservative clinical-pattern screening for GutGPT.
 
-This module does not invent diagnoses. It selects the most supported
-preliminary pattern from the structured answers,records the evidence, and
-separates that assessment from product eligibility.
+The engine is deliberately pattern-based, not diagnostic.  It gives priority
+ to explicit user statements, strong bowel-pattern evidence, contradictions,
+and red flags.  A single weak feature (for example Bristol 1-2 stool) must not
+override the user's primary complaint or an explicit negative answer.
 """
 import re
 
@@ -31,7 +32,71 @@ def _result(pattern, confidence, evidence, differentials, action, product_allowe
     }
 
 
+def _bool(v):
+    return v is True
+
+
+def _bowel_patterns(s):
+    """Return strong/possible constipation and diarrhea states.
+
+    Explicit negatives are authoritative. Objective frequency is strong.
+    Stool form alone is only supporting evidence and can never create a
+    constipation diagnosis when the user explicitly denies constipation.
+    """
+    symptoms = set(s.secondary_symptoms or [])
+
+    explicit_c = getattr(s, "constipation_explicit", None)
+    explicit_d = getattr(s, "diarrhea_explicit", None)
+
+    if explicit_c is True or s.primary_symptom == "constipation" or "constipation" in symptoms:
+        constipation_strong = True
+    elif explicit_c is False:
+        constipation_strong = False
+    else:
+        constipation_strong = (
+            (s.bowel_frequency_per_week is not None and s.bowel_frequency_per_week < 3)
+            or (_bool(s.straining) and s.stool_form in (1, 2))
+            or (_bool(s.incomplete_evacuation) and s.stool_form in (1, 2))
+        )
+
+    if explicit_d is True or s.primary_symptom == "diarrhea" or "diarrhea" in symptoms or s.diarrhea is True:
+        diarrhea_strong = True
+    elif explicit_d is False:
+        diarrhea_strong = False
+    else:
+        diarrhea_strong = (
+            (s.bowel_frequency_per_day is not None and s.bowel_frequency_per_day >= 3 and s.stool_form in (6, 7))
+            or s.stool_form in (6, 7)
+        )
+
+    # A primary symptom branch is strong evidence, but an explicit negative
+    # collected later can correct an earlier generic extraction.
+    if s.primary_symptom in ("constipation", "hard stools") and explicit_c is not False:
+        constipation_strong = True
+    if s.primary_symptom == "diarrhea" and explicit_d is not False:
+        diarrhea_strong = True
+
+    constipation_support = []
+    if s.bowel_frequency_per_week is not None and s.bowel_frequency_per_week < 3:
+        constipation_support.append("fewer than 3 bowel movements per week")
+    if s.stool_form in (1, 2):
+        constipation_support.append("hard/lumpy stool pattern")
+    if s.straining is True:
+        constipation_support.append("straining to pass stool")
+    if s.incomplete_evacuation is True:
+        constipation_support.append("feeling of incomplete evacuation")
+
+    diarrhea_support = []
+    if s.bowel_frequency_per_day is not None and s.bowel_frequency_per_day >= 3:
+        diarrhea_support.append("frequent stools")
+    if s.stool_form in (6, 7):
+        diarrhea_support.append("loose/watery stool pattern")
+
+    return constipation_strong, diarrhea_strong, constipation_support, diarrhea_support
+
+
 def evaluate(s):
+    # Safety always wins over pattern matching.
     if s.red_flags:
         return _result(
             "Red-flag presentation", "high", s.red_flags, [],
@@ -47,6 +112,8 @@ def evaluate(s):
             "Black or tarry stool can indicate gastrointestinal bleeding and needs prompt medical evaluation."
         )
 
+    # Rectal bleeding gets its own decision tree. Never infer piles/fissure from
+    # bleeding alone.
     if s.blood_present:
         if s.blood_colour is None or s.sharp_pain_during_stool is None:
             return _result(
@@ -82,12 +149,11 @@ def evaluate(s):
     primary = s.primary_symptom
     symptoms = {primary, *(s.secondary_symptoms or [])}
     days = _duration_days(s.duration)
+    chronic = days is not None and days >= 90
+    constipation, diarrhea, c_support, d_support = _bowel_patterns(s)
 
-    # An explicit piles/haemorrhoids complaint should have a reachable
-    # hemorrhoid-support pattern even when the user does not report bleeding.
-    # Bleeding is still handled by the stricter branch above, so this does not
-    # turn generic rectal bleeding into a piles diagnosis.
-    if primary == "piles" and not s.blood_present:
+    # Explicit piles complaint remains reachable even without bleeding.
+    if primary == "piles":
         evidence = ["piles/haemorrhoids reported"]
         if s.lump_or_prolapse is True:
             evidence.append("lump/prolapse reported")
@@ -99,30 +165,17 @@ def evaluate(s):
             "medical_review", True,
             "Your symptoms are consistent with a possible hemorrhoid/piles pattern. A Guttify hemorrhoid-support product may be relevant, but persistent, worsening, or bleeding symptoms should be medically assessed."
         )
-    chronic = days is not None and days >= 90
 
-    constipation = (
-        primary in ("constipation", "hard stools")
-        or "constipation" in symptoms
-        or (s.bowel_frequency_per_week is not None and s.bowel_frequency_per_week < 3)
-        or s.stool_form in (1, 2)
-    )
-    diarrhea = (
-        primary == "diarrhea"
-        or "diarrhea" in symptoms
-        or s.diarrhea is True
-        or (s.bowel_frequency_per_day is not None and s.bowel_frequency_per_day >= 3)
-    )
-
-    # IBS-style patterns require recurrent abdominal pain plus a bowel-related
-    # change and a persistent time course. Warning features are excluded.
-    no_warning_features = not any([
+    # IBS is deliberately conservative. It requires abdominal pain, bowel-
+    # related change, chronicity, and absence of warning features. A weak stool
+    # feature cannot create IBS-C/IBS-D by itself.
+    no_warning = not any([
         s.weight_loss is True,
         s.fever is True,
         s.family_history_gi is True,
         s.night_time_symptoms is True,
     ])
-    if s.abdominal_pain and s.pain_related_to_bowel_movement and chronic and no_warning_features:
+    if s.abdominal_pain and s.pain_related_to_bowel_movement and chronic and no_warning:
         if constipation and not diarrhea:
             return _result(
                 "IBS-C pattern", "moderate",
@@ -148,61 +201,40 @@ def evaluate(s):
                 "Your responses show a pattern that can be seen with mixed-type IBS. This is a preliminary pattern assessment; a clinician can determine whether IBS-M is actually present."
             )
 
-    if constipation:
-        evidence = []
-        if s.bowel_frequency_per_week is not None and s.bowel_frequency_per_week < 3:
-            evidence.append("fewer than 3 bowel movements per week")
-        if s.stool_form in (1, 2):
-            evidence.append("hard/lumpy stool pattern")
-        if s.straining:
-            evidence.append("straining to pass stool")
-        if s.incomplete_evacuation:
-            evidence.append("feeling of incomplete evacuation")
-        if s.fibre_intake == "low":
-            evidence.append("low reported fibre intake")
-        if s.water_intake:
-            evidence.append(f"reported water intake: {s.water_intake}")
-
-        if s.medications == "reported":
+    # Primary branch gets priority over secondary bowel features unless the
+    # secondary pattern is independently strong enough to be the actual branch.
+    if primary in ("bloating", "gas"):
+        if s.food_trigger:
             return _result(
-                "Possible medication-associated constipation pattern", "moderate",
-                evidence + ["regular medicines/supplements reported"],
-                ["functional constipation", "IBS-C"],
-                "review_medications", True,
-                "Your responses fit constipation, and medication or supplement use could be contributing. Do not stop a prescribed medicine without discussing it with a clinician or pharmacist."
+                "Food-triggered gas/bloating pattern", "moderate",
+                ["gas/bloating", f"repeated association with {s.food_trigger}"],
+                ["lactose intolerance", "other food intolerance", "functional bloating"],
+                "food_trigger_management", True,
+                "Your answers fit a food-triggered gas/bloating pattern. The repeated food association is more informative than the symptom alone."
             )
-
-        if not evidence:
-            evidence = ["constipation symptoms reported"]
+        if constipation:
+            evidence = ["bloating/gas"] + c_support
+            return _result(
+                "Constipation-associated bloating pattern", "moderate", evidence,
+                ["functional bloating", "food-triggered symptoms"],
+                "lifestyle_support", True,
+                "Your answers fit bloating associated with a meaningful constipation pattern."
+            )
         return _result(
-            "Functional constipation pattern", "high" if len(evidence) >= 3 else "moderate",
-            evidence,
-            ["IBS-C", "medication-associated constipation"],
+            "Functional gas/bloating pattern", "moderate", ["recurrent gas/bloating"],
+            ["food intolerance", "functional bowel disorder"],
             "lifestyle_support", True,
-            "Your responses fit a functional constipation pattern. The next step is to work on bowel regularity, fibre/fluid intake and activity while monitoring the response."
-        )
-
-    if diarrhea:
-        if s.recent_infection:
-            return _result(
-                "Recent-infection or food-related diarrhea pattern", "moderate",
-                ["loose/watery stools", "recent infection or food-poisoning association"],
-                ["IBS-D", "medication-associated diarrhea"],
-                "hydration_and_monitoring", False,
-                "Your responses fit a recent-infection or food-related diarrhea pattern. Focus on hydration and monitor the course; persistent or worsening symptoms need assessment."
-            )
-        return _result(
-            "Diarrhea pattern", "moderate", ["loose/watery stools"],
-            ["food-related illness", "IBS-D", "medication-associated diarrhea"],
-            "hydration_and_monitoring", False,
-            "Your responses fit a diarrhea pattern. The information does not yet distinguish a specific cause such as IBS, infection, or medication effect."
+            "Your answers fit a functional gas/bloating pattern; food triggers and bowel habits are the main things to monitor."
         )
 
     if primary in ("acidity", "heartburn"):
         evidence = ["heartburn/acidity symptoms"]
-        if s.food_related: evidence.append("associated with food/meals")
-        if s.night_time_symptoms: evidence.append("worse at night/lying down")
-        if s.food_trigger: evidence.append(f"associated with {s.food_trigger}")
+        if s.food_related:
+            evidence.append("associated with food/meals")
+        if s.night_time_symptoms:
+            evidence.append("worse at night/lying down")
+        if s.food_trigger:
+            evidence.append(f"associated with {s.food_trigger}")
         return _result(
             "Reflux/GERD-like symptom pattern", "high" if len(evidence) >= 2 else "moderate",
             evidence, ["dyspepsia", "gastritis-like symptoms"],
@@ -217,30 +249,6 @@ def evaluate(s):
             ["reflux/GERD-like symptoms", "food-related indigestion"],
             "lifestyle_support", True,
             "Your responses fit a dyspepsia/indigestion pattern."
-        )
-
-    if primary in ("bloating", "gas"):
-        if s.food_trigger:
-            return _result(
-                "Food-triggered gas/bloating pattern", "moderate",
-                ["gas/bloating", f"repeated association with {s.food_trigger}"],
-                ["lactose intolerance", "other food intolerance", "functional bloating"],
-                "food_trigger_management", True,
-                "Your answers fit a food-triggered gas/bloating pattern. The repeated food association is more informative than the symptom alone."
-            )
-        if constipation:
-            return _result(
-                "Constipation-associated bloating pattern", "moderate",
-                ["bloating/gas", "constipation features"],
-                ["functional bloating", "food-triggered symptoms"],
-                "lifestyle_support", True,
-                "Your answers fit bloating associated with constipation."
-            )
-        return _result(
-            "Functional gas/bloating pattern", "moderate", ["recurrent gas/bloating"],
-            ["food intolerance", "functional bowel disorder"],
-            "lifestyle_support", True,
-            "Your answers fit a functional gas/bloating pattern; food triggers and bowel habits are the main things to monitor."
         )
 
     if primary == "food intolerance":
@@ -281,6 +289,47 @@ def evaluate(s):
             ["dyspepsia", "reflux", "functional bowel disorder", "other gastrointestinal causes"],
             "clinical_review", False,
             "Your symptoms fit a nonspecific abdominal-pain pattern. The location, severity and associated symptoms determine what should be considered next."
+        )
+
+    # Only select constipation/diarrhea as the primary pattern when the user's
+    # branch actually supports it. For a bloating/indigestion/etc. branch, these
+    # features remain supporting information.
+    if primary in ("constipation", "hard stools") and constipation:
+        evidence = list(c_support) or ["constipation symptoms reported"]
+        if s.fibre_intake == "low":
+            evidence.append("low reported fibre intake")
+        if s.water_intake:
+            evidence.append(f"reported water intake: {s.water_intake}")
+        if s.medications == "reported":
+            return _result(
+                "Possible medication-associated constipation pattern", "moderate",
+                evidence + ["regular medicines/supplements reported"],
+                ["functional constipation", "IBS-C"],
+                "review_medications", True,
+                "Your responses fit constipation, and medication or supplement use could be contributing. Do not stop a prescribed medicine without discussing it with a clinician or pharmacist."
+            )
+        return _result(
+            "Functional constipation pattern", "high" if len(evidence) >= 3 else "moderate",
+            evidence,
+            ["IBS-C", "medication-associated constipation"],
+            "lifestyle_support", True,
+            "Your responses fit a functional constipation pattern. The next step is to work on bowel regularity, fibre/fluid intake and activity while monitoring the response."
+        )
+
+    if primary == "diarrhea" and diarrhea:
+        if s.recent_infection:
+            return _result(
+                "Recent-infection or food-related diarrhea pattern", "moderate",
+                ["loose/watery stools", "recent infection or food-poisoning association"],
+                ["IBS-D", "medication-associated diarrhea"],
+                "hydration_and_monitoring", False,
+                "Your responses fit a recent-infection or food-related diarrhea pattern. Focus on hydration and monitor the course; persistent or worsening symptoms need assessment."
+            )
+        return _result(
+            "Diarrhea pattern", "moderate", ["loose/watery stools"] + d_support,
+            ["food-related illness", "IBS-D", "medication-associated diarrhea"],
+            "hydration_and_monitoring", False,
+            "Your responses fit a diarrhea pattern. The information does not yet distinguish a specific cause such as IBS, infection, or medication effect."
         )
 
     return _result(

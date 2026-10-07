@@ -439,6 +439,8 @@ class SymptomState:
     lump_or_prolapse: bool = None
     bloating: bool = None
     diarrhea: bool = None
+    constipation_explicit: bool = None
+    diarrhea_explicit: bool = None
     mucus: bool = None
     fever: bool = None
     vomiting: bool = None
@@ -740,6 +742,8 @@ def merge_state(previous, text, red_flags=None):
         "lump_or_prolapse": _merge_value(previous.lump_or_prolapse, extract_bool(text, ["lump near anus", "lump at anus", "lump comes out", "prolapse", "something comes out of anus"], ["no lump", "no prolapse"])),
         "bloating": _merge_value(previous.bloating, extract_bool(text, ["bloating", "bloated", "bloat"], ["no bloating", "not bloated"])),
         "diarrhea": _merge_value(previous.diarrhea, extract_bool(text, ["diarrhea", "diarrhoea", "loose motion", "loose stool", "watery stool"], ["no diarrhea", "no diarrhoea", "no loose motion"])),
+        "constipation_explicit": _merge_value(previous.constipation_explicit, extract_bool(text, ["constipation", "constipated", "unable to pass stool", "unable to poop", "difficulty passing stool"], ["no constipation", "not constipated", "do not have constipation", "dont have constipation", "don't have constipation"])),
+        "diarrhea_explicit": _merge_value(previous.diarrhea_explicit, extract_bool(text, ["diarrhea", "diarrhoea", "loose motion", "loose stool", "watery stool"], ["no diarrhea", "no diarrhoea", "no loose motion"])),
         "mucus": _merge_value(previous.mucus, extract_bool(text, ["mucus in stool", "mucus in my stool"], ["no mucus"])),
         "fever": _merge_value(previous.fever, extract_bool(text, ["fever", "high temperature"], ["no fever", "do not have fever", "don't have fever", "dont have fever", "never had fever", "no temperature"])),
         "vomiting": _merge_value(previous.vomiting, extract_bool(text, ["vomiting", "vomit", "throwing up"], ["no vomiting", "not vomiting", "do not have vomiting", "don't have vomiting", "dont have vomiting", "have not had vomiting", "haven't had vomiting", "haven't been vomiting", "not been vomiting", "never had vomiting", "never vomit", "never vomited"])),
