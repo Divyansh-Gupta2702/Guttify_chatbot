@@ -11,11 +11,20 @@ Run locally:
 from pathlib import Path
 import os
 import uuid
+import time
+import logging
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
+
+logger = logging.getLogger("gutgpt.performance")
+if not logger.handlers:
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s | %(levelname)s | %(message)s",
+    )
 
 from guttify_agent import ConversationManager
 from guttify_chatbot import _deterministic_product_reply, _deterministic_screening_reply
@@ -94,17 +103,32 @@ def new_session():
 @app.post("/api/chat", response_model=ChatResponse)
 def chat(req: ChatRequest):
     """Process one user message through the existing GutGPT logic."""
+    request_id = uuid.uuid4().hex[:8]
+    total_start = time.perf_counter()
     message = req.message.strip()
+    logger.info(
+        "[PERF][%s] REQUEST received session=%s message_len=%d",
+        request_id, req.session_id[:8], len(message)
+    )
     if not message:
         # Pydantic rejects an empty string before reaching here, but keep the
         # guard because whitespace-only input becomes empty after stripping.
         from fastapi import HTTPException
         raise HTTPException(status_code=400, detail="Message cannot be empty.")
 
+    history_start = time.perf_counter()
     history = HISTORY.setdefault(req.session_id, [])
+    history_ms = (time.perf_counter() - history_start) * 1000
+    logger.info("[PERF][%s] Session/history lookup: %.2f ms", request_id, history_ms)
 
+    logic_start = time.perf_counter()
     result = conversation_manager.handle_message(req.session_id, message)
+    logic_ms = (time.perf_counter() - logic_start) * 1000
     status = result["status"]
+    logger.info(
+        "[PERF][%s] Rule engine handle_message: %.2f ms status=%s",
+        request_id, logic_ms, status
+    )
 
     if status in (
         "GIBBERISH",
@@ -141,8 +165,20 @@ def chat(req: ChatRequest):
     else:
         reply = "Sorry, something went wrong. Could you rephrase that?"
 
+    response_build_ms = (time.perf_counter() - logic_start) * 1000
+    logger.info(
+        "[PERF][%s] Reply selection/formatting cumulative: %.2f ms",
+        request_id, response_build_ms
+    )
+
+    history_start = time.perf_counter()
     history.append({"role": "user", "content": message})
     history.append({"role": "assistant", "content": reply})
+    history_ms = (time.perf_counter() - history_start) * 1000
+    logger.info("[PERF][%s] History append: %.2f ms", request_id, history_ms)
+
+    total_ms = (time.perf_counter() - total_start) * 1000
+    logger.info("[PERF][%s] TOTAL backend chat: %.2f ms", request_id, total_ms)
 
     return ChatResponse(
         reply=reply,
