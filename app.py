@@ -28,6 +28,7 @@ if not logger.handlers:
 
 from guttify_agent import ConversationManager
 from guttify_chatbot import _deterministic_product_reply, _deterministic_screening_reply
+from language_service import normalize_language, language_name, to_english, to_language
 
 BASE_DIR = Path(__file__).resolve().parent
 WIDGET_FILE = BASE_DIR / "gutgpt-widget.js"
@@ -55,13 +56,19 @@ app.add_middleware(
 # existing chatbot behavior. Use one Uvicorn worker unless session state is
 # moved to a shared store such as Redis.
 HISTORY: dict[str, list[dict]] = {}
+SESSION_LANGUAGES: dict[str, str] = {}
 conversation_manager = ConversationManager()
 
+
+
+class SessionRequest(BaseModel):
+    language: str = Field(default="en", min_length=2, max_length=20)
 
 
 class ChatRequest(BaseModel):
     session_id: str = Field(min_length=1, max_length=128)
     message: str = Field(min_length=1, max_length=4000)
+    language: str | None = Field(default=None, min_length=2, max_length=20)
 
 
 class ChatResponse(BaseModel):
@@ -92,12 +99,28 @@ def widget():
 
 
 @app.post("/api/session")
-def new_session():
-    """Create a new conversation session for a visitor."""
+def new_session(req: SessionRequest | None = None):
+    """Create a new conversation session and pin its language."""
+    language = normalize_language(req.language if req else "en")
     session_id = str(uuid.uuid4())
     HISTORY[session_id] = []
+    SESSION_LANGUAGES[session_id] = language
     conversation_manager.reset(session_id)
-    return {"session_id": session_id}
+    greeting = (
+        "Hi! I'm GutGPT, Guttify's gut-health assessment assistant. "
+        "Tell me what you're experiencing."
+    )
+    if language != "en":
+        try:
+            greeting = to_language(greeting, language)
+        except Exception:
+            logger.exception("Multilingual greeting translation failed")
+    return {
+        "session_id": session_id,
+        "language": language,
+        "language_name": language_name(language),
+        "greeting": greeting,
+    }
 
 
 @app.post("/api/chat", response_model=ChatResponse)
@@ -106,9 +129,14 @@ def chat(req: ChatRequest):
     request_id = uuid.uuid4().hex[:8]
     total_start = time.perf_counter()
     message = req.message.strip()
+    language = normalize_language(
+        req.language if req.language is not None
+        else SESSION_LANGUAGES.get(req.session_id, "en")
+    )
+    SESSION_LANGUAGES.setdefault(req.session_id, language)
     logger.info(
-        "[PERF][%s] REQUEST received session=%s message_len=%d",
-        request_id, req.session_id[:8], len(message)
+        "[PERF][%s] REQUEST received session=%s language=%s message_len=%d",
+        request_id, req.session_id[:8], language, len(message)
     )
     if not message:
         # Pydantic rejects an empty string before reaching here, but keep the
@@ -121,8 +149,23 @@ def chat(req: ChatRequest):
     history_ms = (time.perf_counter() - history_start) * 1000
     logger.info("[PERF][%s] Session/history lookup: %.2f ms", request_id, history_ms)
 
+    translation_start = time.perf_counter()
+    engine_message = message
+    if language != "en":
+        try:
+            engine_message = to_english(message, language)
+        except Exception:
+            logger.exception("[%s] Input translation failed", request_id)
+            from fastapi import HTTPException
+            raise HTTPException(
+                status_code=503,
+                detail="Multilingual translation is temporarily unavailable. Please try again."
+            )
+    translation_ms = (time.perf_counter() - translation_start) * 1000
+    logger.info("[PERF][%s] Input translation: %.2f ms", request_id, translation_ms)
+
     logic_start = time.perf_counter()
-    result = conversation_manager.handle_message(req.session_id, message)
+    result = conversation_manager.handle_message(req.session_id, engine_message)
     logic_ms = (time.perf_counter() - logic_start) * 1000
     status = result["status"]
     logger.info(
@@ -154,7 +197,7 @@ def chat(req: ChatRequest):
     elif status == "PRODUCT_INFO_FOUND":
         # Product data is already structured and validated. Answer directly
         # from that data instead of waiting for an LLM generation call.
-        reply = _deterministic_product_reply(result["product"], message)
+        reply = _deterministic_product_reply(result["product"], engine_message)
 
     elif status in ("RECOMMENDATION_FOUND", "AMBIGUOUS"):
         # Preserve the exact rule-engine recommendation. The LLM is not used
@@ -170,6 +213,15 @@ def chat(req: ChatRequest):
         "[PERF][%s] Reply selection/formatting cumulative: %.2f ms",
         request_id, response_build_ms
     )
+
+    output_translation_start = time.perf_counter()
+    if language != "en":
+        try:
+            reply = to_language(reply, language)
+        except Exception:
+            logger.exception("[%s] Output translation failed; returning English response", request_id)
+    output_translation_ms = (time.perf_counter() - output_translation_start) * 1000
+    logger.info("[%s] Output translation: %.2f ms", request_id, output_translation_ms)
 
     history_start = time.perf_counter()
     history.append({"role": "user", "content": message})
