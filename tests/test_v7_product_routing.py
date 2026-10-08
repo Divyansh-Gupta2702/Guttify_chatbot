@@ -83,7 +83,7 @@ class TestV8ClinicalContextBridging(unittest.TestCase):
         sid = "blood-fissure-v8"
         answers = [
             "There is blood in stool", "3 weeks", "50", "Bright red",
-            "Tissue", "Sharp pain during bowel movement",
+            "Tissue", "Sharp pain during bowel movement", "no lump", "no hard stools and no straining",
         ]
         result = None
         for answer in answers:
@@ -133,6 +133,8 @@ class TestV8AllActiveProductEntryPoints(unittest.TestCase):
             cm.handle_message(sid, msg)
 
         result = cm.handle_message(sid, "Yes")
+        result = cm.handle_message(sid, "no lump")
+        result = cm.handle_message(sid, "no hard stools and no straining")
         state = cm.sessions[sid].symptom_state
 
         self.assertNotEqual(result["status"], "SAFETY_REVIEW")

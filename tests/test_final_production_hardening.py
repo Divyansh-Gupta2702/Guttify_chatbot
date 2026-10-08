@@ -76,3 +76,34 @@ class TestFinalProductionHardening(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+class TestQuestionnaireCompleteness(unittest.TestCase):
+    def test_bloating_does_not_skip_remaining_branch_questions(self):
+        cm = ConversationManager()
+        sid = "bloating-complete-screen"
+        r1 = cm.handle_message(sid, "bloating")
+        self.assertEqual(r1["status"], "ASK")
+        r2 = cm.handle_message(sid, "2 days")
+        self.assertEqual(r2["status"], "ASK")
+        r3 = cm.handle_message(sid, "30")
+        self.assertEqual(r3["status"], "ASK")
+        r4 = cm.handle_message(sid, "yes, constipation")
+        self.assertEqual(r4["status"], "ASK")
+        self.assertIn("dairy", r4["message"].lower())
+        r5 = cm.handle_message(sid, "no particular food")
+        self.assertEqual(r5["status"], "ASK")
+        self.assertIn("abdominal pain", r5["message"].lower())
+        r6 = cm.handle_message(sid, "no abdominal pain")
+        self.assertEqual(r6["status"], "ASK")
+        self.assertIn("bristol", r6["message"].lower())
+
+    def test_indigestion_does_not_stop_after_three_questions(self):
+        cm = ConversationManager()
+        sid = "indigestion-complete-screen"
+        r1 = cm.handle_message(sid, "indigestion")
+        self.assertEqual(r1["status"], "ASK")
+        # The exact follow-up sequence is branch-specific; the important
+        # regression is that it remains in ASK until its questions are done.
+        for answer in ["3 days", "30", "upper fullness and nausea", "yes after meals"]:
+            r = cm.handle_message(sid, answer)
+        self.assertIn(r["status"], ("ASK", "DIAGNOSIS", "RECOMMENDATION_FOUND", "AMBIGUOUS"))

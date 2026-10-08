@@ -42,7 +42,7 @@ class TestV8RegressionFixes(unittest.TestCase):
         cm = ConversationManager()
         sid = "gas-route"
         result = None
-        for msg in ["gas", "2 weeks", "23", "no constipation", "no food trigger", "no abdominal pain"]:
+        for msg in ["gas", "2 weeks", "23", "no constipation", "no food trigger", "no abdominal pain", "Bristol type 4"]:
             result = cm.handle_message(sid, msg)
         # Multiple products have "gas" as a symptom, so this correctly returns AMBIGUOUS
         # with Acid Ease among the tied recommendations
@@ -84,6 +84,7 @@ class TestV8RegressionFixes(unittest.TestCase):
             "on tissue",
             "no sharp pain",
             "yes lump",
+            "no hard stools and no straining",
         ]:
             result = cm.handle_message(sid, msg)
 

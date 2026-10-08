@@ -53,7 +53,7 @@ def test_ibs_c_pattern_is_distinguished_from_plain_constipation():
 def test_bright_red_sharp_pain_is_fissure_pattern():
     _, result = run([
         "I have blood in my stool", "2 months", "23", "bright red",
-        "on tissue", "sharp tearing pain during stool",
+        "on tissue", "sharp tearing pain during stool", "no lump", "no hard stools and no straining",
     ])
     assert result["screening"]["pattern"] == "Possible anal fissure pattern"
     assert result["status"] in ("RECOMMENDATION_FOUND", "DIAGNOSIS")
@@ -62,7 +62,7 @@ def test_bright_red_sharp_pain_is_fissure_pattern():
 def test_bright_red_painless_lump_is_hemorrhoid_pattern():
     _, result = run([
         "I have bright red blood when I poop", "2 months", "23",
-        "on tissue", "no sharp pain", "yes lump",
+        "on tissue", "no sharp pain", "yes lump", "no hard stools and no straining",
     ])
     assert result["screening"]["pattern"] == "Possible hemorrhoid pattern"
     assert result["status"] in ("RECOMMENDATION_FOUND", "AMBIGUOUS")

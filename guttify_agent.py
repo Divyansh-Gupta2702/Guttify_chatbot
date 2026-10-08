@@ -262,6 +262,36 @@ class ConversationManager:
                 ["no vomiting blood", "not vomiting blood", "no"]
             ))
 
+        elif field == "upper_symptoms":
+            # The indigestion questionnaire asks about upper-GI discomfort in
+            # several natural forms (fullness, early satiety, burning, nausea,
+            # belching). Store the presence of upper abdominal discomfort so
+            # the questionnaire can advance without inventing a new clinical
+            # state field. Meal association is collected separately.
+            v = extract_bool(
+                text,
+                [
+                    "upper abdominal fullness", "upper fullness", "fullness",
+                    "early fullness", "early satiety", "burning", "nausea",
+                    "nauseous", "belching", "burping", "upper abdominal discomfort",
+                ],
+                ["none", "no symptoms"]
+            )
+            self._set(data, "abdominal_pain", v)
+
+        elif field == "symptoms":
+            # Capture the main symptom categories named in the food-intolerance
+            # question so its branch-specific screening can actually advance.
+            n2 = normalize(text)
+            if any(term in n2 for term in ("diarrhea", "diarrhoea", "loose stool", "loose stools", "loose motion")):
+                data["diarrhea"] = True
+            if any(term in n2 for term in ("constipation", "constipated", "hard stool", "hard stools")):
+                data["secondary_symptoms"] = list(dict.fromkeys((data.get("secondary_symptoms") or []) + ["constipation"]))
+            if any(term in n2 for term in ("abdominal pain", "stomach pain", "belly pain", "cramps", "cramping")):
+                data["abdominal_pain"] = True
+            if any(term in n2 for term in ("bloating", "bloated", "gas")):
+                data["bloating"] = True
+
         elif field in ("reflux", "timing", "triggers", "food_trigger", "food_relation", "trigger"):
             # merge_state captures food triggers and food association.
             pass
@@ -406,16 +436,21 @@ class ConversationManager:
             return s.pain_location is not None and s.severity != "unknown" and s.vomiting is not None and s.fever is not None
 
         if branch in ("bloating", "gas"):
-            return session.questions_asked >= 3 and (s.food_trigger is not None or s.abdominal_pain is not None or s.bowel_frequency_per_week is not None or s.diarrhea is not None)
-
-        if branch in ("acidity", "heartburn"):
-            return session.questions_asked >= 3 and s.weight_loss is not None and s.vomiting is not None
+            # Do not end the assessment merely because three questions have
+            # been asked. Bloating needs its branch-specific differentiators
+            # (bowel pattern, food trigger, abdominal-pain relation, and stool
+            # form) before a clinical pattern is finalized.
+            return next_question(s) is None
 
         if branch == "indigestion":
-            return session.questions_asked >= 3
+            # Complete the upper-GI screening questions before diagnosis.
+            return next_question(s) is None
 
         if branch == "food intolerance":
-            return session.questions_asked >= 3 and s.food_trigger is not None
+            # This branch has three dedicated questions; assess only after
+            # those questions are answered or already known from the user's
+            # messages.
+            return next_question(s) is None
 
         return False
 
@@ -690,6 +725,21 @@ class ConversationManager:
 
         screening = evaluate_screening(session.symptom_state)
         session.screening = screening
+
+        # Questionnaire completeness is the final gate before a normal
+        # clinical assessment. Every branch must finish its own required
+        # screening questions; do not let a branch-specific _can_assess()
+        # shortcut diagnose early. Safety/urgent cases are handled above and
+        # are deliberately allowed through immediately.
+        if screening.get("action") != "urgent_medical_evaluation" and session.symptom_state.primary_symptom:
+            pending = next_question(session.symptom_state)
+            if pending:
+                name, question_text = pending
+                if name not in session.symptom_state.asked_fields:
+                    session.symptom_state.asked_fields.append(name)
+                session.last_question = name
+                session.questions_asked += 1
+                return {"status": "ASK", "message": question_text, "recommendations": [], "safety": safety}
 
         if self._can_assess(session, screening):
             # Reaching an assessable clinical pattern is the end of the
