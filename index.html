@@ -259,7 +259,7 @@
       const form = document.getElementById("form");
       const language = document.getElementById("language");
 
-      let sessionId = crypto.randomUUID();
+      let sessionId = null;
       let busy = false;
       let ended = false;
 
@@ -344,7 +344,23 @@
         return data;
       }
 
-      function init() {
+      async function initSession() {
+        sessionId = null;
+        try {
+          const data = await api("/api/session", { method: "POST" });
+          if (!data || typeof data.session_id !== "string" || !data.session_id) {
+            throw new Error("Invalid session response");
+          }
+          sessionId = data.session_id;
+          initWelcome();
+        } catch (error) {
+          console.error("Session initialization failed", error);
+          add("I couldn't connect to GutGPT right now. Please refresh and try again.", "bot", "error");
+          status.textContent = "Connection unavailable";
+        }
+      }
+
+      function initWelcome() {
         const welcome = {
           en: "Hi! I'm GutGPT, Guttify's gut-health assessment assistant. Tell me what you're experiencing.",
 
@@ -433,11 +449,17 @@
 
           thinking.remove();
 
-          add(
-            `Something went wrong: ${error.message}`,
-            "bot",
-            "error"
-          );
+          if (String(error.message || "").includes("SESSION_EXPIRED") || String(error.message || "").includes("HTTP 410")) {
+            add("Your chat session expired. Starting a new session…", "bot", "error");
+            ended = false;
+            await initSession();
+          } else {
+            add(
+              `Something went wrong: ${error.message}`,
+              "bot",
+              "error"
+            );
+          }
 
         } finally {
           busy = false;
@@ -456,16 +478,21 @@
           return;
         }
 
-        sessionId = crypto.randomUUID();
         ended = false;
 
         messages.innerHTML = "";
         status.textContent = "";
 
-        input.disabled = false;
-        send.disabled = false;
+        input.disabled = true;
+        send.disabled = true;
 
-        init();
+        void initSession().finally(() => {
+          if (!ended) {
+            input.disabled = false;
+            send.disabled = false;
+            input.focus();
+          }
+        });
       });
 
       form.addEventListener("submit", (event) => {
@@ -473,7 +500,7 @@
         sendMessage();
       });
 
-      init();
+      void initSession();
     })();
   </script>
 </body>
