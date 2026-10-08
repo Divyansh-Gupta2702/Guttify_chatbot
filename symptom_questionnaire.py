@@ -11,6 +11,8 @@ def next_question(state):
     asked = set(state.asked_fields or [])
 
     def q(name, text, condition=True):
+        # A question is asked once per assessment. `asked_fields` prevents
+        # malformed/ambiguous answers from causing an infinite repeat loop.
         if condition and name not in asked:
             return name, text
         return None
@@ -31,6 +33,10 @@ def next_question(state):
         if days is not None and days >= 30:
             return q("weight_loss_duration", "Have you lost any significant weight?", True)
 
+    # Age is a demographic gate, not a symptom discriminator. Keep it before
+    # the branch questions so the existing clinical assessment gates remain
+    # deterministic, but never allow it to replace the branch-specific
+    # questionnaire below.
     if state.age is None:
         return q("age", "What is your age?", True)
 
