@@ -13,8 +13,9 @@ import os
 import uuid
 import time
 import logging
+from typing import Literal
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
@@ -28,7 +29,10 @@ if not logger.handlers:
 
 from guttify_agent import ConversationManager
 from guttify_chatbot import _deterministic_product_reply, _deterministic_screening_reply
-from multilingual import normalize_language, translate_to_english, translate_from_english
+from multilingual import (
+    normalize_language, translate_to_english, translate_from_english,
+    TranslationUnavailableError, translation_error_message,
+)
 
 BASE_DIR = Path(__file__).resolve().parent
 WIDGET_FILE = BASE_DIR / "gutgpt-widget.js"
@@ -39,11 +43,15 @@ app = FastAPI(title="GutGPT API", version="1.0.0")
 # Shopify storefront origins are supplied as a comma-separated environment
 # variable, for example:
 # ALLOWED_ORIGINS=https://www.guttify.com,https://guttify.com
-allowed_origins = [
-    origin.strip().rstrip("/")
-    for origin in os.getenv("ALLOWED_ORIGINS", "").split(",")
-    if origin.strip()
-]
+def _configured_origins():
+    return [
+        origin.strip().rstrip("/")
+        for origin in os.getenv("ALLOWED_ORIGINS", "").split(",")
+        if origin.strip()
+    ]
+
+
+allowed_origins = _configured_origins()
 
 app.add_middleware(
     CORSMiddleware,
@@ -53,18 +61,63 @@ app.add_middleware(
     allow_headers=["Content-Type"],
 )
 
-# Session state is intentionally kept in process memory to preserve the
-# existing chatbot behavior. Use one Uvicorn worker unless session state is
-# moved to a shared store such as Redis.
-HISTORY: dict[str, list[dict]] = {}
-conversation_manager = ConversationManager()
+@app.on_event("startup")
+def validate_production_configuration():
+    """Fail fast when required final-site configuration is missing."""
+    missing = []
+    if not os.getenv("GROQ_API_KEY"):
+        missing.append("GROQ_API_KEY")
+    if not allowed_origins:
+        missing.append("ALLOWED_ORIGINS")
+    if missing:
+        raise RuntimeError(
+            "Missing required production environment variable(s): "
+            + ", ".join(missing)
+        )
+    logger.info(
+        "GutGPT production configuration validated: origins=%d session_ttl=%ss max_sessions=%d",
+        len(allowed_origins), SESSION_TTL_SECONDS, MAX_SESSIONS,
+    )
 
+
+def _cleanup_sessions(now: float | None = None):
+    """Expire abandoned sessions and cap total in-memory session count."""
+    now = time.monotonic() if now is None else now
+    cutoff = now - SESSION_TTL_SECONDS
+    expired = [
+        sid for sid, last_access in HISTORY_LAST_ACCESS.items()
+        if last_access < cutoff
+    ]
+    for sid in expired:
+        HISTORY.pop(sid, None)
+        HISTORY_LAST_ACCESS.pop(sid, None)
+        conversation_manager.remove(sid)
+
+    if len(HISTORY_LAST_ACCESS) > MAX_SESSIONS:
+        excess = len(HISTORY_LAST_ACCESS) - MAX_SESSIONS
+        oldest = sorted(HISTORY_LAST_ACCESS.items(), key=lambda item: item[1])[:excess]
+        for sid, _ in oldest:
+            HISTORY.pop(sid, None)
+            HISTORY_LAST_ACCESS.pop(sid, None)
+            conversation_manager.remove(sid)
+
+# Session state is kept in-process for the single-worker deployment used by
+# the widget. Sessions are bounded by TTL and a hard maximum so abandoned
+# browser sessions cannot grow memory without limit. Multi-worker deployment
+# should use a shared store such as Redis.
+SESSION_TTL_SECONDS = max(300, int(os.getenv("SESSION_TTL_SECONDS", "3600")))
+MAX_SESSIONS = max(100, int(os.getenv("MAX_SESSIONS", "10000")))
+HISTORY: dict[str, list[dict]] = {}
+HISTORY_LAST_ACCESS: dict[str, float] = {}
+conversation_manager = ConversationManager()
 
 
 class ChatRequest(BaseModel):
     session_id: str = Field(min_length=1, max_length=128)
     message: str = Field(min_length=1, max_length=4000)
-    language: str = Field(default="en", max_length=20)
+    language: Literal[
+        "en", "hi", "bn", "mr", "ta", "te", "gu", "kn", "ml", "pa", "or"
+    ] = "en"
 
 
 class ChatResponse(BaseModel):
@@ -106,8 +159,11 @@ def widget():
 @app.post("/api/session")
 def new_session():
     """Create a new conversation session for a visitor."""
+    _cleanup_sessions()
     session_id = str(uuid.uuid4())
+    now = time.monotonic()
     HISTORY[session_id] = []
+    HISTORY_LAST_ACCESS[session_id] = now
     conversation_manager.reset(session_id)
     return {"session_id": session_id}
 
@@ -123,6 +179,7 @@ def chat(req: ChatRequest):
         "[PERF][%s] REQUEST received session=%s message_len=%d",
         request_id, req.session_id[:8], len(message)
     )
+    _cleanup_sessions()
     if not message:
         # Pydantic rejects an empty string before reaching here, but keep the
         # guard because whitespace-only input becomes empty after stripping.
@@ -132,12 +189,17 @@ def chat(req: ChatRequest):
     # Translate only at the HTTP boundary. The deterministic engine always
     # receives English, so its existing diagnosis/question logic is unchanged.
     translation_start = time.perf_counter()
-    engine_message = translate_to_english(message, language)
+    try:
+        engine_message = translate_to_english(message, language)
+    except TranslationUnavailableError:
+        logger.exception("[%s] Input translation unavailable language=%s", request_id, language)
+        raise HTTPException(status_code=503, detail=translation_error_message(language))
     translation_ms = (time.perf_counter() - translation_start) * 1000
     logger.info("[PERF][%s] Input translation language=%s: %.2f ms", request_id, language, translation_ms)
 
     history_start = time.perf_counter()
     history = HISTORY.setdefault(req.session_id, [])
+    HISTORY_LAST_ACCESS[req.session_id] = time.monotonic()
     history_ms = (time.perf_counter() - history_start) * 1000
     logger.info("[PERF][%s] Session/history lookup: %.2f ms", request_id, history_ms)
 
@@ -195,12 +257,17 @@ def chat(req: ChatRequest):
     # Translate the final deterministic response only after the engine has
     # completed. Product names/URLs are preserved by the translation prompt.
     output_translation_start = time.perf_counter()
-    reply = translate_from_english(reply, language)
+    try:
+        reply = translate_from_english(reply, language)
+    except TranslationUnavailableError:
+        logger.exception("[%s] Output translation unavailable language=%s", request_id, language)
+        raise HTTPException(status_code=503, detail=translation_error_message(language))
     output_translation_ms = (time.perf_counter() - output_translation_start) * 1000
     logger.info("[PERF][%s] Output translation language=%s: %.2f ms", request_id, language, output_translation_ms)
 
     history.append({"role": "user", "content": message})
     history.append({"role": "assistant", "content": reply})
+    HISTORY_LAST_ACCESS[req.session_id] = time.monotonic()
     history_ms = (time.perf_counter() - history_start) * 1000
     logger.info("[PERF][%s] History append: %.2f ms", request_id, history_ms)
 

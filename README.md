@@ -97,3 +97,18 @@ The important runtime files are:
 - `guttify_chatbot.py` — LLM response layer
 - `products.json` — product data
 - `.env.example` — environment variable template
+
+## Final production configuration
+
+The final website deployment requires these backend environment variables:
+
+- `GROQ_API_KEY` — required for multilingual input/output translation.
+- `ALLOWED_ORIGINS` — comma-separated exact Shopify storefront origins. Do not leave this empty in production.
+- `SESSION_TTL_SECONDS` — optional session expiry, default `3600`.
+- `MAX_SESSIONS` — optional in-memory session cap, default `10000`.
+- `PORT` — optional server port, default `8000`.
+
+The production app fails startup if `GROQ_API_KEY` or `ALLOWED_ORIGINS` is missing.
+Language input is restricted to the supported Indian-language codes, and translation failures are returned as a controlled `503` rather than silently returning an English diagnosis.
+
+Session state is bounded by TTL and maximum-session limits. The production deployment should remain single-worker unless session state is moved to a shared store such as Redis.

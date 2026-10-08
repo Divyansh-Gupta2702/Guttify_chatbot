@@ -7,7 +7,7 @@ def run(messages):
     cm = ConversationManager()
     result = None
     for i, message in enumerate(messages):
-        result = cm.handle_message("piles-" + str(i), message) if False else cm.handle_message("piles", message)
+        result = cm.handle_message("piles", message)
     return cm, result
 
 

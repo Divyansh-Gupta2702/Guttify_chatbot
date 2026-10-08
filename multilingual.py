@@ -12,6 +12,28 @@ from langchain_groq import ChatGroq
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
 GROQ_MODEL = os.environ.get("GROQ_TRANSLATION_MODEL", "openai/gpt-oss-20b")
 
+
+class TranslationUnavailableError(RuntimeError):
+    """Raised when a non-English translation cannot be produced reliably."""
+
+
+TRANSLATION_ERROR_MESSAGES = {
+    "hi": "अभी आपकी चुनी हुई भाषा में उत्तर तैयार नहीं हो पा रहा है। कृपया थोड़ी देर बाद फिर प्रयास करें।",
+    "bn": "এই মুহূর্তে আপনার নির্বাচিত ভাষায় উত্তর তৈরি করা যাচ্ছে না। অনুগ্রহ করে একটু পরে আবার চেষ্টা করুন।",
+    "mr": "सध्या तुमच्या निवडलेल्या भाषेत उत्तर तयार करता येत नाही. कृपया थोड्या वेळाने पुन्हा प्रयत्न करा.",
+    "ta": "தற்போது நீங்கள் தேர்ந்தெடுத்த மொழியில் பதிலை உருவாக்க முடியவில்லை. சிறிது நேரம் கழித்து மீண்டும் முயற்சிக்கவும்.",
+    "te": "ప్రస్తుతం మీరు ఎంచుకున్న భాషలో సమాధానం రూపొందించలేకపోతున్నాము. కొంతసేపటి తర్వాత మళ్లీ ప్రయత్నించండి.",
+    "gu": "હાલમાં તમારી પસંદ કરેલી ભાષામાં જવાબ તૈયાર કરી શકાતો નથી. કૃપા કરીને થોડા સમય પછી ફરી પ્રયાસ કરો.",
+    "kn": "ಈ ಸಮಯದಲ್ಲಿ ನೀವು ಆಯ್ಕೆ ಮಾಡಿದ ಭಾಷೆಯಲ್ಲಿ ಉತ್ತರವನ್ನು ರಚಿಸಲು ಸಾಧ್ಯವಾಗುತ್ತಿಲ್ಲ. ಸ್ವಲ್ಪ ಸಮಯದ ನಂತರ ಮತ್ತೆ ಪ್ರಯತ್ನಿಸಿ.",
+    "ml": "ഇപ്പോൾ നിങ്ങൾ തിരഞ്ഞെടുത്ത ഭാഷയിൽ മറുപടി തയ്യാറാക്കാൻ കഴിയുന്നില്ല. കുറച്ച് കഴിഞ്ഞ് വീണ്ടും ശ്രമിക്കുക.",
+    "pa": "ਇਸ ਵੇਲੇ ਤੁਹਾਡੀ ਚੁਣੀ ਹੋਈ ਭਾਸ਼ਾ ਵਿੱਚ ਜਵਾਬ ਤਿਆਰ ਨਹੀਂ ਕੀਤਾ ਜਾ ਸਕਦਾ। ਕਿਰਪਾ ਕਰਕੇ ਕੁਝ ਸਮੇਂ ਬਾਅਦ ਦੁਬਾਰਾ ਕੋਸ਼ਿਸ਼ ਕਰੋ।",
+    "or": "ବର୍ତ୍ତମାନ ଆପଣ ବାଛିଥିବା ଭାଷାରେ ଉତ୍ତର ପ୍ରସ୍ତୁତ କରିହେଉନାହିଁ। ଦୟାକରି କିଛି ସମୟ ପରେ ପୁଣି ଚେଷ୍ଟା କରନ୍ତୁ।",
+}
+
+
+def translation_error_message(language: str) -> str:
+    return TRANSLATION_ERROR_MESSAGES.get(normalize_language(language), "Translation is temporarily unavailable. Please try again shortly.")
+
 SUPPORTED_LANGUAGES = {
     "en": "English",
     "hi": "Hindi",
@@ -61,7 +83,8 @@ def translate_to_english(text: str, language: str) -> str:
         return text
 
     language_name = SUPPORTED_LANGUAGES[language]
-    return _invoke(f"""
+    try:
+        translated = _invoke(f"""
 Translate the user's message from {language_name} to clear, natural English.
 This translation will be used by a deterministic gut-health symptom parser.
 Preserve the exact meaning of symptoms, yes/no answers, numbers, durations,
@@ -72,6 +95,11 @@ Return ONLY the English translation.
 USER MESSAGE:
 {text}
 """)
+    except Exception as exc:
+        raise TranslationUnavailableError("Input translation failed") from exc
+    if not translated:
+        raise TranslationUnavailableError("Input translation returned no content")
+    return translated
 
 
 def _looks_translated(text: str, source: str, language: str) -> bool:
@@ -170,7 +198,7 @@ SOURCE:
     except Exception:
         pass
 
-    # Never turn a successful diagnosis into a blank response. If translation
-    # is unavailable, return the deterministic English response as a last-resort
-    # safety fallback.
-    return text
+    # Never silently return English to a non-English user. A translated
+    # diagnosis is required for the final website; surface a controlled
+    # translation-unavailable error instead of changing the language contract.
+    raise TranslationUnavailableError("Output translation failed")

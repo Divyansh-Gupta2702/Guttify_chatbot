@@ -9,9 +9,22 @@ import re
 
 
 def _duration_days(duration):
-    if not duration or duration == "unknown":
+    """Convert canonical and common natural-language durations to days."""
+    if not duration or str(duration).strip().lower() == "unknown":
         return None
-    m = re.search(r"(\d+(?:\.\d+)?)\s*(day|days|week|weeks|month|months|year|years)", duration.lower())
+    value = str(duration).strip().lower()
+    natural = {
+        "a day": "1 day", "one day": "1 day",
+        "a week": "1 week", "one week": "1 week",
+        "a month": "1 month", "one month": "1 month",
+        "a year": "1 year", "one year": "1 year",
+        "about a month": "1 month", "around a month": "1 month",
+        "roughly a month": "1 month", "over a month": "1 month",
+        "more than a month": "1 month", "several months": "3 months",
+        "a few months": "3 months", "many months": "3 months",
+    }
+    value = natural.get(value, value)
+    m = re.search(r"(\d+(?:\.\d+)?)\s*(day|days|week|weeks|month|months|year|years)", value)
     if not m:
         return None
     n = float(m.group(1))

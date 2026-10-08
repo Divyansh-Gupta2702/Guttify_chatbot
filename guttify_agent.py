@@ -10,6 +10,7 @@ which condition/pattern was selected.
 """
 from dataclasses import dataclass, field
 import re
+import time
 
 from gibberish_checker import is_gibberish, random_gibberish_response
 from greeting_checker import is_greeting, random_greeting_response
@@ -48,6 +49,10 @@ PRODUCT_ELIGIBILITY = {
 # product-relevant concerns to the product database (skin, vitamins, weight
 # management, liver support) after the gut-symptom parser has had first pick.
 PRODUCT_CONCERN_QUESTIONS = {
+    frozenset({"Piles Pure", "Piloease Anal Care Spray"}): (
+        "Are you mainly looking for support with swelling/lumps and piles discomfort, "
+        "or with burning, itching, or irritation around the anal area?"
+    ),
 }
 
 
@@ -99,12 +104,19 @@ class SessionState:
 class ConversationManager:
     def __init__(self):
         self.sessions = {}
+        self.last_access = {}
 
     def _get_session(self, sid):
+        self.last_access[sid] = time.monotonic()
         return self.sessions.setdefault(sid, SessionState())
 
     def reset(self, sid):
         self.sessions[sid] = SessionState()
+        self.last_access[sid] = time.monotonic()
+
+    def remove(self, sid):
+        self.sessions.pop(sid, None)
+        self.last_access.pop(sid, None)
 
     @staticmethod
     def _set(data, key, value):
@@ -417,6 +429,16 @@ class ConversationManager:
 
     def _product_concern_result(self, session, text):
         matches = detect_product_concerns(text)
+
+        # Resolve an answer to an earlier ambiguous product-concern question.
+        if session.product_candidates and set(session.product_candidates) == {"Piles Pure", "Piloease Anal Care Spray"}:
+            n = normalize(text)
+            if set(session.product_candidates) == {"Piles Pure", "Piloease Anal Care Spray"}:
+                if any(term in n for term in ("swelling", "swollen", "lump", "piles discomfort")):
+                    matches = [("Piles Pure", "swelling")]
+                elif any(term in n for term in ("burning", "itching", "itch", "irritation")):
+                    matches = [("Piloease Anal Care Spray", "burning/itching/irritation")]
+
         if not matches and session.product_candidates:
             return None
         if matches:
@@ -434,6 +456,7 @@ class ConversationManager:
                     matched = next((phrase for name, phrase in matches if name == product_name), product_name)
                     screening = self._product_screening(product, matched)
                     session.screening = screening
+                    session.last_question = None
                     result = {"status": "RECOMMENDATION_FOUND", "message": "", "recommendations": [product], "product": product, "screening": screening, "safety": {"red_flag": False}}
                     return self._remember_recommendation(session, result)
             key = frozenset(unique)

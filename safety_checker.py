@@ -18,17 +18,35 @@ RED_FLAG_PATTERNS = [
 
 
 def _negative(text, phrase):
-    """Detect common natural-language negation immediately before a phrase."""
-    n = (text or "").lower()
+    """Detect natural-language negation that clearly applies to a phrase."""
+    n = re.sub(r"\s+", " ", (text or "").lower()).strip()
     phrase = phrase.lower()
-    # Keep this local and conservative: we only suppress a flag when a
-    # negation clearly refers to the same phrase.
+    p = re.escape(phrase)
+
     patterns = [
-        rf"\b(?:no|not|never|without)\s+(?:any\s+)?{re.escape(phrase)}\b",
-        rf"\b(?:do not|dont|don't|does not|doesnt|doesn't)\s+(?:have|has)\s+(?:any\s+)?{re.escape(phrase)}\b",
-        rf"\b(?:i am not|im not)\s+{re.escape(phrase)}\b",
+        rf"\b(?:no|not|never|without)\s+(?:any\s+)?{p}\b",
+        rf"\b(?:do not|dont|don't|does not|doesnt|doesn't)\s+(?:have|has|experience|experiences|notice|noticing|see|seeing)\s+(?:any\s+)?{p}\b",
+        rf"\b(?:i am not|im not)\s+(?:having|experiencing)\s+(?:any\s+)?{p}\b",
+        rf"\b(?:i|we)\s+(?:have not|haven't|had not|hadn't)\s+(?:had|experienced|seen|noticed|any)?\s*(?:any\s+)?{p}\b",
+        rf"\b(?:there is no|there's no|there is not|there's not)\s+(?:any\s+)?{p}\b",
+        rf"\b(?:there are no|there aren't|there are not)\s+(?:any\s+)?{p}\b",
     ]
-    return any(re.search(p, n) for p in patterns)
+    if any(re.search(pattern, n) for pattern in patterns):
+        return True
+
+    # Handle short constructions such as "I don't have any blood in my stool"
+    # where the red-flag phrase contains extra words between the negation and
+    # the canonical phrase. Keep the window deliberately small to avoid
+    # suppressing an unrelated warning later in the sentence.
+    words = n.split()
+    phrase_words = phrase.split()
+    for i in range(len(words)):
+        if words[i:i + len(phrase_words)] != phrase_words:
+            continue
+        window = " ".join(words[max(0, i - 7):i])
+        if re.search(r"\b(?:no|not|never|without|don't|dont|doesn't|doesnt|haven't|have not|hadn't|had not|there is no|there's no)\b", window):
+            return True
+    return False
 
 
 def detect_red_flags(text):

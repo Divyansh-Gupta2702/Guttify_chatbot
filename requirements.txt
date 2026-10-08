@@ -1,5 +1,5 @@
-# Runtime dependencies for the live GutGPT FastAPI application
 fastapi
 uvicorn[standard]
+pydantic
 langchain-core
 langchain-groq
