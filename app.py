@@ -134,7 +134,6 @@ class ChatResponse(BaseModel):
 def frontend():
     """Serve the basic browser chat frontend at the backend root."""
     if not FRONTEND_FILE.exists():
-        from fastapi import HTTPException
         raise HTTPException(status_code=500, detail="GutGPT frontend is not installed.")
     return FileResponse(FRONTEND_FILE, media_type="text/html")
 
@@ -151,7 +150,6 @@ def widget():
     if not WIDGET_FILE.exists():
         # This should never happen in a valid deployment, but gives a useful
         # HTTP error rather than an opaque filesystem exception.
-        from fastapi import HTTPException
         raise HTTPException(status_code=500, detail="GutGPT widget is not installed.")
     return FileResponse(
         WIDGET_FILE,
@@ -188,7 +186,6 @@ def chat(req: ChatRequest):
     if not message:
         # Pydantic rejects an empty string before reaching here, but keep the
         # guard because whitespace-only input becomes empty after stripping.
-        from fastapi import HTTPException
         raise HTTPException(status_code=400, detail="Message cannot be empty.")
 
     # Never silently turn an expired/unknown session into a brand-new chat.
