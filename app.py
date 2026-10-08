@@ -13,6 +13,8 @@ import os
 import uuid
 import time
 import logging
+import copy
+from threading import RLock
 from typing import Literal
 
 from fastapi import FastAPI, HTTPException
@@ -84,22 +86,23 @@ def _cleanup_sessions(now: float | None = None):
     """Expire abandoned sessions and cap total in-memory session count."""
     now = time.monotonic() if now is None else now
     cutoff = now - SESSION_TTL_SECONDS
-    expired = [
-        sid for sid, last_access in HISTORY_LAST_ACCESS.items()
-        if last_access < cutoff
-    ]
-    for sid in expired:
-        HISTORY.pop(sid, None)
-        HISTORY_LAST_ACCESS.pop(sid, None)
-        conversation_manager.remove(sid)
-
-    if len(HISTORY_LAST_ACCESS) > MAX_SESSIONS:
-        excess = len(HISTORY_LAST_ACCESS) - MAX_SESSIONS
-        oldest = sorted(HISTORY_LAST_ACCESS.items(), key=lambda item: item[1])[:excess]
-        for sid, _ in oldest:
+    with _SESSION_LOCK:
+        expired = [
+            sid for sid, last_access in HISTORY_LAST_ACCESS.items()
+            if last_access < cutoff
+        ]
+        for sid in expired:
             HISTORY.pop(sid, None)
             HISTORY_LAST_ACCESS.pop(sid, None)
             conversation_manager.remove(sid)
+
+        if len(HISTORY_LAST_ACCESS) > MAX_SESSIONS:
+            excess = len(HISTORY_LAST_ACCESS) - MAX_SESSIONS
+            oldest = sorted(HISTORY_LAST_ACCESS.items(), key=lambda item: item[1])[:excess]
+            for sid, _ in oldest:
+                HISTORY.pop(sid, None)
+                HISTORY_LAST_ACCESS.pop(sid, None)
+                conversation_manager.remove(sid)
 
 # Session state is kept in-process for the single-worker deployment used by
 # the widget. Sessions are bounded by TTL and a hard maximum so abandoned
@@ -109,6 +112,7 @@ SESSION_TTL_SECONDS = max(300, int(os.getenv("SESSION_TTL_SECONDS", "3600")))
 MAX_SESSIONS = max(100, int(os.getenv("MAX_SESSIONS", "10000")))
 HISTORY: dict[str, list[dict]] = {}
 HISTORY_LAST_ACCESS: dict[str, float] = {}
+_SESSION_LOCK = RLock()
 conversation_manager = ConversationManager()
 
 
@@ -162,9 +166,10 @@ def new_session():
     _cleanup_sessions()
     session_id = str(uuid.uuid4())
     now = time.monotonic()
-    HISTORY[session_id] = []
-    HISTORY_LAST_ACCESS[session_id] = now
-    conversation_manager.reset(session_id)
+    with _SESSION_LOCK:
+        HISTORY[session_id] = []
+        HISTORY_LAST_ACCESS[session_id] = now
+        conversation_manager.reset(session_id)
     return {"session_id": session_id}
 
 
@@ -186,6 +191,12 @@ def chat(req: ChatRequest):
         from fastapi import HTTPException
         raise HTTPException(status_code=400, detail="Message cannot be empty.")
 
+    # Never silently turn an expired/unknown session into a brand-new chat.
+    # The widget can explicitly create a new session when this happens.
+    with _SESSION_LOCK:
+        if req.session_id not in HISTORY or req.session_id not in conversation_manager.sessions:
+            raise HTTPException(status_code=410, detail="SESSION_EXPIRED")
+
     # Translate only at the HTTP boundary. The deterministic engine always
     # receives English, so its existing diagnosis/question logic is unchanged.
     translation_start = time.perf_counter()
@@ -198,12 +209,17 @@ def chat(req: ChatRequest):
     logger.info("[PERF][%s] Input translation language=%s: %.2f ms", request_id, language, translation_ms)
 
     history_start = time.perf_counter()
-    history = HISTORY.setdefault(req.session_id, [])
-    HISTORY_LAST_ACCESS[req.session_id] = time.monotonic()
+    with _SESSION_LOCK:
+        history = HISTORY[req.session_id]
+        HISTORY_LAST_ACCESS[req.session_id] = time.monotonic()
     history_ms = (time.perf_counter() - history_start) * 1000
     logger.info("[PERF][%s] Session/history lookup: %.2f ms", request_id, history_ms)
 
     logic_start = time.perf_counter()
+    # Snapshot the deterministic state so a failed output translation cannot
+    # consume a questionnaire turn or permanently advance the diagnosis.
+    with _SESSION_LOCK:
+        state_snapshot = copy.deepcopy(conversation_manager.sessions[req.session_id])
     result = conversation_manager.handle_message(req.session_id, engine_message)
     logic_ms = (time.perf_counter() - logic_start) * 1000
     status = result["status"]
@@ -261,13 +277,18 @@ def chat(req: ChatRequest):
         reply = translate_from_english(reply, language)
     except TranslationUnavailableError:
         logger.exception("[%s] Output translation unavailable language=%s", request_id, language)
+        with _SESSION_LOCK:
+            conversation_manager.sessions[req.session_id] = state_snapshot
+            conversation_manager.last_access[req.session_id] = time.monotonic()
+            HISTORY_LAST_ACCESS[req.session_id] = time.monotonic()
         raise HTTPException(status_code=503, detail=translation_error_message(language))
     output_translation_ms = (time.perf_counter() - output_translation_start) * 1000
     logger.info("[PERF][%s] Output translation language=%s: %.2f ms", request_id, language, output_translation_ms)
 
-    history.append({"role": "user", "content": message})
-    history.append({"role": "assistant", "content": reply})
-    HISTORY_LAST_ACCESS[req.session_id] = time.monotonic()
+    with _SESSION_LOCK:
+        history.append({"role": "user", "content": message})
+        history.append({"role": "assistant", "content": reply})
+        HISTORY_LAST_ACCESS[req.session_id] = time.monotonic()
     history_ms = (time.perf_counter() - history_start) * 1000
     logger.info("[PERF][%s] History append: %.2f ms", request_id, history_ms)
 

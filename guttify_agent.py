@@ -9,6 +9,7 @@ The LLM is never responsible for deciding whether an answer is relevant or
 which condition/pattern was selected.
 """
 from dataclasses import dataclass, field
+from threading import RLock
 import re
 import time
 
@@ -23,7 +24,7 @@ from intent_parser import (
 )
 from symptom_questionnaire import next_question
 from clinical_rule_engine import evaluate as evaluate_screening, _duration_days
-from safety_checker import check_safety, detect_red_flags, derive_red_flags
+from safety_checker import check_safety, detect_red_flags, derive_red_flags, is_pregnancy_or_lactation
 from recommendation_engine import evaluate as evaluate_product, find_named_product, has_domain_overlap, IRRELEVANT_MESSAGE, products as ALL_PRODUCTS
 from product_concern_router import detect_product_concerns
 
@@ -99,12 +100,16 @@ class SessionState:
     # the clinical/product-matching pipeline. Keep the approved product here
     # so short follow-ups can stay in product-conversation mode.
     last_product: dict | None = None
+    # Product recommendations remain blocked for the rest of this session
+    # after pregnancy/lactation is disclosed.
+    pregnancy_lactation_caution: bool = False
 
 
 class ConversationManager:
     def __init__(self):
         self.sessions = {}
         self.last_access = {}
+        self._lock = RLock()
 
     def _get_session(self, sid):
         self.last_access[sid] = time.monotonic()
@@ -490,7 +495,44 @@ class ConversationManager:
         return result
 
     def handle_message(self, sid, user_message):
+        # Serialize session mutation so concurrent requests cannot interleave
+        # questionnaire updates for the same in-memory manager.
+        with self._lock:
+            return self._handle_message(sid, user_message)
+
+    def _handle_message(self, sid, user_message):
         session = self._get_session(sid)
+
+        # SAFETY MUST ALWAYS RUN FIRST. A user can disclose an emergency after
+        # diagnosis, after a product recommendation, or after saying thanks.
+        safety = check_safety(user_message)
+        if is_pregnancy_or_lactation(user_message):
+            session.pregnancy_lactation_caution = True
+
+        if safety["red_flag"]:
+            screening = {
+                "pattern": "Red-flag presentation",
+                "likely_condition": "Red-flag presentation",
+                "confidence": "high",
+                "evidence": safety["reasons"],
+                "differentials": [],
+                "action": "urgent_medical_evaluation",
+                "product_allowed": False,
+                "message": safety["message"],
+            }
+            session.screening = screening
+            return {"status": "SAFETY_REVIEW", "message": safety["message"], "recommendations": [], "safety": safety, "screening": screening}
+
+        if session.pregnancy_lactation_caution:
+            caution = {
+                "safe_to_recommend": False,
+                "requires_doctor": False,
+                "red_flag": False,
+                "reasons": ["pregnancy/lactation product caution"],
+                "message": "Because pregnancy or breastfeeding was mentioned, I won't recommend a Guttify product without appropriate professional guidance.",
+            }
+            return {"status": "SAFETY_REVIEW", "message": caution["message"], "recommendations": [], "safety": caution, "screening": session.screening}
+
         if session.ended:
             return {"status": "SESSION_ENDED", "message": SESSION_ENDED_MESSAGE, "recommendations": []}
 
@@ -537,20 +579,6 @@ class ConversationManager:
                 "recommendations": [],
                 "screening": session.screening,
             }
-
-        safety = check_safety(user_message)
-        if safety["red_flag"]:
-            screening = {
-                "pattern": "Red-flag presentation",
-                "likely_condition": "Red-flag presentation",
-                "confidence": "high",
-                "evidence": safety["reasons"],
-                "differentials": [],
-                "action": "urgent_medical_evaluation",
-                "product_allowed": False,
-                "message": safety["message"],
-            }
-            return {"status": "SAFETY_REVIEW", "message": safety["message"], "recommendations": [], "safety": safety, "screening": screening}
 
         named = find_named_product(user_message)
 

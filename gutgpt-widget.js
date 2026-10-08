@@ -21,7 +21,6 @@
   );
   const GUTGPT_API_URL = configuredApiUrl.replace(/\/+$/, "");
 
-  const STORAGE_KEY = `gutgpt_session_${encodeURIComponent(GUTGPT_API_URL)}_${encodeURIComponent(window.location.hostname)}`;
   const ROOT_ID = "gutgpt-embeddable-widget";
   const REQUEST_TIMEOUT_MS = 90000;
 
@@ -453,7 +452,17 @@
       });
 
       if (!response.ok) {
-        throw new Error(`HTTP_${response.status}`);
+        let serverMessage = "";
+        try {
+          const errorData = await response.json();
+          serverMessage = typeof errorData.detail === "string" ? errorData.detail : "";
+        } catch (_) {
+          // Keep the HTTP status as the fallback error.
+        }
+        const error = new Error(`HTTP_${response.status}`);
+        error.status = response.status;
+        error.serverMessage = serverMessage;
+        throw error;
       }
 
       const data = await response.json();
@@ -544,12 +553,16 @@
 
       if (error?.name === "AbortError") {
         showError("The request took too long. Please try again.");
+      } else if (error?.serverMessage) {
+        // The backend may return a localized translation-unavailable message.
+        // Preserve it instead of replacing it with a generic English error.
+        showError(error.serverMessage);
+      } else if (error?.status === 410) {
+        showError("This chat session expired. A new chat session will be started.");
+        await initSession();
       } else {
         showError("Something went wrong reaching GutGPT. Please try again.");
       }
-
-      // If a previously stored session became invalid after a backend restart,
-      // clear it and obtain a new session on the next attempt.
     } finally {
       setBusy(false);
       if (!ended) input.focus();

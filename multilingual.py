@@ -61,7 +61,9 @@ def _llm():
     return ChatGroq(
         model=GROQ_MODEL,
         temperature=0,
-        max_tokens=900,
+        max_tokens=int(os.environ.get("GROQ_TRANSLATION_MAX_TOKENS", "1200")),
+        timeout=float(os.environ.get("GROQ_TRANSLATION_TIMEOUT_SECONDS", "25")),
+        max_retries=int(os.environ.get("GROQ_TRANSLATION_MAX_RETRIES", "0")),
         api_key=GROQ_API_KEY,
     )
 
@@ -130,9 +132,14 @@ def _looks_translated(text: str, source: str, language: str) -> bool:
         lo, hi = script_ranges[language]
         script_letters = sum(1 for ch in text if lo <= ch <= hi)
         alphabetic = sum(1 for ch in text if ch.isalpha())
-        # Product names/URLs can be English, so require only a modest amount
-        # of target-script text rather than demanding every word be translated.
-        return script_letters >= 3 and script_letters >= max(3, alphabetic * 0.08)
+        # Product names/URLs may remain Latin, but a long medical answer should
+        # still contain substantial target-script text. The threshold is kept
+        # below 100% so brand names and URLs do not cause false failures.
+        if script_letters < 4:
+            return False
+        if alphabetic <= 20:
+            return script_letters >= max(4, alphabetic * 0.20)
+        return script_letters >= max(6, alphabetic * 0.20)
 
     return text.strip() != source.strip()
 
