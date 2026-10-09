@@ -13,9 +13,7 @@ import os
 import uuid
 import time
 import logging
-import copy
 from threading import RLock
-from typing import Literal
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -31,11 +29,6 @@ if not logger.handlers:
 
 from guttify_agent import ConversationManager
 from guttify_chatbot import _deterministic_product_reply, _deterministic_screening_reply
-from multilingual import (
-    normalize_language, translate_to_english, translate_from_english,
-    TranslationUnavailableError, translation_error_message,
-)
-
 BASE_DIR = Path(__file__).resolve().parent
 WIDGET_FILE = BASE_DIR / "gutgpt-widget.js"
 FRONTEND_FILE = BASE_DIR / "index.html"
@@ -119,9 +112,6 @@ conversation_manager = ConversationManager()
 class ChatRequest(BaseModel):
     session_id: str = Field(min_length=1, max_length=128)
     message: str = Field(min_length=1, max_length=4000)
-    language: Literal[
-        "en", "hi", "bn", "mr", "ta", "te", "gu", "kn", "ml", "pa", "or"
-    ] = "en"
 
 
 class ChatResponse(BaseModel):
@@ -177,7 +167,6 @@ def chat(req: ChatRequest):
     request_id = uuid.uuid4().hex[:8]
     total_start = time.perf_counter()
     message = req.message.strip()
-    language = normalize_language(req.language)
     logger.info(
         "[PERF][%s] REQUEST received session=%s message_len=%d",
         request_id, req.session_id[:8], len(message)
@@ -194,16 +183,6 @@ def chat(req: ChatRequest):
         if req.session_id not in HISTORY or req.session_id not in conversation_manager.sessions:
             raise HTTPException(status_code=410, detail="SESSION_EXPIRED")
 
-    # Translate only at the HTTP boundary. The deterministic engine always
-    # receives English, so its existing diagnosis/question logic is unchanged.
-    translation_start = time.perf_counter()
-    try:
-        engine_message = translate_to_english(message, language)
-    except TranslationUnavailableError:
-        logger.exception("[%s] Input translation unavailable language=%s", request_id, language)
-        raise HTTPException(status_code=503, detail=translation_error_message(language))
-    translation_ms = (time.perf_counter() - translation_start) * 1000
-    logger.info("[PERF][%s] Input translation language=%s: %.2f ms", request_id, language, translation_ms)
 
     history_start = time.perf_counter()
     with _SESSION_LOCK:
@@ -213,10 +192,6 @@ def chat(req: ChatRequest):
     logger.info("[PERF][%s] Session/history lookup: %.2f ms", request_id, history_ms)
 
     logic_start = time.perf_counter()
-    # Snapshot the deterministic state so a failed output translation cannot
-    # consume a questionnaire turn or permanently advance the diagnosis.
-    with _SESSION_LOCK:
-        state_snapshot = copy.deepcopy(conversation_manager.sessions[req.session_id])
     result = conversation_manager.handle_message(req.session_id, engine_message)
     logic_ms = (time.perf_counter() - logic_start) * 1000
     status = result["status"]
@@ -267,20 +242,6 @@ def chat(req: ChatRequest):
     )
 
     history_start = time.perf_counter()
-    # Translate the final deterministic response only after the engine has
-    # completed. Product names/URLs are preserved by the translation prompt.
-    output_translation_start = time.perf_counter()
-    try:
-        reply = translate_from_english(reply, language)
-    except TranslationUnavailableError:
-        logger.exception("[%s] Output translation unavailable language=%s", request_id, language)
-        with _SESSION_LOCK:
-            conversation_manager.sessions[req.session_id] = state_snapshot
-            conversation_manager.last_access[req.session_id] = time.monotonic()
-            HISTORY_LAST_ACCESS[req.session_id] = time.monotonic()
-        raise HTTPException(status_code=503, detail=translation_error_message(language))
-    output_translation_ms = (time.perf_counter() - output_translation_start) * 1000
-    logger.info("[PERF][%s] Output translation language=%s: %.2f ms", request_id, language, output_translation_ms)
 
     with _SESSION_LOCK:
         history.append({"role": "user", "content": message})

@@ -102,7 +102,7 @@ The important runtime files are:
 
 The final website deployment requires these backend environment variables:
 
-- `GROQ_API_KEY` — required for multilingual input/output translation.
+- `GROQ_API_KEY` — required by the GutGPT backend where applicable.
 - `ALLOWED_ORIGINS` — comma-separated exact Shopify storefront origins. Do not leave this empty in production.
 - `SESSION_TTL_SECONDS` — optional session expiry, default `3600`.
 - `MAX_SESSIONS` — optional in-memory session cap, default `10000`.

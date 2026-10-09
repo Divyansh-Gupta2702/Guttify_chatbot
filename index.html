@@ -216,20 +216,6 @@
           <h1>GutGPT</h1>
           <p>Guttify's gut-health assessment assistant</p>
         </div>
-
-        <select id="language" aria-label="Language">
-          <option value="en">English</option>
-          <option value="hi">हिन्दी</option>
-          <option value="bn">বাংলা</option>
-          <option value="mr">मराठी</option>
-          <option value="ta">தமிழ்</option>
-          <option value="te">తెలుగు</option>
-          <option value="gu">ગુજરાતી</option>
-          <option value="kn">ಕನ್ನಡ</option>
-          <option value="ml">മലയാളം</option>
-          <option value="pa">ਪੰਜਾਬੀ</option>
-          <option value="or">ଓଡ଼ିଆ</option>
-        </select>
       </div>
     </header>
 
@@ -257,7 +243,6 @@
       const input = document.getElementById("input");
       const send = document.getElementById("send");
       const form = document.getElementById("form");
-      const language = document.getElementById("language");
 
       let sessionId = null;
       let busy = false;
@@ -361,31 +346,7 @@
       }
 
       function initWelcome() {
-        const welcome = {
-          en: "Hi! I'm GutGPT, Guttify's gut-health assessment assistant. Tell me what you're experiencing.",
-
-          hi: "नमस्ते! मैं GutGPT हूँ। मुझे बताइए कि आपको क्या परेशानी हो रही है।",
-          
-          bn: "হ্যালো! আমি GutGPT। আপনার কী সমস্যা হচ্ছে তা আমাকে বলুন।",
-
-          mr: "नमस्कार! मी GutGPT आहे. तुम्हाला काय त्रास होत आहे ते मला सांगा.",
-
-          ta: "வணக்கம்! நான் GutGPT. உங்களுக்கு என்ன பிரச்சனை உள்ளது என்பதைச் சொல்லுங்கள்.",
-
-          te: "హలో! నేను GutGPT. మీకు ఏమి సమస్యగా అనిపిస్తుందో చెప్పండి.",
-
-          gu: "નમસ્તે! હું GutGPT છું. તમને શું તકલીફ થઈ રહી છે તે મને જણાવો.",
-
-          kn: "ನಮಸ್ಕಾರ! ನಾನು GutGPT. ನಿಮಗೆ ಏನು ತೊಂದರೆಯಾಗುತ್ತಿದೆ ಎಂದು ನನಗೆ ತಿಳಿಸಿ.",
-
-          ml: "ഹലോ! ഞാൻ GutGPT ആണ്. നിങ്ങൾക്ക് എന്താണ് ബുദ്ധിമുട്ടെന്ന് പറയൂ.",
-
-          pa: "ਸਤ ਸ੍ਰੀ ਅਕਾਲ! ਮੈਂ GutGPT ਹਾਂ। ਤੁਹਾਨੂੰ ਕੀ ਸਮੱਸਿਆ ਆ ਰਹੀ ਹੈ, ਮੈਨੂੰ ਦੱਸੋ।",
-
-          or: "ନମସ୍କାର! ମୁଁ GutGPT। ଆପଣଙ୍କୁ କଣ ସମସ୍ୟା ହେଉଛି ମୋତେ କୁହନ୍ତୁ।"
-        };
-
-        add(welcome[language.value] || welcome.en);
+        add("Hi! I'm GutGPT, Guttify's gut-health assessment assistant. Tell me what you're experiencing.");
 
         status.textContent = "";
         input.focus();
@@ -427,7 +388,6 @@
             body: JSON.stringify({
               session_id: sessionId,
               message: message,
-              language: language.value
             })
           });
 
@@ -472,27 +432,6 @@
           }
         }
       }
-
-      language.addEventListener("change", () => {
-        if (busy) {
-          return;
-        }
-
-        ended = false;
-
-        messages.innerHTML = "";
-        status.textContent = "";
-
-        input.disabled = true;
-        send.disabled = true;
-
-        void initSession().finally(() => {
-          if (!ended) {
-            input.disabled = false;
-            send.disabled = false;
-            input.focus();
-          }
-        });
       });
 
       form.addEventListener("submit", (event) => {
