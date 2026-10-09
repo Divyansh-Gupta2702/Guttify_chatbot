@@ -156,7 +156,9 @@ class ConversationManager:
 
         set_if(facts.get("duration"), "duration")
         set_if(facts.get("age"), "age")
-        if facts.get("severity") in {"mild", "moderate", "severe"}:
+        if facts.get("severity") in {"mild", "moderate", "severe"} or (
+            isinstance(facts.get("severity"), str) and re.fullmatch(r"(?:10|[0-9])(?:\.\d+)?", facts["severity"].strip())
+        ):
             data["severity"] = facts["severity"]
 
         for src, dst in {
@@ -168,9 +170,43 @@ class ConversationManager:
             "swelling": "swelling",
             "gas": "gas",
             "recent_worsening": "recent_worsening",
+            "vomiting": "vomiting",
+            "fever": "fever",
         }.items():
             if isinstance(facts.get(src), bool):
                 data[dst] = facts[src]
+
+        if isinstance(facts.get("meal_relation"), bool):
+            data["food_related"] = facts["meal_relation"]
+        if facts.get("pain_relation") == "bowel_movements":
+            data["pain_related_to_bowel_movement"] = True
+        elif facts.get("pain_relation") == "none":
+            data["pain_related_to_bowel_movement"] = False
+        if isinstance(facts.get("bowel_pattern"), str):
+            bp = facts["bowel_pattern"]
+            if bp == "normal":
+                data["constipation_explicit"] = False
+                data["diarrhea"] = False
+                data["diarrhea_explicit"] = False
+                data["stool_form"] = None
+                data["secondary_symptoms"] = [
+                    x for x in (data.get("secondary_symptoms") or [])
+                    if x not in {"constipation", "hard stools", "diarrhea"}
+                ]
+            elif bp == "constipation":
+                data["constipation_explicit"] = True
+            elif bp == "diarrhea":
+                data["diarrhea"] = True
+                data["diarrhea_explicit"] = True
+            elif bp == "mixed":
+                data["constipation_explicit"] = True
+                data["diarrhea"] = True
+                data["diarrhea_explicit"] = True
+
+        set_if(facts.get("pain_location"), "pain_location")
+
+        if isinstance(facts.get("swelling"), bool) and session.last_question == "vomiting_fever_swelling":
+            data["abdominal_distension"] = facts["swelling"]
 
         if isinstance(facts.get("hard_stools"), bool):
             data["stool_form"] = 2 if facts["hard_stools"] else (
@@ -273,15 +309,20 @@ class ConversationManager:
             "incomplete_evacuation": lambda: s.incomplete_evacuation is not None,
             "bloating_pain": lambda: s.bloating is not None or s.abdominal_pain is not None,
             "pain": lambda: s.abdominal_pain is not None or s.pain_related_to_bowel_movement is not None,
-            "pain_relation": lambda: s.pain_related_to_bowel_movement is not None or s.food_related is not None,
+            # The question explicitly asks for the relationship; either a meal
+            # relationship or a bowel-movement relationship is sufficient, but
+            # a bare "yes" is not.
+            "pain_relation": lambda: s.food_related is not None or s.pain_related_to_bowel_movement is not None,
             "blood": lambda: s.blood_present is not None,
             "blood_colour": lambda: s.blood_colour is not None,
             "blood_location": lambda: s.blood_location is not None,
             "blood_mucus": lambda: s.blood_present is not None or s.mucus is not None,
             "anal_pain": lambda: s.sharp_pain_during_stool is not None or s.anal_pain is not None,
             "lump": lambda: s.lump_or_prolapse is not None,
-            "vomiting_fever_swelling": lambda: s.vomiting is not None or s.fever is not None or s.abdominal_distension is not None,
-            "vomiting_fever": lambda: s.vomiting is not None or s.fever is not None,
+            "vomiting_fever_swelling": lambda: (
+                s.vomiting is not None and s.fever is not None and s.abdominal_distension is not None
+            ),
+            "vomiting_fever": lambda: s.vomiting is not None and s.fever is not None,
             "water": lambda: s.water_intake is not None,
             "fibre": lambda: s.fibre_intake is not None,
             "medications": lambda: s.medications is not None,
@@ -294,7 +335,12 @@ class ConversationManager:
             "stool_form": lambda: s.stool_form is not None,
             "severity": lambda: s.severity not in (None, "unknown"),
             "pain_location": lambda: s.pain_location is not None,
-            "bowel_pattern": lambda: s.diarrhea is not None or s.constipation_explicit is not None or s.bowel_frequency_per_week is not None,
+            "bowel_pattern": lambda: (
+                s.diarrhea is not None
+                or s.constipation_explicit is not None
+                or s.bowel_frequency_per_week is not None
+                or (s.stool_form is None and s.primary_symptom is not None and getattr(s, "diarrhea_explicit", None) is False and s.constipation_explicit is False)
+            ),
             "reflux": lambda: getattr(s, "reflux_present", None) is not None,
             # For trigger questions, food_related=False is a valid explicit
             # answer meaning that no repeatable food/meal trigger was reported.
@@ -321,6 +367,8 @@ class ConversationManager:
             if before.get(key) != value and value not in (None, [], "unknown"):
                 changed[key] = value
 
+        logger.info("[NLU][QUESTION_CONTEXT] last_question=%s", current_question)
+        logger.info("[NLU][RAW] %r", text)
         logger.info(
             "[NLU] message_length=%d assessment_active=%s last_question=%s intent=%s confidence=%.2f",
             len(text), bool(session.symptom_state.primary_symptom or current_question),
@@ -333,7 +381,8 @@ class ConversationManager:
                                [session.symptom_state.primary_symptom] +
                                (session.symptom_state.secondary_symptoms or []))),
         )
-        logger.info("[NLU][STATE] newly_added=%s", changed)
+        logger.info("[NLU][QUESTION_RESOLUTION] field=%s answered=%s", current_question, self._question_has_answer(session, current_question) if current_question else True)
+        logger.info("[NLU][STATE_UPDATE] newly_added=%s", changed)
         return facts
 
     def _apply_answer(self, session, text):
@@ -344,6 +393,44 @@ class ConversationManager:
         s = session.symptom_state
         n = normalize(text)
         data = s.to_dict()
+
+        # Deterministic contextual extractor is the first authority for the
+        # active question. It may resolve multiple slots in one message.
+        contextual = extract_natural_facts(text, field, s)
+        if field == "severity" and contextual.get("severity") is not None:
+            data["severity"] = contextual["severity"]
+            if isinstance(contextual.get("recent_worsening"), bool):
+                data["recent_worsening"] = contextual["recent_worsening"]
+        if field == "bowel_pattern" and contextual.get("bowel_pattern"):
+            bp = contextual["bowel_pattern"]
+            if bp == "normal":
+                data["constipation_explicit"] = False
+                data["diarrhea"] = False
+                data["diarrhea_explicit"] = False
+                data["stool_form"] = None
+                data["secondary_symptoms"] = [
+                    x for x in (data.get("secondary_symptoms") or [])
+                    if x not in {"constipation", "hard stools", "diarrhea"}
+                ]
+            elif bp == "constipation":
+                data["constipation_explicit"] = True
+            elif bp == "diarrhea":
+                data["diarrhea"] = True
+                data["diarrhea_explicit"] = True
+            elif bp == "mixed":
+                data["constipation_explicit"] = True
+                data["diarrhea"] = True
+                data["diarrhea_explicit"] = True
+        if field == "pain_location" and contextual.get("pain_location"):
+            data["pain_location"] = contextual["pain_location"]
+        if field in {"pain_relation", "food_relation"}:
+            if contextual.get("meal_relation") is True:
+                data["food_related"] = True
+            if contextual.get("pain_relation") == "bowel_movements":
+                data["pain_related_to_bowel_movement"] = True
+            elif contextual.get("pain_relation") == "none":
+                data["food_related"] = False
+                data["pain_related_to_bowel_movement"] = False
 
         if field == "duration":
             self._set(data, "duration", extract_duration(text))
@@ -979,6 +1066,30 @@ class ConversationManager:
             self._apply_nlu_facts(session, nlu_facts)
             session.symptom_state.red_flags = derive_red_flags(session.symptom_state)
 
+            # Safety overrides question completeness: a newly extracted red
+            # flag must stop the assessment even when a multi-part question
+            # still has unanswered subfields.
+            if session.symptom_state.red_flags:
+                safety = {
+                    "safe_to_recommend": False,
+                    "requires_doctor": True,
+                    "red_flag": True,
+                    "reasons": session.symptom_state.red_flags,
+                    "message": "This needs medical evaluation rather than only self-treatment. I won't recommend a Guttify product for these symptoms.",
+                }
+                screening = {
+                    "pattern": "Red-flag presentation",
+                    "likely_condition": "Red-flag presentation",
+                    "confidence": "high",
+                    "evidence": session.symptom_state.red_flags,
+                    "differentials": [],
+                    "action": "urgent_medical_evaluation",
+                    "product_allowed": False,
+                    "message": safety["message"],
+                }
+                return {"status": "SAFETY_REVIEW", "message": safety["message"],
+                        "recommendations": [], "safety": safety, "screening": screening}
+
             # Do not consume a question merely because it was displayed. If
             # the response did not answer that question, keep the context
             # active and ask for clarification instead of skipping a required
@@ -1007,10 +1118,12 @@ class ConversationManager:
                     "food_trigger": "Is it repeatedly linked to dairy, wheat, beans/lentils, or another particular food?",
                     "food_relation": "Is it triggered or worsened by meals?",
                     "trigger": "Which food triggers it, and does it happen repeatedly after the same food?",
+                    "pain_relation": "Is the pain more related to meals or to bowel movements?",
                     "bowel_pattern": "Do you mainly have constipation, diarrhea, or both at different times?",
                     "symptoms": "What happens after the food: bloating, gas, diarrhea, cramps, constipation, or something else?",
                 }
                 question_text = question_texts.get(pending_question, "Could you answer the question above in a little more detail?")
+                logger.info("[QUESTION][BLOCK] field=%s reason=answer_not_understood action=ASK_CLARIFICATION", pending_question)
                 logger.info("[NLU] unanswered_question field=%s; preserving context", pending_question)
                 return {
                     "status": "ASK",
@@ -1142,6 +1255,20 @@ class ConversationManager:
                 session.questions_asked += 1
                 logger.info("[QUESTION] next=%s safety_flags=%s", name, session.symptom_state.red_flags)
                 return {"status": "ASK", "message": question_text, "recommendations": [], "safety": safety}
+
+        # A required question is never bypassed by the max-question fallback.
+        # If we still have active question context, keep the assessment blocked.
+        if session.last_question:
+            logger.warning(
+                "[SAFETY][BLOCK] reason=required_question_unanswered field=%s",
+                session.last_question,
+            )
+            return {
+                "status": "ASK",
+                "message": "I still need an answer to the question above before I can complete the assessment.",
+                "recommendations": [],
+                "safety": safety,
+            }
 
         # Hard stop: never loop forever. Produce the best available assessment.
         screening = evaluate_screening(session.symptom_state)

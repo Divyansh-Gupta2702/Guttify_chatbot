@@ -41,13 +41,13 @@ SCHEMA_KEYS = {
     "stool_pattern", "hard_stools", "straining", "constipation",
     "loose_stools", "weight_loss", "age", "food_triggers",
     "aggravating_factors", "relieving_factors", "red_flags",
-    "new_information", "confidence", "recent_worsening", "gas",
+    "new_information", "confidence", "recent_worsening", "gas", "meal_relation", "pain_relation", "bowel_pattern",
 }
 
 BOOL_FIELDS = {
     "pain", "bleeding", "itching", "burning", "swelling",
     "lump_or_protrusion", "hard_stools", "straining", "constipation",
-    "loose_stools", "weight_loss", "recent_worsening", "gas",
+    "loose_stools", "weight_loss", "recent_worsening", "gas", "meal_relation", "pain_relation", "bowel_pattern",
 }
 
 LIST_FIELDS = {
@@ -100,6 +100,9 @@ def _blank_result(intent="answer_question") -> dict:
         "confidence": 0.0,
         "recent_worsening": None,
         "gas": None,
+        "meal_relation": None,
+        "pain_relation": None,
+        "bowel_pattern": None,
     }
 
 
@@ -126,14 +129,21 @@ def _validate(raw: Any, forced_intent: str | None = None) -> dict:
         if isinstance(value, bool):
             out[key] = value
 
-    for key in ("duration", "pain_character", "pain_timing", "stool_pattern"):
+    for key in ("duration", "pain_character", "pain_timing", "stool_pattern", "meal_relation", "pain_relation", "bowel_pattern"):
         value = raw.get(key)
         if isinstance(value, str) and value.strip():
             out[key] = value.strip()[:160]
 
     severity = raw.get("severity")
-    if isinstance(severity, str) and severity in ALLOWED_SEVERITIES:
-        out["severity"] = severity
+    if isinstance(severity, (int, float)) and 0 <= float(severity) <= 10:
+        out["severity"] = str(int(severity)) if float(severity).is_integer() else str(float(severity))
+    elif isinstance(severity, str) and (severity in ALLOWED_SEVERITIES or re.fullmatch(r"(?:10|[0-9])(?:\.\d+)?", severity.strip())):
+        try:
+            if 0 <= float(severity.strip()) <= 10:
+                out["severity"] = severity.strip()
+        except ValueError:
+            if severity in ALLOWED_SEVERITIES:
+                out["severity"] = severity
 
     for key in ("blood_type", "blood_location"):
         value = raw.get(key)
@@ -387,14 +397,235 @@ def _duration_from_text(n: str):
     return None
 
 
+
+def _norm_answer_text(message: str) -> str:
+    """Normalize conversational text without destroying semantic negation."""
+    n = (message or "").lower()
+    n = n.replace("’", "'").replace("–", "-").replace("—", "-")
+    n = re.sub(r"\s+", " ", n)
+    return n.strip(" \t\r\n.,!?;:")
+
+
+def _has_negation(text: str) -> bool:
+    n = _norm_answer_text(text)
+    return bool(re.search(
+        r"\b(?:no|nope|nah|not really|not at all|none|neither|nothing|"
+        r"i don't|i do not|i haven't|i have not|i didn't|i did not|"
+        r"never|without|not that i know of|isn't|is not|hasn't|has not|doesn't|does not|"
+        r"don't|dont)\b", n
+    ))
+
+
+def _extract_number_0_10(text: str):
+    n = _norm_answer_text(text)
+    patterns = (
+        r"\b(?:pain|severity)\s*(?:is|of|around|about)?\s*(10|[0-9])\s*(?:/\s*10)?\b",
+        r"\b(10|[0-9])\s*/\s*10\b",
+        r"\b(?:around|about|roughly|probably|maybe|i'd say|id say|rate it)\s+(10|[0-9])\b",
+    )
+    for pat in patterns:
+        m = re.search(pat, n)
+        if m and 0 <= int(m.group(1)) <= 10:
+            return str(int(m.group(1)))
+    return None
+
+
+def _question_specific_fallback(message: str, last_question: str | None, state) -> dict:
+    """Deterministic, question-aware extraction.
+
+    This is deliberately conservative: it only fills facts supported by the
+    user's wording and never treats a negated keyword as a positive answer.
+    """
+    n = _norm_answer_text(message)
+    out = _blank_result("answer_question" if last_question else "assessment")
+    negative = _has_negation(n)
+    bare_yes = bool(re.fullmatch(r"(?:yes|yeah|yep|yup|sure|definitely|true|i think so)", n))
+    bare_no = bool(re.fullmatch(r"(?:no|nope|nah|not really|not at all|none|neither|false)", n))
+
+    # Severity + worsening is a combined question in the existing questionnaire.
+    if last_question == "severity":
+        sev = _extract_number_0_10(n)
+        if sev is not None:
+            out["severity"] = sev
+        worsening_pos = bool(re.search(
+            r"\b(?:getting worse|much worse|became worse|worsening|worsened|"
+            r"worse now|has gotten worse|got worse)\b", n
+        ))
+        worsening_neg = bool(re.search(
+            r"\b(?:not getting worse|isn't getting worse|is not getting worse|"
+            r"hasn't gotten worse|has not gotten worse|not worse|stable|"
+            r"staying the same|no change|unchanged)\b", n
+        ))
+        if worsening_neg:
+            out["recent_worsening"] = False
+        elif worsening_pos:
+            out["recent_worsening"] = True
+
+    elif last_question in {"duration"}:
+        duration = _duration_from_text(n)
+        if duration:
+            out["duration"] = duration
+        elif re.search(r"\b(?:since yesterday|from yesterday)\b", n):
+            out["duration"] = "1 day"
+        elif re.search(r"\b(?:a couple of|couple of)\s+days?\b", n):
+            out["duration"] = "2 days"
+        elif re.search(r"\b(?:a few|several)\s+days?\b", n):
+            out["duration"] = "3 days"
+
+    elif last_question == "age":
+        m = re.search(r"\b(?:i am|i'm|im|age is|aged)\s*(\d{1,3})\b|\b(\d{1,3})\s*(?:years?\s*old)\b", n)
+        if m:
+            v = int(next(x for x in m.groups() if x is not None))
+            if 0 <= v <= 120:
+                out["age"] = v
+        elif re.fullmatch(r"\d{1,3}", n):
+            v = int(n)
+            if 0 <= v <= 120:
+                out["age"] = v
+
+    elif last_question in {"weight_loss", "weight_loss_duration"}:
+        if re.search(r"\b(?:gained|put on)\s+(?:a little\s+)?weight\b", n) or negative:
+            out["weight_loss"] = False
+        elif re.search(r"\b(?:lost|losing|loss of)\s+(?:any\s+|significant\s+|a lot of\s+)?weight\b", n) or bare_yes:
+            out["weight_loss"] = True
+
+    elif last_question in {"vomiting_fever", "vomiting_fever_swelling"}:
+        # Explicit per-item answers take precedence over a global "no".
+        vom_pos = bool(re.search(r"\b(?:vomit(?:ing)?|throwing up)\b", n))
+        fever_pos = bool(re.search(r"\b(?:fever|high temperature|temperature)\b", n))
+        vom_neg = bool(re.search(r"\b(?:no|not|never|without)\b.{0,35}\b(?:vomit(?:ing)?|throwing up)\b", n))
+        fever_neg = bool(re.search(r"\b(?:no|not|never|without)\b.{0,35}\b(?:fever|high temperature)\b", n))
+        if vom_neg or re.fullmatch(r"not that i know of", n) or (bare_no and not fever_pos):
+            out["vomiting"] = False
+        elif vom_pos:
+            out["vomiting"] = True
+        if fever_neg or re.fullmatch(r"not that i know of", n) or (bare_no and not vom_pos):
+            out["fever"] = False
+        elif fever_pos:
+            out["fever"] = True
+        if last_question == "vomiting_fever_swelling":
+            swell_pos = bool(re.search(r"\b(?:severe\s+)?(?:abdominal\s+)?(?:swelling|distension|very swollen)\b", n))
+            swell_neg = bool(re.search(r"\b(?:no|not|never|without)\b.{0,35}\b(?:swelling|distension|swollen)\b", n))
+            if swell_neg or (bare_no and not (vom_pos or fever_pos)):
+                out["swelling"] = False
+            elif swell_pos:
+                out["swelling"] = True
+
+    elif last_question == "bowel_pattern":
+        normal = bool(re.search(
+            r"\b(?:normal|fine|regular)\s+(?:poops?|stools?|bowel movements?|bowels?)\b|"
+            r"\b(?:my|the)\s+(?:poops?|stools?|bowel movements?|bowels?)\s+(?:are|is)\s+(?:normal|fine|regular)\b|"
+            r"\beverything\s+is\s+(?:normal|fine|regular)\b|\bnormal\b", n
+        ))
+        const_pos = bool(re.search(
+            r"\b(?:constipat(?:ed|ion)|hard\s+(?:stools?|poop)|trouble\s+passing\s+stool|"
+            r"difficulty\s+(?:passing|having)\s+(?:stool|bowel movements?)|"
+            r"don't\s+poop\s+regularly|do not\s+poop\s+regularly|haven't\s+been\s+able\s+to\s+poop|"
+            r"not\s+able\s+to\s+poop)\b", n
+        ))
+        diarr_pos = bool(re.search(r"\b(?:diarrh(?:ea|oea)|loose\s+(?:stools?|motions?)|watery\s+(?:stools?|poop))\b", n))
+        both = bool(re.search(r"\b(?:both|alternat(?:e|ing)|sometimes\s+constipat(?:ed|ion).{0,50}(?:diarrh|loose\s+stools?)|(?:diarrh|loose\s+stools?).{0,50}sometimes\s+constipat)\b", n))
+        const_neg = bool(re.search(r"\b(?:no|not|never|without|don't|dont|do not)\b.{0,35}\b(?:constipat(?:ion|ed)|hard\s+(?:stools?|poop))\b", n))
+        diarr_neg = bool(re.search(r"\b(?:no|not|never|without|don't|dont|do not)\b.{0,35}\b(?:diarrh(?:ea|oea)|loose\s+(?:stools?|motions?)|watery)\b", n))
+        const_pos = const_pos and not const_neg
+        diarr_pos = diarr_pos and not diarr_neg
+        if both:
+            out["bowel_pattern"] = "mixed"
+        elif normal and not const_pos and not diarr_pos:
+            out["bowel_pattern"] = "normal"
+            out["constipation"] = False
+            out["loose_stools"] = False
+        elif const_pos and diarr_pos:
+            out["bowel_pattern"] = "mixed"
+            out["constipation"] = True
+            out["loose_stools"] = True
+        elif const_pos:
+            out["bowel_pattern"] = "constipation"
+            out["constipation"] = True
+            out["loose_stools"] = False if diarr_neg else None
+        elif diarr_pos:
+            out["bowel_pattern"] = "diarrhea"
+            out["loose_stools"] = True
+            out["constipation"] = False if const_neg else None
+        elif bare_no or (const_neg and diarr_neg):
+            out["bowel_pattern"] = "normal"
+            out["constipation"] = False
+            out["loose_stools"] = False
+
+    elif last_question in {"pain_relation", "food_relation"}:
+        meal_pos = bool(re.search(r"\b(?:after\s+(?:meals?|eating|food)|when\s+i\s+eat|whenever\s+i\s+eat|related\s+to\s+meals?|triggered\s+by\s+meals?)\b", n))
+        bowel_pos = bool(re.search(r"\b(?:after\s+(?:a\s+)?(?:bowel movement|stool|poop)|when\s+i\s+poop|related\s+to\s+(?:bowel movements?|stool)|changes?\s+with\s+(?:bowel movements?|stool))\b", n))
+        meal_neg = bool(re.search(r"\b(?:not|isn't|is not|never)\b.{0,30}\b(?:meals?|eating|food)\b", n))
+        bowel_neg = bool(re.search(r"\b(?:not|isn't|is not|never)\b.{0,30}\b(?:bowel movements?|stool|poop)\b", n))
+        if meal_pos and not meal_neg:
+            out["meal_relation"] = True
+            out["pain_relation"] = "meals"
+            out["food_related"] = True
+        elif bowel_pos and not bowel_neg:
+            out["pain_relation"] = "bowel_movements"
+        elif bare_no:
+            out["meal_relation"] = False
+            out["pain_relation"] = "none"
+            out["food_related"] = False
+        # bare yes is intentionally unresolved: "yes" cannot choose meals vs stool.
+
+    elif last_question == "pain_location":
+        if re.search(r"\b(?:upper\s+(?:abdomen|stomach|belly)|upper\s+stomach|upper\s+belly)\b", n):
+            out["pain_location"] = "upper abdomen"
+        elif re.search(r"\b(?:lower\s+(?:abdomen|stomach|belly)|lower\s+stomach|lower\s+belly)\b", n):
+            out["pain_location"] = "lower abdomen"
+        elif re.search(r"\b(?:right\s+(?:side|abdomen|stomach|belly))\b", n):
+            out["pain_location"] = "right side"
+        elif re.search(r"\b(?:left\s+(?:side|abdomen|stomach|belly))\b", n):
+            out["pain_location"] = "left side"
+        elif re.search(r"\b(?:around\s+(?:the\s+)?navel|belly button)\b", n):
+            out["pain_location"] = "around navel"
+
+    # Shared natural facts can be volunteered while answering any question.
+    if re.search(r"\b(?:upper\s+(?:abdomen|stomach|belly)|upper\s+stomach|upper\s+belly)\b", n):
+        out["pain_location"] = "upper abdomen"
+    elif re.search(r"\b(?:lower\s+(?:abdomen|stomach|belly)|lower\s+stomach|lower\s+belly)\b", n):
+        out["pain_location"] = "lower abdomen"
+
+    if re.search(r"\b(?:after\s+(?:meals?|eating|food)|when\s+i\s+eat|whenever\s+i\s+eat|related\s+to\s+meals?|triggered\s+by\s+meals?)\b", n):
+        if not re.search(r"\b(?:not|isn't|is not|never)\b.{0,30}\b(?:meals?|eating|food)\b", n):
+            out["meal_relation"] = True
+            out["food_related"] = True
+
+    if re.search(r"\b(?:my|the)\s+(?:bowel movements?|bowels?|stools?|poops?)\s+(?:are|is)\s+(?:normal|fine|regular)\b|\beverything\s+is\s+(?:normal|fine|regular)\b", n):
+        out["bowel_pattern"] = "normal"
+        out["constipation"] = False
+        out["loose_stools"] = False
+
+    duration = _duration_from_text(n)
+    if duration and out.get("duration") is None:
+        out["duration"] = duration
+    age_match = re.search(r"\b(?:i am|i'm|im|age is|aged)\s*(\d{1,3})\b", n)
+    if age_match and out.get("age") is None:
+        out["age"] = int(age_match.group(1))
+
+    sev = _extract_number_0_10(n)
+    if sev is not None and out.get("severity") is None:
+        out["severity"] = sev
+
+    # Negated/positive worsening is useful even outside the severity question.
+    if out.get("recent_worsening") is None:
+        if re.search(r"\b(?:not getting worse|isn't getting worse|is not getting worse|hasn't gotten worse|has not gotten worse|stable|unchanged|no change)\b", n):
+            out["recent_worsening"] = False
+        elif re.search(r"\b(?:getting worse|much worse|became worse|worsening|worsened|worse now)\b", n):
+            out["recent_worsening"] = True
+
+    return out
+
+
 def _deterministic_context_fallback(message: str, last_question: str | None, state) -> dict:
     """Small high-value fallback for common conversational forms.
 
     This is intentionally not a giant synonym table. It exists so a temporary
     LLM/API failure never turns a valid answer into IRRELEVANT.
     """
-    n = re.sub(r"\s+", " ", (message or "").lower()).strip()
-    out = _blank_result("answer_question" if last_question else "assessment")
+    n = _norm_answer_text(message)
+    out = _question_specific_fallback(message, last_question, state)
 
     # Question-aware yes/no.
     negative = bool(re.search(r"\b(no|nope|not really|not at all|none|i don't|i do not|i haven't|i have not|never)\b", n))
@@ -566,6 +797,27 @@ def _deterministic_context_fallback(message: str, last_question: str | None, sta
     if re.search(r"\b(much worse|getting worse|became worse|worsened|worse now)\b", n):
         out["recent_worsening"] = True
 
+    # Active-question extraction is authoritative. Generic keyword rules above
+    # may see words such as "diarrhea" or "worse" inside a negated phrase; never
+    # let those generic matches overwrite the contextual interpretation.
+    qfacts = _question_specific_fallback(message, last_question, state)
+    if last_question:
+        for key in (
+            "severity", "recent_worsening", "duration", "age", "weight_loss",
+            "vomiting", "fever", "swelling", "bowel_pattern", "constipation",
+            "loose_stools", "meal_relation", "pain_relation", "pain_location",
+        ):
+            if qfacts.get(key) is not None:
+                out[key] = qfacts[key]
+        if last_question == "bowel_pattern" and qfacts.get("bowel_pattern") == "normal":
+            out["constipation"] = False
+            out["loose_stools"] = False
+            out["symptoms"] = [x for x in out["symptoms"] if x not in {"constipation", "hard stools", "diarrhea"}]
+        if last_question == "vomiting_fever" and qfacts.get("vomiting") is False:
+            out["vomiting"] = False
+        if last_question == "vomiting_fever" and qfacts.get("fever") is False:
+            out["fever"] = False
+
     # A genuine assessment answer is not "unrelated" merely because it has no
     # product/symptom keyword.
     if last_question:
@@ -650,6 +902,9 @@ def extract_natural_facts(message: str, last_question: str | None, state) -> dic
     fallback = _deterministic_context_fallback(message, last_question, state)
     llm_result = _llm_extract(message, last_question, state, forced_intent) if _needs_llm(message, last_question, fallback) else None
     if llm_result is None:
+        logger.info(
+            "[NLU][FALLBACK] model_json_failed_or_unavailable=true deterministic_extraction=true"
+        )
         result = fallback
     else:
         result = llm_result
