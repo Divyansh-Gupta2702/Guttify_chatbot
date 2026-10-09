@@ -425,6 +425,48 @@ class ConversationManager:
         # Deterministic contextual extractor is the first authority for the
         # active question. It may resolve multiple slots in one message.
         contextual = extract_natural_facts(text, field, s)
+
+        # The contextual NLU is authoritative for the active question. The
+        # legacy field-specific parsers below remain as compatibility fallbacks,
+        # but they must not overwrite a correctly understood natural-language
+        # answer with None. This closes gaps such as "absolutely", "yes
+        # sometimes", "it does", and long-form numeric/lifestyle answers.
+        contextual_to_state = {
+            "incomplete_evacuation": "incomplete_evacuation",
+            "blood": "bleeding",
+            "anal_pain": "pain",
+            "lump": "lump_or_prolapse",
+            "weight_loss": "weight_loss",
+            "weight_loss_duration": "weight_loss",
+            "infection": "recent_infection",
+            "timing": "night_time_symptoms",
+        }
+        key = contextual_to_state.get(field)
+        if key and isinstance(contextual.get(key), bool):
+            if key == "bleeding":
+                data["blood_present"] = contextual[key]
+            elif key == "pain":
+                if field == "anal_pain":
+                    data["anal_pain"] = contextual[key]
+                    data["sharp_pain_during_stool"] = contextual[key]
+                elif field in {"bloating_pain", "pain", "pain_relation"}:
+                    data["abdominal_pain"] = contextual[key]
+            elif key == "lump_or_prolapse":
+                data["lump_or_prolapse"] = contextual[key]
+            else:
+                data[key] = contextual[key]
+
+        if isinstance(contextual.get("incomplete_evacuation"), bool):
+            data["incomplete_evacuation"] = contextual["incomplete_evacuation"]
+        if isinstance(contextual.get("pain_related_to_bowel_movement"), bool):
+            data["pain_related_to_bowel_movement"] = contextual["pain_related_to_bowel_movement"]
+        if isinstance(contextual.get("water_intake"), str):
+            data["water_intake"] = contextual["water_intake"]
+        if isinstance(contextual.get("fibre_intake"), str):
+            data["fibre_intake"] = contextual["fibre_intake"]
+        if isinstance(contextual.get("medications"), str):
+            data["medications"] = contextual["medications"]
+
         if field == "severity" and contextual.get("severity") is not None:
             data["severity"] = contextual["severity"]
             if isinstance(contextual.get("recent_worsening"), bool):
@@ -594,8 +636,15 @@ class ConversationManager:
             water, _ = extract_lifestyle(text)
             if water:
                 data["water_intake"] = water
-            elif re_fullmatch_number(text):
-                data["water_intake"] = normalize(text) + " L"
+            else:
+                m = re.search(r"\b(\d+(?:\.\d+)?)\s*(?:litres?|liters?|litters?|l)\b", n)
+                if m:
+                    data["water_intake"] = m.group(1) + " L"
+                elif re.fullmatch(r"(?:one|two|three|four|five|six)\s*(?:litres?|liters?|litters?|l)?", n):
+                    words = {"one":"1", "two":"2", "three":"3", "four":"4", "five":"5", "six":"6"}
+                    data["water_intake"] = words[n.split()[0]] + " L"
+                elif re_fullmatch_number(text):
+                    data["water_intake"] = normalize(text) + " L"
 
         elif field == "fibre":
             _, fibre = extract_lifestyle(text)
@@ -772,6 +821,16 @@ class ConversationManager:
         for key, value in data.items():
             if value is not None:
                 merged_data[key] = value
+
+        # A contextual numeric/lifestyle answer must not be reinterpreted by
+        # the generic parser as an unrelated clinical score. For example,
+        # "3 litters" is water intake, not pain severity 3. Preserve the
+        # pre-merge severity unless the same message explicitly contains a
+        # severity expression.
+        if field == "water" and contextual.get("water_intake"):
+            if not re.search(r"\b(?:pain|severity)\s*(?:is|of|around|about)?\s*\d|\b\d+\s*/\s*10\b", n):
+                merged_data["severity"] = data.get("severity")
+
         merged_state = SymptomState(**merged_data)
         merged_state.red_flags = derive_red_flags(merged_state)
         session.symptom_state = merged_state

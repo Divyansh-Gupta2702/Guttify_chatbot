@@ -155,3 +155,55 @@ def test_14_natural_hour_durations():
     cm.handle_message("t14b", "2-3 hours")
     assert s.symptom_state.duration == "2-3 hours"
     assert s.last_question != "duration"
+
+
+def test_natural_incomplete_evacuation_affirmatives():
+    for answer in ["absolutely", "yes sometimes", "it does"]:
+        cm = ConversationManager()
+        sid = "nlu-incomplete-" + answer.replace(" ", "-")
+        s = cm._get_session(sid)
+        s.primary_symptom = "constipation"
+        s.last_question = "incomplete_evacuation"
+        result = cm.handle_message(sid, answer)
+        assert s.symptom_state.incomplete_evacuation is True
+        assert result["status"] != "IRRELEVANT"
+
+
+def test_hard_poop_natural_language_becomes_primary_symptom():
+    cm = ConversationManager()
+    sid = "nlu-hard-poops"
+    result = cm.handle_message(sid, "I am having hard poops")
+    state = cm.sessions[sid].symptom_state
+    assert state.primary_symptom == "hard stools"
+    assert state.stool_form == 2
+    assert result["status"] == "ASK"
+
+
+def test_bloating_pain_natural_relation_variant():
+    cm = ConversationManager()
+    sid = "nlu-bloating-does-improve"
+    s = cm._get_session(sid)
+    s.primary_symptom = "bloating"
+    s.last_question = "bloating_pain"
+    cm.handle_message(sid, "I have bloating and pain, it does improve after a bowel movement")
+    assert s.symptom_state.pain_related_to_bowel_movement is True
+
+
+def test_water_accepts_common_typo_litters():
+    cm = ConversationManager()
+    sid = "nlu-water-litters"
+    s = cm._get_session(sid)
+    s.primary_symptom = "constipation"
+    s.last_question = "water"
+    cm.handle_message(sid, "around 3 litters")
+    assert s.symptom_state.water_intake == "3 L"
+
+
+def test_no_medicines_is_contextually_consumed():
+    cm = ConversationManager()
+    sid = "nlu-no-meds"
+    s = cm._get_session(sid)
+    s.primary_symptom = "constipation"
+    s.last_question = "medications"
+    cm.handle_message(sid, "no medicines")
+    assert s.symptom_state.medications == "none"

@@ -42,6 +42,7 @@ SCHEMA_KEYS = {
     "loose_stools", "weight_loss", "age", "food_triggers",
     "aggravating_factors", "relieving_factors", "red_flags",
     "new_information", "confidence", "recent_worsening", "gas", "meal_relation", "pain_relation", "bowel_pattern",
+    "water_intake", "fibre_intake", "medications", "incomplete_evacuation", "pain_related_to_bowel_movement",
 }
 
 BOOL_FIELDS = {
@@ -57,15 +58,31 @@ LIST_FIELDS = {
 
 
 def _clean_json_text(content: str) -> str:
-    content = (content or "").strip()
-    if content.startswith("```"):
-        content = re.sub(r"^```(?:json)?\s*", "", content, flags=re.I)
-        content = re.sub(r"\s*```$", "", content)
-    # Recover a JSON object if the model added a short preamble.
-    start, end = content.find("{"), content.rfind("}")
-    if start >= 0 and end > start:
-        return content[start:end + 1]
-    return content
+    """Return the first valid JSON object from an LLM response.
+
+    Groq can occasionally return fenced JSON, a short preamble, or trailing
+    text even when the prompt requests JSON-only output. The NLU layer must
+    tolerate those forms without allowing malformed model output to affect the
+    deterministic rule engine.
+    """
+    if not isinstance(content, str):
+        return ""
+    text = content.strip()
+    if not text:
+        return ""
+    text = re.sub(r"^```(?:json)?\s*", "", text, flags=re.I)
+    text = re.sub(r"\s*```$", "", text)
+
+    decoder = json.JSONDecoder()
+    # Prefer a complete object beginning at any opening brace. raw_decode
+    # correctly handles nested objects/strings and ignores trailing prose.
+    for match in re.finditer(r"\{", text):
+        try:
+            _, end = decoder.raw_decode(text[match.start():])
+            return text[match.start():match.start() + end]
+        except json.JSONDecodeError:
+            continue
+    return text
 
 
 def _blank_result(intent="answer_question") -> dict:
@@ -103,6 +120,11 @@ def _blank_result(intent="answer_question") -> dict:
         "meal_relation": None,
         "pain_relation": None,
         "bowel_pattern": None,
+        "water_intake": None,
+        "fibre_intake": None,
+        "medications": None,
+        "incomplete_evacuation": None,
+        "pain_related_to_bowel_movement": None,
     }
 
 
@@ -129,7 +151,7 @@ def _validate(raw: Any, forced_intent: str | None = None) -> dict:
         if isinstance(value, bool):
             out[key] = value
 
-    for key in ("duration", "pain_character", "pain_timing", "stool_pattern", "meal_relation", "pain_relation", "bowel_pattern"):
+    for key in ("duration", "pain_character", "pain_timing", "stool_pattern", "meal_relation", "pain_relation", "bowel_pattern", "water_intake", "fibre_intake", "medications"):
         value = raw.get(key)
         if isinstance(value, str) and value.strip():
             out[key] = value.strip()[:160]
@@ -416,6 +438,26 @@ def _has_negation(text: str) -> bool:
     ))
 
 
+def _contextual_yes(text: str) -> bool:
+    n = _norm_answer_text(text)
+    return n in {
+        "yes", "yeah", "yep", "yup", "sure", "definitely", "absolutely",
+        "certainly", "of course", "true", "exactly", "correct",
+        "that's right", "that is right", "it does", "it is", "i do",
+        "i have", "sometimes", "yes sometimes", "pretty much", "for sure",
+    }
+
+
+def _contextual_no(text: str) -> bool:
+    n = _norm_answer_text(text)
+    return n in {
+        "no", "nope", "nah", "not really", "not at all", "none", "never",
+        "false", "not usually", "not often", "i don't", "i do not",
+        "i haven't", "i have not", "doesn't", "does not", "it doesn't",
+        "it does not",
+    }
+
+
 def _extract_number_0_10(text: str):
     n = _norm_answer_text(text)
     patterns = (
@@ -439,8 +481,8 @@ def _question_specific_fallback(message: str, last_question: str | None, state) 
     n = _norm_answer_text(message)
     out = _blank_result("answer_question" if last_question else "assessment")
     negative = _has_negation(n)
-    bare_yes = bool(re.fullmatch(r"(?:yes|yeah|yep|yup|sure|definitely|true|i think so)", n))
-    bare_no = bool(re.fullmatch(r"(?:no|nope|nah|not really|not at all|none|neither|false)", n))
+    bare_yes = _contextual_yes(n) or bool(re.search(r"\b(?:yes|yeah|yep|yup|absolutely|definitely|of course|it does|pretty much)\b", n))
+    bare_no = _contextual_no(n)
 
     # Severity + worsening is a combined question in the existing questionnaire.
     if last_question == "severity":
@@ -482,6 +524,20 @@ def _question_specific_fallback(message: str, last_question: str | None, state) 
             v = int(n)
             if 0 <= v <= 120:
                 out["age"] = v
+
+    elif last_question == "incomplete_evacuation":
+        if _contextual_no(n) or re.search(r"\b(?:completely|fully|totally)\s+(?:empty|emptied)\b", n):
+            out["incomplete_evacuation"] = False
+        elif (bare_yes or re.search(r"\b(?:incomplete|not completely empty|not fully empty|still feel like i need to go|sometimes)\b", n)):
+            out["incomplete_evacuation"] = True
+
+    elif last_question == "bloating_pain":
+        # Accept natural variants such as "does improve after a bowel
+        # movement", not only the imperative-looking "improves after".
+        if re.search(r"\b(?:does|doesn't|does not|is|isn't|is not)\s+(?:improve|improves|get better|gets better|feel better|feels better)\s+after\s+(?:a\s+)?(?:bowel movement|stool|poop)", n):
+            out["pain_related_to_bowel_movement"] = not bool(re.search(r"\b(?:doesn't|does not|isn't|is not)\b", n))
+        elif re.search(r"\b(?:improves|gets better|feels better|better|relieved)\s+after\s+(?:a\s+)?(?:bowel movement|stool|poop)", n):
+            out["pain_related_to_bowel_movement"] = True
 
     elif last_question in {"weight_loss", "weight_loss_duration"}:
         if re.search(r"\b(?:gained|put on)\s+(?:a little\s+)?weight\b", n) or negative:
@@ -614,9 +670,12 @@ def _question_specific_fallback(message: str, last_question: str | None, state) 
     if age_match and out.get("age") is None:
         out["age"] = int(age_match.group(1))
 
-    sev = _extract_number_0_10(n)
-    if sev is not None and out.get("severity") is None:
-        out["severity"] = sev
+    # A bare/approximate number in an active non-severity question must not
+    # become a pain score (e.g. "around 3 litres" -> severity 3).
+    if last_question == "severity":
+        sev = _extract_number_0_10(n)
+        if sev is not None and out.get("severity") is None:
+            out["severity"] = sev
 
     # Negated/positive worsening is useful even outside the severity question.
     if out.get("recent_worsening") is None:
@@ -759,8 +818,9 @@ def _deterministic_context_fallback(message: str, last_question: str | None, sta
         out["constipation"] = True
     if re.search(r"\b(no|not|don't|dont|do not|never)\s+(?:have\s+)?(?:hard stools?|hard poop|lumpy stools?)\b", n):
         out["hard_stools"] = False
-    elif re.search(r"\b(hard stools?|hard poop|lumpy stools?)\b", n):
+    elif re.search(r"\b(hard stools?|hard poops?|hard poos?|hard poop|hard poo|lumpy stools?|poops? are hard|stool is hard|poop is hard)\b", n):
         out["hard_stools"] = True
+        out["symptoms"].append("hard stools")
 
     if re.search(r"\b(no|not|don't|dont|do not|without)\s+(?:have to\s+|need to\s+)?strain(?:ing)?\b", n):
         out["straining"] = False
@@ -780,6 +840,26 @@ def _deterministic_context_fallback(message: str, last_question: str | None, sta
         out["symptoms"].append("piles")
     if re.search(r"\b(stomach pain|stomach ache|belly pain|abdominal pain|belly ache)\b", n):
         out["symptoms"].append("stomach pain")
+
+    # Lifestyle/medication answers are contextual facts too. Keep them in
+    # NLU so the active-question resolver does not depend on exact spelling.
+    water_match = re.search(r"\b(\d+(?:\.\d+)?)\s*(?:litres?|liters?|litters?|l)\b", n)
+    if water_match:
+        out["water_intake"] = water_match.group(1) + " L"
+    else:
+        word_litres = re.fullmatch(r"(one|two|three|four|five|six)\s*(?:litres?|liters?|litters?|l)", n)
+        if word_litres:
+            out["water_intake"] = {"one":"1", "two":"2", "three":"3", "four":"4", "five":"5", "six":"6"}[word_litres.group(1)] + " L"
+    if re.search(r"\b(?:no medicines|no medication|no medications|not taking medicines|not taking medication|no regular medicines|no regular medication|not on medication)\b", n):
+        out["medications"] = "none"
+    elif re.search(r"\b(?:taking medicine|taking medication|taking medicines|taking supplements|regular medication|regular medicines|on medication|on medicines|i take|i'm taking|im taking)\b", n):
+        out["medications"] = "reported"
+    if re.search(r"\b(?:low|little|poor)\s+(?:fibre|fiber)\b", n):
+        out["fibre_intake"] = "low"
+    elif re.search(r"\b(?:high|good)\s+(?:fibre|fiber)\b", n):
+        out["fibre_intake"] = "high"
+    elif re.search(r"\b(?:average|normal)\s+(?:fibre|fiber)\b", n):
+        out["fibre_intake"] = "average"
 
     # Generic duration extraction anywhere in a long message.
     if out["duration"] is None:
