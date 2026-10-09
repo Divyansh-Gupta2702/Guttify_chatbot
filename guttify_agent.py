@@ -39,6 +39,10 @@ PRODUCT_ELIGIBILITY = {
     "Functional constipation pattern": {"Digest Boost", "Guttify Poopie"},
     "Possible medication-associated constipation pattern": {"Digest Boost", "Guttify Poopie"},
     "IBS-C pattern": {"Digest Boost", "Guttify Poopie"},
+    # Bowel-related abdominal pain with a documented bowel-habit change can
+    # still route to Digest Boost when no safety/red-flag rule has blocked
+    # product recommendations.
+    "Bowel-related abdominal pain pattern": {"Digest Boost"},
     "Reflux/GERD-like symptom pattern": {"Acid Ease"},
     "Dyspepsia/indigestion pattern": {"Acid Ease"},
     # Upper-abdominal meal-related pain is not automatically an acidity case.

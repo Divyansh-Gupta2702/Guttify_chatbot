@@ -219,6 +219,11 @@ def test_stomach_pain_with_bowel_change_is_not_automatically_ibs_without_chronic
     result = evaluate(state(primary_symptom="stomach pain", abdominal_pain=True, pain_related_to_bowel_movement=True, constipation_explicit=True, bowel_frequency_per_week=2, stool_form=2, duration="2 weeks", pain_location="lower abdomen", severity="5"))
     assert result["pattern"] == "Bowel-related abdominal pain pattern"
 
+def test_bowel_related_abdominal_pain_allows_digest_boost_without_red_flags():
+    result = evaluate(state(primary_symptom="stomach pain", abdominal_pain=True, pain_related_to_bowel_movement=True, constipation_explicit=True, bowel_frequency_per_week=2, stool_form=2, duration="2 weeks", pain_location="lower abdomen", severity="5"))
+    assert result["pattern"] == "Bowel-related abdominal pain pattern"
+    assert result["product_allowed"] is True
+
 
 def test_piles_without_bleeding_is_reachable():
     result = evaluate(state(primary_symptom="piles", blood_present=False, lump_or_prolapse=True))

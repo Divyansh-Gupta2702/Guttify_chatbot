@@ -300,13 +300,13 @@ def evaluate(s):
                 "Possible food-triggered intolerance pattern", "moderate",
                 [f"repeated symptoms associated with {s.food_trigger}"],
                 ["lactose intolerance", "other food sensitivity", "functional bowel symptoms"],
-                "food_trigger_management", True,
+                "food_trigger_management", False,
                 "Your answers show a repeated food-associated symptom pattern. This does not by itself prove a specific intolerance; the trigger and response should be tracked."
             )
         return _result(
             "Possible food-triggered symptom pattern", "low", ["food-associated symptoms"],
             ["food intolerance", "food-triggered functional symptoms"],
-            "food_trigger_management", True,
+            "food_trigger_management", False,
             "Your symptoms appear food-associated, but the specific trigger is not clear yet."
         )
 
@@ -324,7 +324,7 @@ def evaluate(s):
                 "Bowel-related abdominal pain pattern", "moderate",
                 ["abdominal pain related to bowel movements", "associated bowel-habit change"],
                 ["IBS", "functional constipation/diarrhea"],
-                "clinical_review", False,
+                "clinical_review", True,
                 "Your symptoms show a bowel-related abdominal pain pattern. IBS is one possibility, but this chat alone does not establish that diagnosis."
             )
         return _result(

@@ -26,7 +26,7 @@ PRODUCTS_FILE = Path(__file__).resolve().parent / "products.json"
 TOP_K = 2
 MIN_SCORE = 100  # a product must have at least one primary-symptom hit
 AMBIGUITY_MARGIN = 15  # if top two scores are this close, don't force a pick
-MAX_DISAMBIGUATION_QUESTIONS = 2  # extra tie-breaking questions, on top of the normal Q&A budget
+MAX_DISAMBIGUATION_QUESTIONS = 0  # never ask tie-breaking questions; show all equally suitable products
 CONTEXT_MATCH_POINTS = 100
 
 PRIMARY_MATCH_POINTS = 100
@@ -336,8 +336,8 @@ def build_ambiguous_message(tied_candidates):
     user (or a follow-up message) can pick between them instead of us
     guessing."""
     lines = [
-        "A couple of Guttify products fit equally well based on what you've "
-        "shared. Here's how they differ:",
+        "More than one Guttify product is a suitable match based on what you've shared. "
+        "I'm showing both so you can choose the one that best fits your intended use:",
         "",
     ]
     for candidate in tied_candidates:
@@ -359,9 +359,8 @@ def build_ambiguous_message(tied_candidates):
         lines.append("")
 
     lines.append(
-        "Which of these sounds closer to what you're experiencing? You're "
-        "welcome to name one directly, or share more detail and I'll narrow "
-        "it down further."
+        "Both are valid options for the symptoms you've described. You can "
+        "choose the product whose intended use best matches what you want support for."
     )
     return "\n".join(lines)
 
