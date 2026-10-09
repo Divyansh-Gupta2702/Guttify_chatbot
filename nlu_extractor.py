@@ -377,7 +377,7 @@ def _duration_from_text(n: str):
         "five": 5, "six": 6, "seven": 7, "eight": 8, "nine": 9,
         "ten": 10, "couple": 2, "few": 3, "several": 3,
     }
-    pattern = r"\b(?:(?:for|about|around|roughly|since|last|the last)\s+)?(\d+(?:\.\d+)?|a|an|one|two|three|four|five|six|seven|eight|nine|ten|couple|few|several)(?:\s+or\s+(\d+|two|three|four|five))?\s+(day|days|week|weeks|month|months|year|years)\b(?!\s*(?:old|of\s+age)\b)"
+    pattern = r"\b(?:(?:for|about|around|roughly|since|last|the last)\s+)?(?:like\s+)?(\d+(?:\.\d+)?|a|an|one|two|three|four|five|six|seven|eight|nine|ten|couple|few|several)(?:\s*(?:-|to|or)\s*(\d+(?:\.\d+)?|two|three|four|five))?\s+(hour|hours|day|days|week|weeks|month|months|year|years)\b(?!\s*(?:old|of\s+age)\b)"
 
     def num(x):
         if x is None:
@@ -557,11 +557,21 @@ def _question_specific_fallback(message: str, last_question: str | None, state) 
         bowel_pos = bool(re.search(r"\b(?:after\s+(?:a\s+)?(?:bowel movement|stool|poop)|when\s+i\s+poop|related\s+to\s+(?:bowel movements?|stool)|changes?\s+with\s+(?:bowel movements?|stool))\b", n))
         meal_neg = bool(re.search(r"\b(?:not|isn't|is not|never)\b.{0,30}\b(?:meals?|eating|food)\b", n))
         bowel_neg = bool(re.search(r"\b(?:not|isn't|is not|never)\b.{0,30}\b(?:bowel movements?|stool|poop)\b", n))
-        if meal_pos and not meal_neg:
+        # Natural short answers to the explicit either/or question are common
+        # in chat UI flows (for example: "meals" or "bowel movements").
+        # When this question is active, these phrases are unambiguous even
+        # without "related to" / "after" wording.
+        meal_choice = bool(re.fullmatch(
+            r"(?:meals?|food|eating|after meals?|after eating)", n
+        ))
+        bowel_choice = bool(re.fullmatch(
+            r"(?:bowel movements?|bowel movement|stools?|poops?|poop|stool)", n
+        ))
+        if meal_pos and not meal_neg or meal_choice:
             out["meal_relation"] = True
             out["pain_relation"] = "meals"
             out["food_related"] = True
-        elif bowel_pos and not bowel_neg:
+        elif bowel_pos and not bowel_neg or bowel_choice:
             out["pain_relation"] = "bowel_movements"
         elif bare_no:
             out["meal_relation"] = False

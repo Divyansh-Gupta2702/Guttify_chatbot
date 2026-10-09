@@ -41,7 +41,11 @@ PRODUCT_ELIGIBILITY = {
     "IBS-C pattern": {"Digest Boost", "Guttify Poopie"},
     "Reflux/GERD-like symptom pattern": {"Acid Ease"},
     "Dyspepsia/indigestion pattern": {"Acid Ease"},
-    "Upper-abdominal meal-related dyspepsia pattern": {"Acid Ease"},
+    # Upper-abdominal meal-related pain is not automatically an acidity case.
+    # _filter_approved_products() narrows this dynamically: Digest Boost is the
+    # default for stomach-pain/dyspepsia without clear acid features, while
+    # Acid Ease is retained when heartburn/acidity/reflux is explicitly present.
+    "Upper-abdominal meal-related dyspepsia pattern": {"Digest Boost", "Acid Ease"},
     "Food-triggered gas/bloating pattern": {"Digest Boost", "Acid Ease", "Guttify Poopie"},
     "Constipation-associated bloating pattern": {"Digest Boost", "Guttify Poopie"},
     "Functional gas/bloating pattern": {"Digest Boost", "Acid Ease", "Guttify Poopie"},
@@ -61,14 +65,34 @@ PRODUCT_CONCERN_QUESTIONS = {
 
 
 
-def _filter_approved_products(result, screening):
+def _approved_names_for_screening(screening, state=None):
+    """Return the product allow-list for a completed clinical pattern.
+
+    Upper-abdominal meal-related stomach pain is routed by the actual acid
+    evidence: Digest Boost is the default; Acid Ease is used when clear
+    heartburn/acidity/reflux is explicitly present.
+    """
+    pattern = screening.get("pattern") if isinstance(screening, dict) else None
+    allowed = PRODUCT_ELIGIBILITY.get(pattern)
+    if pattern == "Upper-abdominal meal-related dyspepsia pattern" and state is not None:
+        secondary = {str(x).strip().lower() for x in (state.secondary_symptoms or [])}
+        clear_acid = bool(
+            getattr(state, "reflux_present", None) is True
+            or secondary.intersection({"acidity", "heartburn", "acid reflux"})
+        )
+        return {"Acid Ease"} if clear_acid else {"Digest Boost"}
+    return allowed
+
+
+def _filter_approved_products(result, screening, state=None):
     """Keep product matching separate from clinical reasoning and apply a small
     explicit eligibility allow-list so generic products (for example B12) do
     not win simply because their database row contains the word constipation.
     """
-    allowed = PRODUCT_ELIGIBILITY.get(screening.get("pattern"), None)
+    allowed = _approved_names_for_screening(screening, state)
     if allowed is None:
         return result
+
     if not allowed:
         result["recommendations"] = []
         result["status"] = "DIAGNOSIS"
@@ -1233,9 +1257,9 @@ class ConversationManager:
                 session.diagnosis_complete = True
                 return {"status": "DIAGNOSIS", "message": screening["message"], "recommendations": [], "safety": safety, "screening": screening}
 
-            allowed = PRODUCT_ELIGIBILITY.get(screening.get("pattern"))
+            allowed = _approved_names_for_screening(screening, session.symptom_state)
             result = evaluate_product(session.symptom_state, user_message, allowed_names=allowed, match_context=screening.get("pattern"))
-            result = _filter_approved_products(result, screening)
+            result = _filter_approved_products(result, screening, session.symptom_state)
             result["screening"] = screening
             result["safety"] = safety
             if result.get("status") in ("RECOMMENDATION_FOUND", "AMBIGUOUS"):
@@ -1278,9 +1302,9 @@ class ConversationManager:
             screening["likely_condition"] = "Preliminary gut-symptom assessment"
             screening["message"] = "The available answers point to a gut-symptom pattern, but they do not support a more specific preliminary assessment yet."
         if screening.get("product_allowed") and screening.get("pattern") in PRODUCT_ELIGIBILITY:
-            allowed = PRODUCT_ELIGIBILITY.get(screening.get("pattern"))
+            allowed = _approved_names_for_screening(screening, session.symptom_state)
             result = evaluate_product(session.symptom_state, user_message, allowed_names=allowed, match_context=screening.get("pattern"))
-            result = _filter_approved_products(result, screening)
+            result = _filter_approved_products(result, screening, session.symptom_state)
             if result.get("status") in ("RECOMMENDATION_FOUND", "AMBIGUOUS"):
                 result["screening"] = screening
                 result["safety"] = safety

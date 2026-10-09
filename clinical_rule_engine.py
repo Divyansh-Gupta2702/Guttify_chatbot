@@ -24,12 +24,21 @@ def _duration_days(duration):
         "a few months": "3 months", "many months": "3 months",
     }
     value = natural.get(value, value)
-    m = re.search(r"(\d+(?:\.\d+)?)\s*(day|days|week|weeks|month|months|year|years)", value)
+    m = re.search(
+        r"(\d+(?:\.\d+)?)\s*(hour|hours|day|days|week|weeks|month|months|year|years)",
+        value,
+    )
     if not m:
         return None
     n = float(m.group(1))
     u = m.group(2)
-    return n * (1 if u.startswith("day") else 7 if u.startswith("week") else 30 if u.startswith("month") else 365)
+    return n * (
+        1 / 24 if u.startswith("hour")
+        else 1 if u.startswith("day")
+        else 7 if u.startswith("week")
+        else 30 if u.startswith("month")
+        else 365
+    )
 
 
 def _result(pattern, confidence, evidence, differentials, action, product_allowed, message):

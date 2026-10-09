@@ -534,12 +534,27 @@ def extract_named_aspect(text):
 
 def extract_duration(text):
     n = normalize(text)
-    # First try the standard format (e.g., "1 month", "2 weeks", "6 months")
-    m = re.search(r"\b(\d+(?:\.\d+)?)\s*(day|days|week|weeks|month|months|year|years)\b(?!\s*(?:old|of\s+age)\b)", n)
+
+    # Standard numeric durations, including hour-based answers and ranges.
+    m = re.search(
+        r"\b(\d+(?:\.\d+)?)\s*(?:-\s*(\d+(?:\.\d+)?))?\s*"
+        r"(hour|hours|day|days|week|weeks|month|months|year|years)\b"
+        r"(?!\s*(?:old|of\s+age)\b)",
+        n,
+    )
     if m:
-        return m.group(0)
-    
-    # Handle natural language expressions
+        first, second, unit = m.group(1), m.group(2), m.group(3)
+        return f"{first}-{second} {unit}" if second else f"{first} {unit}"
+
+    # Natural conversational duration expressions such as
+    # "for like few hours" and "a couple of hours".
+    if re.search(r"\b(?:for\s+)?(?:like\s+)?(?:a\s+)?(?:couple|few|several)\s+hours?\b", n):
+        if re.search(r"\b(?:couple|a couple)\s+hours?\b", n):
+            return "2 hours"
+        return "3 hours"
+    if re.search(r"\b(?:for\s+)?(?:like\s+)?a\s+hour\b", n):
+        return "1 hour"
+
     # "about a month", "around a month", "roughly a month"
     if re.search(r"\b(about|around|roughly)\s+a\s+(month|months)\b", n):
         return "1 month"
@@ -553,57 +568,45 @@ def extract_duration(text):
     m = re.search(r"\b(about|around|roughly)\s+(\d+)\s+months?\b", n)
     if m:
         return f"{m.group(2)} months"
+
     # "since January", "since Feb", etc. - estimate from current date
-    m = re.search(r"\bsince\s+(january|february|march|april|may|june|july|august|september|october|november|december|jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)\b", n)
+    m = re.search(
+        r"\bsince\s+(january|february|march|april|may|june|july|august|"
+        r"september|october|november|december|jan|feb|mar|apr|may|jun|"
+        r"jul|aug|sep|oct|nov|dec)\b",
+        n,
+    )
     if m:
         month_name = m.group(1).lower()
         month_map = {
-            "january": 1, "jan": 1,
-            "february": 2, "feb": 2,
-            "march": 3, "mar": 3,
-            "april": 4, "apr": 4,
-            "may": 5,
-            "june": 6, "jun": 6,
-            "july": 7, "jul": 7,
-            "august": 8, "aug": 8,
-            "september": 9, "sep": 9,
-            "october": 10, "oct": 10,
-            "november": 11, "nov": 11,
-            "december": 12, "dec": 12,
+            "january": 1, "jan": 1, "february": 2, "feb": 2,
+            "march": 3, "mar": 3, "april": 4, "apr": 4, "may": 5,
+            "june": 6, "jun": 6, "july": 7, "jul": 7, "august": 8,
+            "aug": 8, "september": 9, "sep": 9, "october": 10, "oct": 10,
+            "november": 11, "nov": 11, "december": 12, "dec": 12,
         }
         target_month = month_map.get(month_name)
         if target_month:
             from datetime import datetime
             now = datetime.now()
             current_month = now.month
-            # Calculate months difference
-            if target_month <= current_month:
-                months_diff = current_month - target_month
-            else:
-                months_diff = (12 - target_month) + current_month
-            # If months_diff is 0, it's less than a month - return a small value
-            if months_diff >= 1:
-                return f"{months_diff} months"
-            else:
-                return "2 weeks"  # Same month, treat as less than 1 month
-    
-    # "for a month", "for months", "for years"
+            months_diff = current_month - target_month if target_month <= current_month else (12 - target_month) + current_month
+            return f"{months_diff} months" if months_diff >= 1 else "2 weeks"
+
     if re.search(r"\bfor\s+a\s+month\b", n):
         return "1 month"
     if re.search(r"\bfor\s+months?\b", n):
         return "2 months"
     if re.search(r"\bfor\s+years?\b", n):
         return "1 year"
-    # "a month ago", "months ago", "years ago"
     if re.search(r"\ba\s+month\s+ago\b", n):
         return "1 month"
     if re.search(r"\bmonths?\s+ago\b", n):
         return "2 months"
     if re.search(r"\byears?\s+ago\b", n):
         return "1 year"
-    
-    return None
 
+    return None
 
 def extract_age(text):
     n = normalize(text)

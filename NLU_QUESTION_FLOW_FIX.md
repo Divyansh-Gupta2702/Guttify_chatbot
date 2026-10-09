@@ -26,3 +26,7 @@ The diagnosis, recommendation, and safety engines were not replaced.
 - Requested acceptance tests: **11/11 passed**
 - Existing regression suite: **146 passed, 18 subtests passed**
 - Python syntax compilation: **passed**
+
+- Fixed short-choice answers to the meals-vs-bowel question (`meals`, `food`, `eating`, `bowel movements`, `stool`, `poop`) so the question is not repeated.
+- Added natural duration handling for hours, including `for like few hours`, `a couple of hours`, and `2-3 hours`.
+- Extended duration-day conversion to understand hour-based durations.

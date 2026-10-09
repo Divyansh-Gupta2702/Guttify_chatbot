@@ -129,3 +129,29 @@ def test_malformed_groq_json_falls_back_without_erasing_answer(monkeypatch):
     )
     assert facts["severity"] == "5"
     assert facts["recent_worsening"] is False
+
+
+def test_13_short_pain_relation_choices():
+    cm, s = cm_with_active("t13a", "pain_relation")
+    cm.handle_message("t13a", "bowel movements")
+    assert s.symptom_state.pain_related_to_bowel_movement is True
+    assert s.symptom_state.food_related is None
+    assert s.last_question != "pain_relation"
+
+    cm, s = cm_with_active("t13b", "pain_relation")
+    cm.handle_message("t13b", "meals")
+    assert s.symptom_state.food_related is True
+    assert s.symptom_state.pain_related_to_bowel_movement is None
+    assert s.last_question != "pain_relation"
+
+
+def test_14_natural_hour_durations():
+    cm, s = cm_with_active("t14a", "duration")
+    cm.handle_message("t14a", "for like few hours")
+    assert s.symptom_state.duration == "3 hours"
+    assert s.last_question != "duration"
+
+    cm, s = cm_with_active("t14b", "duration")
+    cm.handle_message("t14b", "2-3 hours")
+    assert s.symptom_state.duration == "2-3 hours"
+    assert s.last_question != "duration"
