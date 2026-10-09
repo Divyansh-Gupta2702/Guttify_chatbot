@@ -192,7 +192,7 @@ def chat(req: ChatRequest):
     logger.info("[PERF][%s] Session/history lookup: %.2f ms", request_id, history_ms)
 
     logic_start = time.perf_counter()
-    result = conversation_manager.handle_message(req.session_id, engine_message)
+    result = conversation_manager.handle_message(req.session_id, message)
     logic_ms = (time.perf_counter() - logic_start) * 1000
     status = result["status"]
     logger.info(
@@ -224,7 +224,7 @@ def chat(req: ChatRequest):
     elif status == "PRODUCT_INFO_FOUND":
         # Product data is already structured and validated. Answer directly
         # from that data instead of waiting for an LLM generation call.
-        reply = _deterministic_product_reply(result["product"], engine_message)
+        reply = _deterministic_product_reply(result["product"], message)
 
     elif status in ("RECOMMENDATION_FOUND", "AMBIGUOUS"):
         # Preserve the exact rule-engine recommendation. The LLM is not used
