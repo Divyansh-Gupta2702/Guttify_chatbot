@@ -9,7 +9,7 @@ class TestV8RegressionFixes(unittest.TestCase):
     def test_contextual_answer_does_not_overwrite_age(self):
         cm = ConversationManager()
         sid = "age-preserved"
-        for msg in ["stomach pain", "2 months", "23", "upper abdomen", "5"]:
+        for msg in ["stomach pain", "2 months", "no weight loss", "23", "upper abdomen", "5"]:
             cm.handle_message(sid, msg)
         state = cm.sessions[sid].symptom_state
         self.assertEqual(state.age, 23)

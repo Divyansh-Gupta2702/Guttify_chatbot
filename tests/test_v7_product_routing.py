@@ -129,7 +129,7 @@ class TestV8AllActiveProductEntryPoints(unittest.TestCase):
 
         cm = ConversationManager()
         sid = "bare-yes-anal-pain"
-        for msg in ["Piles", "2 months", "45", "Bright red", "Tissue"]:
+        for msg in ["Piles", "2 months", "no weight loss", "45", "Bright red", "Tissue"]:
             cm.handle_message(sid, msg)
 
         result = cm.handle_message(sid, "Yes")
@@ -141,7 +141,7 @@ class TestV8AllActiveProductEntryPoints(unittest.TestCase):
         self.assertEqual(state.sharp_pain_during_stool, True)
         self.assertIsNone(state.vomiting)
         self.assertIsNone(state.fever)
-        self.assertIsNone(state.weight_loss)
+        self.assertFalse(state.weight_loss)
         self.assertIsNone(state.dehydration)
         self.assertIsNone(state.unable_to_pass_stool_and_gas)
         self.assertEqual(result["screening"]["pattern"], "Possible anal fissure pattern")

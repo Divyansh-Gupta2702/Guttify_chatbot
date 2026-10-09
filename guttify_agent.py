@@ -20,7 +20,7 @@ from satisfaction_checker import is_satisfied_closing, is_gratitude_only, random
 from intent_parser import (
     SymptomState, merge_state, extract_duration, extract_age,
     extract_bowel_frequency, extract_bowel_frequency_per_day,
-    extract_severity, extract_lifestyle, extract_medications,
+    extract_severity, extract_lifestyle, extract_medications, extract_food_trigger, extract_food_related,
     extract_bool, extract_stool_form, normalize, extract_symptoms,
 )
 from symptom_questionnaire import next_question
@@ -261,13 +261,48 @@ class ConversationManager:
         checks = {
             "duration": lambda: s.duration not in (None, "unknown"),
             "age": lambda: s.age is not None,
+            "weight_loss": lambda: s.weight_loss is not None,
+            "weight_loss_duration": lambda: s.weight_loss is not None,
+            "bowel_frequency": lambda: s.bowel_frequency_per_week is not None,
+            "daily_frequency": lambda: s.bowel_frequency_per_day is not None,
+            # These are intentionally OR-based: the user may explicitly deny
+            # constipation, explicitly confirm it, or describe only one of the
+            # two supporting features (hard stools / straining).
+            "stool_straining": lambda: s.stool_form is not None or s.straining is not None or s.constipation_explicit is not None,
+            "constipation": lambda: s.stool_form is not None or s.straining is not None or s.constipation_explicit is not None,
+            "incomplete_evacuation": lambda: s.incomplete_evacuation is not None,
+            "bloating_pain": lambda: s.bloating is not None or s.abdominal_pain is not None,
+            "pain": lambda: s.abdominal_pain is not None or s.pain_related_to_bowel_movement is not None,
+            "pain_relation": lambda: s.pain_related_to_bowel_movement is not None or s.food_related is not None,
             "blood": lambda: s.blood_present is not None,
             "blood_colour": lambda: s.blood_colour is not None,
             "blood_location": lambda: s.blood_location is not None,
+            "blood_mucus": lambda: s.blood_present is not None or s.mucus is not None,
             "anal_pain": lambda: s.sharp_pain_during_stool is not None or s.anal_pain is not None,
             "lump": lambda: s.lump_or_prolapse is not None,
-            "stool_straining": lambda: s.stool_form is not None and s.straining is not None,
-            "constipation": lambda: s.stool_form is not None or s.straining is not None or s.constipation_explicit is not None,
+            "vomiting_fever_swelling": lambda: s.vomiting is not None or s.fever is not None or s.abdominal_distension is not None,
+            "vomiting_fever": lambda: s.vomiting is not None or s.fever is not None,
+            "water": lambda: s.water_intake is not None,
+            "fibre": lambda: s.fibre_intake is not None,
+            "medications": lambda: s.medications is not None,
+            "infection": lambda: s.recent_infection is not None,
+            "night_weight_fever": lambda: s.night_time_symptoms is not None or s.weight_loss is not None or s.fever is not None,
+            "swallowing": lambda: s.difficulty_swallowing is not None or s.persistent_vomiting is not None or s.vomiting_blood is not None,
+            "weight_swallow": lambda: s.weight_loss is not None or s.difficulty_swallowing is not None or s.persistent_vomiting is not None or s.vomiting_blood is not None,
+            "upper_symptoms": lambda: s.abdominal_pain is not None,
+            "symptoms": lambda: s.abdominal_pain is not None or s.bloating is not None or s.diarrhea is not None or "constipation" in (s.secondary_symptoms or []),
+            "stool_form": lambda: s.stool_form is not None,
+            "severity": lambda: s.severity not in (None, "unknown"),
+            "pain_location": lambda: s.pain_location is not None,
+            "bowel_pattern": lambda: s.diarrhea is not None or s.constipation_explicit is not None or s.bowel_frequency_per_week is not None,
+            "reflux": lambda: getattr(s, "reflux_present", None) is not None,
+            # For trigger questions, food_related=False is a valid explicit
+            # answer meaning that no repeatable food/meal trigger was reported.
+            "timing": lambda: s.night_time_symptoms is not None,
+            "triggers": lambda: s.food_trigger is not None or s.food_related is False,
+            "food_trigger": lambda: s.food_trigger is not None or s.food_related is False,
+            "food_relation": lambda: s.food_related is not None,
+            "trigger": lambda: s.food_trigger is not None or s.food_related is False,
         }
         check = checks.get(field)
         if check is None:
@@ -325,10 +360,32 @@ class ConversationManager:
         elif field == "daily_frequency":
             self._set(data, "bowel_frequency_per_day", extract_bowel_frequency_per_day(text))
 
-        elif field == "stool_straining":
-            self._set(data, "stool_form", extract_stool_form(text))
-            v = extract_bool(text, ["strain", "straining", "push hard", "pushing hard"], ["no strain", "without straining"])
+        elif field in ("stool_straining", "constipation"):
+            # Both question IDs exist in older questionnaire branches. Treat
+            # them as the same semantic slot so a branch cannot ask the same
+            # stool/strain question forever.
+            stool_form = extract_stool_form(text)
+            self._set(data, "stool_form", stool_form)
+            # A bare yes/no answers the combined constipation question as a
+            # whole; it must not be reused as a yes/no answer for one arbitrary
+            # sub-feature such as straining.
+            if n in {"yes", "yeah", "yep", "yup", "sure", "true"}:
+                v = None
+            elif n in {"no", "nope", "nah", "none", "false"}:
+                v = False
+            else:
+                v = extract_bool(text, ["strain", "straining", "push hard", "pushing hard"], ["no strain", "without straining"])
             self._set(data, "straining", v)
+
+            # Explicit constipation answers are useful even when the user does
+            # not specify which supporting feature they mean.
+            if n in {"no", "nope", "nah", "none", "false"} or re.search(r"\b(?:no|not|never|without|dont|don't|do not)\s+(?:have\s+)?(?:constipation|constipated)\b", n):
+                data["constipation_explicit"] = False
+                if stool_form is None:
+                    data["stool_form"] = None
+                data["straining"] = False if v is None else v
+            elif n in {"yes", "yeah", "yep", "yup", "sure", "true"} or re.search(r"\b(?:constipation|constipated)\b", n):
+                data["constipation_explicit"] = True
 
         elif field == "incomplete_evacuation":
             v = extract_bool(text,
@@ -337,16 +394,25 @@ class ConversationManager:
             self._set(data, "incomplete_evacuation", v)
 
         elif field in ("bloating_pain", "pain"):
-            self._set(data, "bloating", extract_bool(text, ["bloating", "bloated", "bloat"], ["no bloating", "not bloated"]))
-            self._set(data, "abdominal_pain", extract_bool(text, ["abdominal pain", "stomach pain", "belly pain", "stomach ache", "cramps", "cramping"], ["no abdominal pain", "no stomach pain", "no pain"]))
-            self._set(data, "pain_related_to_bowel_movement", extract_bool(text,
-                ["pain improves after stool", "pain improves after bowel movement", "pain relieved after stool", "pain relieved after bowel movement", "better after bowel movement", "worse after bowel movement", "related to bowel movement", "changes with bowel movement"],
-                ["not related to bowel movement", "not related to stool"]))
+            if n not in {"yes", "yeah", "yep", "yup", "sure", "true"}:
+                self._set(data, "bloating", extract_bool(text, ["bloating", "bloated", "bloat"], ["no bloating", "not bloated"]))
+                self._set(data, "abdominal_pain", extract_bool(text, ["abdominal pain", "stomach pain", "belly pain", "stomach ache", "cramps", "cramping"], ["no abdominal pain", "no stomach pain", "no pain", "no"]))
+                self._set(data, "pain_related_to_bowel_movement", extract_bool(text,
+                    ["pain improves after stool", "pain improves after bowel movement", "pain relieved after stool", "pain relieved after bowel movement", "better after bowel movement", "worse after bowel movement", "related to bowel movement", "changes with bowel movement"],
+                    ["not related to bowel movement", "not related to stool", "no pain"]))
 
         elif field in ("pain_relation", "ibs_pain"):
             self._set(data, "pain_related_to_bowel_movement", extract_bool(text,
                 ["improves after bowel movement", "improves after stool", "better after bowel movement", "better after stool", "relieved after bowel movement", "worse after bowel movement", "related to bowel movement", "changes with bowel movement"],
-                ["not related to bowel movement", "not related to stool"]))
+                ["not related to bowel movement", "not related to bowel movements", "not related to stool", "no bowel relation"]))
+            # The stomach-pain question asks about meals OR bowel movements.
+            # Capture an explicit meal answer as a valid part of that slot.
+            meal_relation = extract_bool(
+                text,
+                ["after meals", "after meal", "after eating", "after food", "when i eat", "whenever i eat", "related to meals", "triggered by meals"],
+                ["not after meals", "not after meal", "not after eating", "not related to meals", "not triggered by meals", "not related to food"]
+            )
+            self._set(data, "food_related", meal_relation)
 
         elif field == "blood":
             v = extract_bool(text, ["blood", "bleeding", "yes", "yeah", "yep"], ["no blood", "no bleeding", "without blood", "no"])
@@ -381,9 +447,28 @@ class ConversationManager:
             data["weight_loss_duration_asked"] = True
 
         elif field == "vomiting_fever_swelling":
-            self._set(data, "vomiting", extract_bool(text, ["vomiting", "vomit", "throwing up"], ["no vomiting", "not vomiting", "no"]))
-            self._set(data, "fever", extract_bool(text, ["fever", "high temperature"], ["no fever", "no"]))
-            self._set(data, "abdominal_distension", extract_bool(text, ["severe swelling", "severe abdominal swelling", "severe abdominal distension", "very swollen"], ["no severe swelling", "no swelling", "no"]))
+            if n in {"yes", "yeah", "yep", "yup", "sure", "true"}:
+                # A bare yes is ambiguous for a 3-part question; leave the
+                # fields unset so the caller asks a targeted clarification.
+                pass
+            else:
+                self._set(data, "vomiting", extract_bool(text, ["vomiting", "vomit", "throwing up"], ["no vomiting", "not vomiting", "no"]))
+                self._set(data, "fever", extract_bool(text, ["fever", "high temperature"], ["no fever", "no"]))
+                self._set(data, "abdominal_distension", extract_bool(text, ["severe swelling", "severe abdominal swelling", "severe abdominal distension", "very swollen"], ["no severe swelling", "no swelling", "no"]))
+
+        elif field == "vomiting_fever":
+            if n in {"yes", "yeah", "yep", "yup", "sure", "true"}:
+                pass
+            else:
+                self._set(data, "vomiting", extract_bool(text, ["vomiting", "vomit", "throwing up"], ["no vomiting", "not vomiting", "no"]))
+                self._set(data, "fever", extract_bool(text, ["fever", "high temperature"], ["no fever", "no"]))
+
+        elif field == "blood_mucus":
+            if n in {"yes", "yeah", "yep", "yup", "sure", "true"}:
+                pass
+            else:
+                self._set(data, "blood_present", extract_bool(text, ["blood", "bleeding"], ["no blood", "no bleeding", "no"]))
+                self._set(data, "mucus", extract_bool(text, ["mucus"], ["no mucus", "no"]))
 
         elif field == "red_flag_check":
             flags = detect_red_flags(text)
@@ -414,26 +499,28 @@ class ConversationManager:
                 ["no recent infection", "no infection", "no"]))
 
         elif field in ("night_weight_fever",):
-            self._set(data, "night_time_symptoms", extract_bool(text, ["wakes me at night", "wake me at night", "at night"], ["not at night", "doesn't wake me", "does not wake me", "no"]))
-            self._set(data, "weight_loss", extract_bool(text, ["weight loss", "losing weight"], ["no weight loss", "not losing weight", "no"]))
-            self._set(data, "fever", extract_bool(text, ["fever"], ["no fever", "no"]))
+            if n not in {"yes", "yeah", "yep", "yup", "sure", "true"}:
+                self._set(data, "night_time_symptoms", extract_bool(text, ["wakes me at night", "wake me at night", "at night"], ["not at night", "doesn't wake me", "does not wake me", "no"]))
+                self._set(data, "weight_loss", extract_bool(text, ["weight loss", "losing weight"], ["no weight loss", "not losing weight", "no"]))
+                self._set(data, "fever", extract_bool(text, ["fever"], ["no fever", "no"]))
 
         elif field in ("swallowing", "weight_swallow"):
-            self._set(data, "difficulty_swallowing", extract_bool(
-                text,
-                ["difficulty swallowing", "trouble swallowing", "painful swallowing", "yes", "yeah", "yep"],
-                ["no difficulty swallowing", "no trouble swallowing", "no painful swallowing", "no"]
-            ))
-            self._set(data, "persistent_vomiting", extract_bool(
-                text,
-                ["persistent vomiting", "vomiting repeatedly", "can't stop vomiting", "cant stop vomiting", "yes", "yeah", "yep"],
-                ["no vomiting", "not vomiting", "no"]
-            ))
-            self._set(data, "vomiting_blood", extract_bool(
-                text,
-                ["vomiting blood", "throwing up blood", "hematemesis"],
-                ["no vomiting blood", "not vomiting blood", "no"]
-            ))
+            if n not in {"yes", "yeah", "yep", "yup", "sure", "true"}:
+                self._set(data, "difficulty_swallowing", extract_bool(
+                    text,
+                    ["difficulty swallowing", "trouble swallowing", "painful swallowing"],
+                    ["no difficulty swallowing", "no trouble swallowing", "no painful swallowing", "no"]
+                ))
+                self._set(data, "persistent_vomiting", extract_bool(
+                    text,
+                    ["persistent vomiting", "vomiting repeatedly", "can't stop vomiting", "cant stop vomiting"],
+                    ["no vomiting", "not vomiting", "no"]
+                ))
+                self._set(data, "vomiting_blood", extract_bool(
+                    text,
+                    ["vomiting blood", "throwing up blood", "hematemesis"],
+                    ["no vomiting blood", "not vomiting blood", "no"]
+                ))
 
         elif field == "upper_symptoms":
             # The indigestion questionnaire asks about upper-GI discomfort in
@@ -465,9 +552,47 @@ class ConversationManager:
             if any(term in n2 for term in ("bloating", "bloated", "gas")):
                 data["bloating"] = True
 
-        elif field in ("reflux", "timing", "triggers", "food_trigger", "food_relation", "trigger"):
-            # merge_state captures food triggers and food association.
-            pass
+        elif field == "reflux":
+            # `reflux_present` is a questionnaire slot only; it is deliberately
+            # separate from `food_related`, which means meal association.
+            data["reflux_present"] = extract_bool(
+                text,
+                ["acid coming back up", "acid reflux", "sour taste", "food coming back up", "regurgitation", "yes"],
+                ["no acid coming up", "no reflux", "no sour taste", "no food coming back up", "no"]
+            )
+
+        elif field == "timing":
+            # For reflux timing, store the actual night/lying-down answer.
+            # Do not confuse this with meal association.
+            if re.search(r"\b(at night|during the night|when lying down|while lying down|when i lie down)\b", n):
+                data["night_time_symptoms"] = True
+            elif re.search(r"\b(not at night|does not happen at night|doesn't happen at night|not when lying down|not lying down)\b", n):
+                data["night_time_symptoms"] = False
+            else:
+                data["night_time_symptoms"] = extract_bool(
+                    text, ["at night", "when lying down", "while lying down"],
+                    ["not at night", "not when lying down"]
+                )
+
+        elif field == "food_relation":
+            data["food_related"] = extract_bool(
+                text,
+                ["after meals", "after meal", "after eating", "after food", "when i eat", "whenever i eat", "related to meals", "triggered by meals"],
+                ["not after meals", "not after meal", "not after eating", "not related to meals", "not triggered by meals", "not related to food", "no"]
+            )
+            if data.get("food_related") is None:
+                self._set(data, "food_related", extract_food_related(text))
+
+        elif field in ("triggers", "food_trigger", "trigger"):
+            trigger = extract_food_trigger(text)
+            if trigger:
+                data["food_trigger"] = trigger
+                data["food_related"] = True
+            elif re.search(r"\b(no|none|not|never|no particular|nothing)\b", n):
+                # Explicitly answered: no repeatable food trigger. Keep the
+                # canonical trigger field empty and record the negative in the
+                # meal-association slot so the questionnaire can advance.
+                data["food_related"] = False
 
         elif field == "stool_form":
             self._set(data, "stool_form", extract_stool_form(text))
@@ -873,6 +998,17 @@ class ConversationManager:
                     "lump": "Is there a lump or something protruding from the anus?",
                     "stool_straining": "Are your stools hard or lumpy, and do you need to strain to pass them?",
                     "constipation": "Do you have hard stools or strain when passing stool?",
+                    "blood_mucus": "Do you have blood or mucus in the stool?",
+                    "vomiting_fever": "Any vomiting or fever?",
+                    "vomiting_fever_swelling": "Any repeated vomiting, fever, or severe abdominal swelling?",
+                    "reflux": "Do you get a sour taste or acid/food coming back up?",
+                    "timing": "How soon after eating does it start?",
+                    "triggers": "Do tea/coffee, spicy, oily, or particular foods trigger it?",
+                    "food_trigger": "Is it repeatedly linked to dairy, wheat, beans/lentils, or another particular food?",
+                    "food_relation": "Is it triggered or worsened by meals?",
+                    "trigger": "Which food triggers it, and does it happen repeatedly after the same food?",
+                    "bowel_pattern": "Do you mainly have constipation, diarrhea, or both at different times?",
+                    "symptoms": "What happens after the food: bloating, gas, diarrhea, cramps, constipation, or something else?",
                 }
                 question_text = question_texts.get(pending_question, "Could you answer the question above in a little more detail?")
                 logger.info("[NLU] unanswered_question field=%s; preserving context", pending_question)

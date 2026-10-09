@@ -70,3 +70,66 @@ def test_nlu_model_cannot_invent_duration_or_fissure(monkeypatch):
     assert facts["duration"] is None
     assert facts["age"] is None
     assert facts["itching"] is True
+
+
+def test_constipation_alias_consumes_plain_no_without_repeating(monkeypatch):
+    """The legacy `constipation` question ID must use the same parser as stool_straining."""
+    _local_only(monkeypatch)
+    bot = ConversationManager()
+    sid = "constipation-alias-no"
+    session = bot._get_session(sid)
+    session.last_question = "constipation"
+    session.symptom_state.primary_symptom = "piles"
+    result = bot.handle_message(sid, "no")
+    state = bot.sessions[sid].symptom_state
+    assert state.constipation_explicit is False
+    assert state.straining is False
+    assert result["status"] == "ASK"
+    assert "hard stools" not in result["message"].lower() or "strain" not in result["message"].lower()
+
+
+def test_constipation_alias_understands_natural_negative(monkeypatch):
+    """Natural answers such as 'no strain, only normal pooping' become explicit negatives."""
+    _local_only(monkeypatch)
+    bot = ConversationManager()
+    sid = "constipation-natural-negative"
+    session = bot._get_session(sid)
+    session.last_question = "constipation"
+    session.symptom_state.primary_symptom = "piles"
+    result = bot.handle_message(sid, "no strain, only normal pooping")
+    state = bot.sessions[sid].symptom_state
+    assert state.constipation_explicit is None or state.constipation_explicit is False
+    assert state.straining is False
+    assert result["status"] == "ASK"
+    assert "make sure" not in result["message"].lower()
+
+
+def test_constipation_alias_understands_yes_without_inventing_both_features(monkeypatch):
+    """A bare yes confirms constipation but does not fabricate hard stools and straining."""
+    _local_only(monkeypatch)
+    bot = ConversationManager()
+    sid = "constipation-natural-yes"
+    session = bot._get_session(sid)
+    session.last_question = "constipation"
+    session.symptom_state.primary_symptom = "piles"
+    bot.handle_message(sid, "yes")
+    state = bot.sessions[sid].symptom_state
+    assert state.constipation_explicit is True
+    assert state.stool_form is None
+    assert state.straining is None
+
+
+def test_age_phrase_is_never_extracted_as_duration(monkeypatch):
+    _local_only(monkeypatch)
+    from nlu_extractor import extract_natural_facts
+    from intent_parser import SymptomState
+    facts = extract_natural_facts("32 years of age", "age", SymptomState(duration="2 weeks"))
+    assert facts["age"] == 32
+    assert facts["duration"] is None
+
+
+def test_duration_parser_rejects_years_of_age():
+    from intent_parser import extract_duration
+    assert extract_duration("I am 32 years of age") is None
+    assert extract_duration("I am 32 years old") is None
+    assert extract_duration("this has lasted 2 years") == "2 years"

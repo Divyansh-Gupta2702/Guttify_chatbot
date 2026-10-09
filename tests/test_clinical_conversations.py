@@ -79,7 +79,8 @@ def test_reflux_pattern_can_recommend_acid_ease():
     _, result = run([
         "I have heartburn after meals", "3 months", "no weight loss", "23",
         "yes acid comes up", "worse lying down at night",
-        "no vomiting",
+        "no particular food triggers it",
+        "no difficulty swallowing, no persistent vomiting, no vomiting blood",
     ])
     assert result["screening"]["pattern"] == "Reflux/GERD-like symptom pattern"
     assert result["status"] == "RECOMMENDATION_FOUND"

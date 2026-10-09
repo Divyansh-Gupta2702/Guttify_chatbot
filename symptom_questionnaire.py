@@ -83,15 +83,15 @@ def next_question(state):
         ]
     elif branch in ("acidity", "heartburn"):
         qs = [
-            q("reflux", "Do you get a sour taste or acid/food coming back up?", state.food_related is None),
+            q("reflux", "Do you get a sour taste or acid/food coming back up?", getattr(state, "reflux_present", None) is None),
             q("timing", "Is it worse after meals, when lying down, or at night?", state.night_time_symptoms is None),
-            q("triggers", "Do tea/coffee, spicy, oily, or particular foods trigger it?", state.food_trigger is None),
+            q("triggers", "Do tea/coffee, spicy, oily, or particular foods trigger it?", state.food_trigger is None and state.food_related is not False),
             q("swallowing", "Any difficulty or pain swallowing, persistent vomiting, or vomiting blood?", state.difficulty_swallowing is None or state.persistent_vomiting is None or state.vomiting_blood is None),
         ]
     elif branch in ("bloating", "gas"):
         qs = [
             q("bowel_pattern", "Do you also have constipation, diarrhea, or alternating bowel habits?", state.diarrhea is None or state.bowel_frequency_per_week is None),
-            q("food_trigger", "Is it repeatedly linked to dairy, wheat, beans/lentils, or another particular food?", state.food_trigger is None),
+            q("food_trigger", "Is it repeatedly linked to dairy, wheat, beans/lentils, or another particular food?", state.food_trigger is None and state.food_related is not False),
             q("pain", "Do you have recurring abdominal pain that changes with bowel movements?", state.abdominal_pain is None or state.pain_related_to_bowel_movement is None),
             q("stool_form", "What is your usual Bristol stool type, if you know it?", state.stool_form is None),
         ]
@@ -112,7 +112,7 @@ def next_question(state):
         ]
     elif branch == "food intolerance":
         qs = [
-            q("trigger", "Which food triggers it, and does it happen repeatedly after the same food?", state.food_trigger is None),
+            q("trigger", "Which food triggers it, and does it happen repeatedly after the same food?", state.food_trigger is None and state.food_related is not False),
             q("timing", "How soon after eating does it start?", state.food_related is None),
             q("symptoms", "What happens after the food: bloating, gas, diarrhea, cramps, constipation, or something else?", state.abdominal_pain is None or state.diarrhea is None),
         ]

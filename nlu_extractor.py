@@ -195,6 +195,7 @@ def _state_context(state) -> dict:
         "bloating": d.get("bloating"),
         "diarrhea": d.get("diarrhea"),
         "constipation_explicit": d.get("constipation_explicit"),
+        "reflux_present": d.get("reflux_present"),
         "anal_pain": d.get("anal_pain"),
         "sharp_pain_during_stool": d.get("sharp_pain_during_stool"),
         "lump_or_prolapse": d.get("lump_or_prolapse"),
@@ -366,7 +367,7 @@ def _duration_from_text(n: str):
         "five": 5, "six": 6, "seven": 7, "eight": 8, "nine": 9,
         "ten": 10, "couple": 2, "few": 3, "several": 3,
     }
-    pattern = r"\b(?:(?:for|about|around|roughly|since|last|the last)\s+)?(\d+(?:\.\d+)?|a|an|one|two|three|four|five|six|seven|eight|nine|ten|couple|few|several)(?:\s+or\s+(\d+|two|three|four|five))?\s+(day|days|week|weeks|month|months|year|years)\b(?!\s*old\b)"
+    pattern = r"\b(?:(?:for|about|around|roughly|since|last|the last)\s+)?(\d+(?:\.\d+)?|a|an|one|two|three|four|five|six|seven|eight|nine|ten|couple|few|several)(?:\s+or\s+(\d+|two|three|four|five))?\s+(day|days|week|weeks|month|months|year|years)\b(?!\s*(?:old|of\s+age)\b)"
 
     def num(x):
         if x is None:
@@ -421,15 +422,28 @@ def _deterministic_context_fallback(message: str, last_question: str | None, sta
         out["pain"] = False if negative else True if affirmative or re.search(r"\b(pain|sharp|tearing|cutting)\b", n) else None
         if out["pain"] is True and re.search(r"\b(sharp|tearing|cutting)\b", n):
             out["pain_character"] = "sharp/tearing"
-    elif last_question == "stool_straining":
-        if re.search(r"\b(no|not|don't|dont|do not|without)\b.*\b(strain|straining)\b", n):
+    elif last_question in {"stool_straining", "constipation"}:
+        no_answer = n in {"no", "nope", "nah", "none", "false"}
+        yes_answer = n in {"yes", "yeah", "yep", "yup", "sure", "true"}
+        explicit_no_constipation = bool(re.search(r"\b(?:no|not|never|without|dont|don't|do not)\s+(?:have\s+)?(?:constipation|constipated)\b", n))
+        explicit_constipation = bool(re.search(r"\b(constipation|constipated)\b", n))
+
+        if no_answer or explicit_no_constipation:
+            out["straining"] = False
+            out["hard_stools"] = False
+            out["constipation"] = False
+        elif re.search(r"\b(no|not|don't|dont|do not|without)\b.*\b(strain|straining)\b", n):
             out["straining"] = False
         elif re.search(r"\b(strain|straining|push hard|pushing hard)\b", n):
             out["straining"] = True
+
         if re.search(r"\b(no|not|don't|dont|do not|without)\b.*\b(hard|lumpy|firm)\b|\b(normal|soft)\s+(?:stools?|poop|stool)\b", n):
             out["hard_stools"] = False
         elif re.search(r"\b(hard|lumpy|firm)\s+(?:stools?|poop|stool)\b", n):
             out["hard_stools"] = True
+
+        if explicit_constipation or yes_answer:
+            out["constipation"] = True
 
     if last_question == "duration":
         duration = _duration_from_text(n)
@@ -441,11 +455,7 @@ def _deterministic_context_fallback(message: str, last_question: str | None, sta
             out["duration"] = "3 days"
     elif last_question in {"weight_loss", "weight_loss_duration"}:
         out["weight_loss"] = False if negative or "gained weight" in n else True if affirmative or "lost weight" in n else None
-    elif last_question == "stool_straining":
-        out["hard_stools"] = False if re.search(r"\b(normal|not hard|soft)\b", n) and negative else (
-            True if re.search(r"\bhard|lumpy|firm\b", n) else None)
-        out["straining"] = False if re.search(r"\b(no|not|don't|do not|without)\b.*\bstrain", n) else (
-            True if re.search(r"\bstrain|straining|push hard\b", n) else None)
+    # stool/strain is handled in the question-aware block above.
     elif last_question in {"anal_pain", "pain_relation"}:
         out["pain"] = False if negative else True if affirmative or re.search(r"\b(pain|sharp|tearing|cutting)\b", n) else None
         if not negative and re.search(r"\b(sharp|tearing|cutting)\b", n):
@@ -598,6 +608,7 @@ def _needs_llm(message: str, last_question: str | None, fallback: dict) -> bool:
         "blood": "bleeding", "blood_colour": "blood_type",
         "blood_location": "blood_location", "anal_pain": "pain",
         "lump": "lump_or_protrusion", "stool_straining": None,
+        "constipation": None,
     }
     field = contextual_fields.get(last_question or "")
     if last_question == "stool_straining":
@@ -654,7 +665,8 @@ def extract_natural_facts(message: str, last_question: str | None, state) -> dic
             "blood_location": {"blood_location"},
             "anal_pain": {"pain", "pain_character"},
             "lump": {"lump_or_protrusion"},
-            "stool_straining": {"hard_stools", "straining"},
+            "stool_straining": {"hard_stools", "straining", "constipation"},
+            "constipation": {"hard_stools", "straining", "constipation"},
         }
         forced_fields = context_fields.get(last_question or "", set())
         for key in ("duration", "blood_type", "blood_location", "age", "severity",

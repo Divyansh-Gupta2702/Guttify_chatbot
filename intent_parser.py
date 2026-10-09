@@ -419,6 +419,9 @@ class SymptomState:
     frequency: str = None
     food_related: bool = None
     food_trigger: str = None
+    # Questionnaire-only slot for the acidity/heartburn reflux question.
+    # Keep it separate from food_related, which represents meal association.
+    reflux_present: bool = None
     severity: str = "unknown"
     duration: str = "unknown"
     age: int = None
@@ -532,7 +535,7 @@ def extract_named_aspect(text):
 def extract_duration(text):
     n = normalize(text)
     # First try the standard format (e.g., "1 month", "2 weeks", "6 months")
-    m = re.search(r"\b(\d+(?:\.\d+)?)\s*(day|days|week|weeks|month|months|year|years)\b", n)
+    m = re.search(r"\b(\d+(?:\.\d+)?)\s*(day|days|week|weeks|month|months|year|years)\b(?!\s*(?:old|of\s+age)\b)", n)
     if m:
         return m.group(0)
     
@@ -630,10 +633,13 @@ def extract_bowel_frequency(text):
 
 def extract_bowel_frequency_per_day(text):
     n = normalize(text)
-    m = re.search(r"\b(\d+(?:\.\d+)?)\s*(?:loose\s+)?(?:bowel movements?|bm|times?|motions?)\s*(?:per|a|each)\s*day\b", n)
+    m = re.search(
+        r"\b(\d+(?:\.\d+)?)\s*(?:loose\s+)?(?:bowel movements?|bm|stools?|motions?|times?)\s*(?:per|a|each)\s*day\b",
+        n,
+    )
     if m:
         return float(m.group(1))
-    m = re.fullmatch(r"\s*(\d+)\s*times?\s*\s*(?:a|per)?\s*day\s*", n)
+    m = re.fullmatch(r"\s*(\d+)\s*(?:times?|stools?|motions?)?\s*(?:a|per)?\s*day\s*", n)
     if m:
         return float(m.group(1))
     return None
@@ -706,6 +712,10 @@ def extract_stool_form(text):
         return 7
     if any(x in n for x in ["loose", "mushy"]):
         return 6
+    # Contextual questionnaire answers often arrive as a bare Bristol type
+    # such as "4". Accept only the valid 1–7 range here.
+    if re.fullmatch(r"[1-7]", n):
+        return int(n)
     return None
 
 

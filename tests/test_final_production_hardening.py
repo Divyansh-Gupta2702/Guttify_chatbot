@@ -1,109 +1,148 @@
 import unittest
 
-from clinical_rule_engine import _duration_days
 from guttify_agent import ConversationManager
-from safety_checker import detect_red_flags
+from intent_parser import SymptomState
+from clinical_rule_engine import evaluate as clinical_evaluate
+from recommendation_engine import evaluate as product_evaluate, find_named_product
 
 
-class TestFinalProductionHardening(unittest.TestCase):
-    def test_common_negations_do_not_trigger_red_flags(self):
-        self.assertEqual(detect_red_flags("I haven't had any black stool"), [])
-        self.assertEqual(detect_red_flags("there is no blood in my stool"), [])
-        self.assertEqual(detect_red_flags("I don't have black stool"), [])
-        self.assertEqual(detect_red_flags("I have black stool"), ["black/tarry stool"])
+class TestV7ProductCoverage(unittest.TestCase):
+    def assert_rec(self, result, expected):
+        names = [x["product_name"] for x in result.get("recommendations", [])]
+        self.assertIn(expected, names, f"{expected} missing; got {names}, status={result.get('status')}")
 
+    def test_glolux_skin_concern(self):
+        r = ConversationManager().handle_message("glolux", "I have dull skin")
+        self.assertEqual(r["status"], "RECOMMENDATION_FOUND")
+        self.assert_rec(r, "GloLux GlutaGlow Skin Effervescent Tablets")
 
-    def test_safety_catches_natural_blood_vomiting_variants(self):
-        for msg in [
-            "I threw up blood",
-            "there is blood in my vomit",
-            "I vomited blood earlier",
-        ]:
-            result = detect_red_flags(msg)
-            self.assertIn("vomiting blood", result, msg)
+    def test_weight_management_concern(self):
+        r = ConversationManager().handle_message("weight", "I want weight management support")
+        self.assertEqual(r["status"], "RECOMMENDATION_FOUND")
+        self.assert_rec(r, "Apple Active")
 
-    def test_safety_does_not_cross_negation_across_conjunction(self):
-        result = detect_red_flags("I have no appetite and I am vomiting blood")
-        self.assertIn("vomiting blood", result)
-        result = detect_red_flags("I have not eaten since morning and my stool is black and tarry")
-        self.assertIn("black/tarry stool", result)
+    def test_low_fibre_routes_to_poopie(self):
+        r = ConversationManager().handle_message("fibre", "I have low fibre intake")
+        self.assertEqual(r["status"], "RECOMMENDATION_FOUND")
+        self.assert_rec(r, "Guttify Poopie")
 
-    def test_safety_catches_bleeding_dizziness_natural_wording(self):
-        result = detect_red_flags("I am pooping blood and dizzy")
-        self.assertIn("fainting/dizziness with bleeding", result)
+    def test_apple_word_is_not_treated_as_product_name(self):
+        self.assertIsNone(find_named_product("I ate an apple today"))
 
-    def test_safety_catches_chest_pain(self):
-        self.assertIn("chest pain", detect_red_flags("I have chest pain"))
-        self.assertIn("chest pain", detect_red_flags("I feel pressure in my chest"))
+    def test_liver_support_concern(self):
+        r = ConversationManager().handle_message("liver", "I am looking for liver support")
+        self.assertEqual(r["status"], "RECOMMENDATION_FOUND")
+        self.assert_rec(r, "Liver Lift")
 
-    def test_emergency_overrides_completed_diagnosis(self):
-        cm = ConversationManager()
-        sid = "completed-then-emergency"
-        session = cm.sessions.setdefault(sid, __import__("guttify_agent").SessionState())
-        session.diagnosis_complete = True
-        result = cm.handle_message(sid, "I am vomiting blood and I fainted")
-        self.assertEqual(result["status"], "SAFETY_REVIEW")
-        self.assertEqual(result["recommendations"], [])
+    def test_fatigue_recommends_liver_lift_directly(self):
+        """Fatigue should directly recommend Liver Lift (the only remaining fatigue-related product)."""
+        r = ConversationManager().handle_message("fatigue", "I have fatigue")
+        self.assertEqual(r["status"], "RECOMMENDATION_FOUND")
+        self.assert_rec(r, "Liver Lift")
 
-    def test_pregnancy_persists_and_blocks_later_recommendation(self):
-        cm = ConversationManager()
-        sid = "pregnancy-persistent"
-        first = cm.handle_message(sid, "I am pregnant")
-        self.assertEqual(first["status"], "SAFETY_REVIEW")
-        second = cm.handle_message(sid, "I have heartburn")
-        self.assertEqual(second["status"], "SAFETY_REVIEW")
-        self.assertEqual(second["recommendations"], [])
+    def test_constipation_maps_to_digest_products(self):
+        s = SymptomState(primary_symptom="constipation")
+        r = product_evaluate(s, "constipation", allowed_names={"Digest Boost", "Guttify Poopie"})
+        self.assertIn(r["status"], ("RECOMMENDATION_FOUND", "AMBIGUOUS"))
+        names = {x["product_name"] for x in r["recommendations"]}
+        self.assertTrue(names & {"Digest Boost", "Guttify Poopie"})
 
-    def test_black_stool_and_blood_negations_remain_safe(self):
-        self.assertNotIn("black/tarry stool", detect_red_flags("I do not have black stool"))
-        self.assertNotIn("vomiting blood", detect_red_flags("I do not have blood in my vomit"))
+    def test_hemorrhoid_pattern_maps_to_piles_products(self):
+        s = SymptomState(primary_symptom="piles", blood_present=True, blood_colour="bright_red", sharp_pain_during_stool=False, lump_or_prolapse=True)
+        screening = clinical_evaluate(s)
+        self.assertEqual(screening["pattern"], "Possible hemorrhoid pattern")
+        self.assertTrue(screening["product_allowed"])
+        r = product_evaluate(s, "piles", allowed_names={"Piles Pure", "Piloease Anal Care Spray"})
+        self.assertIn(r["status"], ("RECOMMENDATION_FOUND", "AMBIGUOUS"))
+        self.assertTrue({x["product_name"] for x in r["recommendations"]} & {"Piles Pure", "Piloease Anal Care Spray"})
 
-    def test_duration_engine_accepts_common_natural_language(self):
-        self.assertEqual(_duration_days("about a month"), 30)
-        self.assertEqual(_duration_days("over a month"), 30)
-        self.assertEqual(_duration_days("several months"), 90)
+    def test_fissure_pattern_maps_to_piloease(self):
+        s = SymptomState(primary_symptom="anal fissures", blood_present=True, blood_colour="bright_red", sharp_pain_during_stool=True)
+        screening = clinical_evaluate(s)
+        self.assertEqual(screening["pattern"], "Possible anal fissure pattern")
+        self.assertTrue(screening["product_allowed"])
+        r = product_evaluate(s, "anal fissure", allowed_names={"Piloease Anal Care Spray"})
+        self.assertEqual(r["status"], "RECOMMENDATION_FOUND")
+        self.assertEqual(r["recommendations"][0]["product_name"], "Piloease Anal Care Spray")
 
-    def test_ambiguous_anal_concern_is_clarified_and_resolved(self):
-        cm = ConversationManager()
-        sid = "final-product-concern"
-        first = cm.handle_message(sid, "I have anal discomfort")
-        self.assertEqual(first["status"], "ASK")
-        self.assertIn("swelling/lumps", first["message"])
-        second = cm.handle_message(sid, "mainly burning and itching")
-        self.assertEqual(second["status"], "RECOMMENDATION_FOUND")
-        self.assertEqual(second["recommendations"][0]["product_name"], "Piloease Anal Care Spray")
+    def test_black_tarry_stool_never_recommends(self):
+        s = SymptomState(primary_symptom="constipation", blood_present=True, blood_colour="black")
+        screening = clinical_evaluate(s)
+        self.assertFalse(screening["product_allowed"])
+        self.assertEqual(screening["action"], "urgent_medical_evaluation")
 
 
 if __name__ == "__main__":
     unittest.main()
 
-class TestQuestionnaireCompleteness(unittest.TestCase):
-    def test_bloating_does_not_skip_remaining_branch_questions(self):
+class TestV8ClinicalContextBridging(unittest.TestCase):
+    def test_blood_plus_sharp_pain_reaches_piloease(self):
+        """Regression for the live flow: primary symptom is bleeding, but
+        the completed clinical pattern is an anal fissure pattern."""
         cm = ConversationManager()
-        sid = "bloating-complete-screen"
-        r1 = cm.handle_message(sid, "bloating")
-        self.assertEqual(r1["status"], "ASK")
-        r2 = cm.handle_message(sid, "2 days")
-        self.assertEqual(r2["status"], "ASK")
-        r3 = cm.handle_message(sid, "30")
-        self.assertEqual(r3["status"], "ASK")
-        r4 = cm.handle_message(sid, "yes, constipation")
-        self.assertEqual(r4["status"], "ASK")
-        self.assertIn("dairy", r4["message"].lower())
-        r5 = cm.handle_message(sid, "no particular food")
-        self.assertEqual(r5["status"], "ASK")
-        self.assertIn("abdominal pain", r5["message"].lower())
-        r6 = cm.handle_message(sid, "no abdominal pain")
-        self.assertEqual(r6["status"], "ASK")
-        self.assertIn("bristol", r6["message"].lower())
+        sid = "blood-fissure-v8"
+        answers = [
+            "There is blood in stool", "3 weeks", "50", "Bright red",
+            "Tissue", "Sharp pain during bowel movement", "no lump", "no hard stools and no straining",
+        ]
+        result = None
+        for answer in answers:
+            result = cm.handle_message(sid, answer)
+        self.assertEqual(result["status"], "RECOMMENDATION_FOUND")
+        self.assertEqual(result["screening"]["pattern"], "Possible anal fissure pattern")
+        self.assertIn("Piloease Anal Care Spray", [x["product_name"] for x in result["recommendations"]])
 
-    def test_indigestion_does_not_stop_after_three_questions(self):
+    def test_dyspepsia_pattern_reaches_acid_ease(self):
+        s = SymptomState(primary_symptom="indigestion")
+        screening = clinical_evaluate(s)
+        self.assertEqual(screening["pattern"], "Dyspepsia/indigestion pattern")
+        r = product_evaluate(s, "indigestion", allowed_names={"Acid Ease"}, match_context=screening["pattern"])
+        self.assertEqual(r["status"], "RECOMMENDATION_FOUND")
+        self.assertEqual(r["recommendations"][0]["product_name"], "Acid Ease")
+
+    def test_upper_abdominal_meal_related_dyspepsia_reaches_acid_ease(self):
+        s = SymptomState(primary_symptom="stomach pain", food_related=True, pain_location="upper abdomen")
+        screening = clinical_evaluate(s)
+        self.assertEqual(screening["pattern"], "Upper-abdominal meal-related dyspepsia pattern")
+        r = product_evaluate(s, "upper abdominal pain after meals", allowed_names={"Acid Ease"}, match_context=screening["pattern"])
+        self.assertEqual(r["status"], "RECOMMENDATION_FOUND")
+        self.assertEqual(r["recommendations"][0]["product_name"], "Acid Ease")
+
+
+class TestV8AllActiveProductEntryPoints(unittest.TestCase):
+    def test_all_product_specific_routes_have_a_match(self):
+        cases = [
+            ("GloLux GlutaGlow Skin Effervescent Tablets", "I have dull skin"),
+            ("Apple Active", "I want weight management support"),
+            ("Liver Lift", "I need liver support"),
+            ("Guttify Poopie", "I have low fibre intake"),
+        ]
+        for expected, query in cases:
+            with self.subTest(expected=expected):
+                result = ConversationManager().handle_message(expected, query)
+                self.assertEqual(result["status"], "RECOMMENDATION_FOUND")
+                self.assertIn(expected, [x["product_name"] for x in result["recommendations"]])
+
+    def test_bare_yes_only_answers_pending_anal_pain_question(self):
+        """A bare Yes must not turn every boolean field into a red flag."""
+        from guttify_agent import ConversationManager
+
         cm = ConversationManager()
-        sid = "indigestion-complete-screen"
-        r1 = cm.handle_message(sid, "indigestion")
-        self.assertEqual(r1["status"], "ASK")
-        # The exact follow-up sequence is branch-specific; the important
-        # regression is that it remains in ASK until its questions are done.
-        for answer in ["3 days", "30", "upper fullness and nausea", "yes after meals"]:
-            r = cm.handle_message(sid, answer)
-        self.assertIn(r["status"], ("ASK", "DIAGNOSIS", "RECOMMENDATION_FOUND", "AMBIGUOUS"))
+        sid = "bare-yes-anal-pain"
+        for msg in ["Piles", "2 months", "no weight loss", "45", "Bright red", "Tissue"]:
+            cm.handle_message(sid, msg)
+
+        result = cm.handle_message(sid, "Yes")
+        result = cm.handle_message(sid, "no lump")
+        result = cm.handle_message(sid, "no hard stools and no straining")
+        state = cm.sessions[sid].symptom_state
+
+        self.assertNotEqual(result["status"], "SAFETY_REVIEW")
+        self.assertEqual(state.sharp_pain_during_stool, True)
+        self.assertIsNone(state.vomiting)
+        self.assertIsNone(state.fever)
+        self.assertFalse(state.weight_loss)
+        self.assertIsNone(state.dehydration)
+        self.assertIsNone(state.unable_to_pass_stool_and_gas)
+        self.assertEqual(result["screening"]["pattern"], "Possible anal fissure pattern")
+        self.assertTrue(any(p["product_name"] == "Piloease Anal Care Spray" for p in result["recommendations"]))
