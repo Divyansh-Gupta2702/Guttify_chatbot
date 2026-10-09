@@ -245,14 +245,60 @@ class ConversationManager:
 
         session.symptom_state = SymptomState(**data)
 
+    @staticmethod
+    def _question_has_answer(session, field):
+        """Return True only when the pending question has actually been answered.
+
+        `asked_fields` records that a question was shown; it must NOT be treated
+        as proof that the user answered it. This prevents a mismatched reply
+        such as "no lump" from causing the missing stool/strain question to be
+        skipped and the assessment to terminate prematurely.
+        """
+        s = session.symptom_state
+        # Only enforce answer-consumption for question fields whose parser has
+        # an exact contextual handler. Other multi-part questions intentionally
+        # retain the existing questionnaire behavior.
+        checks = {
+            "duration": lambda: s.duration not in (None, "unknown"),
+            "age": lambda: s.age is not None,
+            "blood": lambda: s.blood_present is not None,
+            "blood_colour": lambda: s.blood_colour is not None,
+            "blood_location": lambda: s.blood_location is not None,
+            "anal_pain": lambda: s.sharp_pain_during_stool is not None or s.anal_pain is not None,
+            "lump": lambda: s.lump_or_prolapse is not None,
+            "stool_straining": lambda: s.stool_form is not None and s.straining is not None,
+            "constipation": lambda: s.stool_form is not None or s.straining is not None or s.constipation_explicit is not None,
+        }
+        check = checks.get(field)
+        if check is None:
+            return True
+        return bool(check())
+
     def _run_nlu(self, session, text):
-        facts = extract_natural_facts(text, session.last_question, session.symptom_state)
-        logger.info(
-            "[NLU] message_length=%d last_question=%s intent=%s confidence=%.2f extracted=%s",
-            len(text), session.last_question, facts.get("intent"), facts.get("confidence", 0.0),
-            {k: v for k, v in facts.items() if v not in (None, [], "", False)}
-        )
+        before = session.symptom_state.to_dict()
+        current_question = session.last_question
+        facts = extract_natural_facts(text, current_question, session.symptom_state)
         self._apply_nlu_facts(session, facts)
+        after = session.symptom_state.to_dict()
+
+        changed = {}
+        for key, value in after.items():
+            if before.get(key) != value and value not in (None, [], "unknown"):
+                changed[key] = value
+
+        logger.info(
+            "[NLU] message_length=%d assessment_active=%s last_question=%s intent=%s confidence=%.2f",
+            len(text), bool(session.symptom_state.primary_symptom or current_question),
+            current_question, facts.get("intent"), facts.get("confidence", 0.0),
+        )
+        logger.info(
+            "[NLU][EXTRACTED] facts=%s normalized_symptoms=%s",
+            {k: v for k, v in facts.items() if v not in (None, [], "", False)},
+            list(dict.fromkeys((facts.get("symptoms") or []) +
+                               [session.symptom_state.primary_symptom] +
+                               (session.symptom_state.secondary_symptoms or []))),
+        )
+        logger.info("[NLU][STATE] newly_added=%s", changed)
         return facts
 
     def _apply_answer(self, session, text):
@@ -806,6 +852,36 @@ class ConversationManager:
         if pending_question:
             self._apply_answer(session, user_message)
             self._apply_nlu_facts(session, nlu_facts)
+            session.symptom_state.red_flags = derive_red_flags(session.symptom_state)
+
+            # Do not consume a question merely because it was displayed. If
+            # the response did not answer that question, keep the context
+            # active and ask for clarification instead of skipping a required
+            # clinical field or declaring a diagnosis prematurely.
+            if not self._question_has_answer(session, pending_question):
+                session.last_question = pending_question
+                # Use the exact question text associated with the pending field.
+                question_texts = {
+                    "duration": "How long has this been happening?",
+                    "age": "What is your age?",
+                    "weight_loss": "Have you lost any significant weight?",
+                    "weight_loss_duration": "Have you lost any significant weight?",
+                    "blood": "Have you noticed any bleeding or blood around/after a bowel movement?",
+                    "blood_colour": "Is the blood bright/fresh red, or dark/black/tarry?",
+                    "blood_location": "If it is bright red, is it on tissue, dripping into the toilet, or mixed into the stool?",
+                    "anal_pain": "Is there sharp or tearing pain during or just after a bowel movement?",
+                    "lump": "Is there a lump or something protruding from the anus?",
+                    "stool_straining": "Are your stools hard or lumpy, and do you need to strain to pass them?",
+                    "constipation": "Do you have hard stools or strain when passing stool?",
+                }
+                question_text = question_texts.get(pending_question, "Could you answer the question above in a little more detail?")
+                logger.info("[NLU] unanswered_question field=%s; preserving context", pending_question)
+                return {
+                    "status": "ASK",
+                    "message": f"I want to make sure I understood that. {question_text}",
+                    "recommendations": [],
+                    "safety": safety,
+                }
             session.last_question = None
         else:
             session.symptom_state = merge_state(session.symptom_state, user_message, [])
@@ -892,6 +968,7 @@ class ConversationManager:
                     session.symptom_state.asked_fields.append(name)
                 session.last_question = name
                 session.questions_asked += 1
+                logger.info("[QUESTION] next=%s safety_flags=%s", name, session.symptom_state.red_flags)
                 return {"status": "ASK", "message": question_text, "recommendations": [], "safety": safety}
 
         if self._can_assess(session, screening):
@@ -927,6 +1004,7 @@ class ConversationManager:
                     session.symptom_state.asked_fields.append(name)
                 session.last_question = name
                 session.questions_asked += 1
+                logger.info("[QUESTION] next=%s safety_flags=%s", name, session.symptom_state.red_flags)
                 return {"status": "ASK", "message": question_text, "recommendations": [], "safety": safety}
 
         # Hard stop: never loop forever. Produce the best available assessment.

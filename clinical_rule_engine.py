@@ -159,6 +159,27 @@ def evaluate(s):
             "The bleeding pattern is not specific enough to attribute it to one cause. Medical assessment is appropriate."
         )
 
+    # A fissure-compatible branch must have supporting evidence. An LLM/NLU
+    # extraction must never make "anal fissures" itself sufficient evidence,
+    # especially when the user has explicitly denied bleeding and pain.
+    if s.primary_symptom == "anal fissures":
+        fissure_evidence = (
+            s.sharp_pain_during_stool is True
+            or "anal fissures" in (s.secondary_symptoms or []) and (
+                s.sharp_pain_during_stool is True or s.blood_present is True
+            )
+            or any("fissure" in str(x).lower() or "tear" in str(x).lower()
+                   for x in (s.secondary_symptoms or []))
+        )
+        if not fissure_evidence:
+            return _result(
+                "Insufficiently characterized anal-symptom pattern", "low",
+                ["anal symptoms reported"],
+                ["anal irritation", "hemorrhoids", "anal fissure", "other causes of anal symptoms"],
+                "targeted_questions", False,
+                "The answers describe an anal symptom pattern, but they do not support a more specific preliminary assessment yet."
+            )
+
     primary = s.primary_symptom
     symptoms = {primary, *(s.secondary_symptoms or [])}
     days = _duration_days(s.duration)

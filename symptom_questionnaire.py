@@ -116,6 +116,13 @@ def next_question(state):
             q("timing", "How soon after eating does it start?", state.food_related is None),
             q("symptoms", "What happens after the food: bloating, gas, diarrhea, cramps, constipation, or something else?", state.abdominal_pain is None or state.diarrhea is None),
         ]
+    elif branch == "anal burning":
+        qs = [
+            q("blood", "Have you noticed any bleeding or blood around/after a bowel movement?", state.blood_present is None),
+            q("anal_pain", "Is there sharp or tearing pain during or just after a bowel movement?", state.sharp_pain_during_stool is None),
+            q("lump", "Is there a lump or something protruding from the anus?", state.lump_or_prolapse is None),
+            q("constipation", "Do you have hard stools or strain when passing stool?", state.stool_form is None or state.straining is None),
+        ]
     elif branch in ("piles", "anal fissures", "bleeding"):
         qs = [
             q("blood", "Have you noticed any bleeding or blood around/after a bowel movement?", state.blood_present is None),
