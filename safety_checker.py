@@ -153,6 +153,12 @@ def derive_red_flags(state):
         flags.append("severe abdominal distension")
     if state.weight_loss is True:
         flags.append("unexplained significant weight loss")
+    if getattr(state, "blood_colour", None) == "black":
+        flags.append("black/tarry stool")
+    if getattr(state, "blood_present", None) is True and getattr(state, "recent_worsening", None) is True:
+        # Worsening bleeding is intentionally surfaced to the safety layer;
+        # the existing safety policy decides the final action.
+        flags.append("worsening bleeding")
     if state.dehydration is True:
         flags.append("dehydration")
     if state.unable_to_pass_stool_and_gas is True:

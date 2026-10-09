@@ -457,6 +457,16 @@ class SymptomState:
     medications: str = None
     recent_infection: bool = None
     family_history_gi: bool = None
+    # Natural-language context fields. These do not make clinical decisions;
+    # they preserve facts extracted by the NLU layer for the existing rules.
+    body_areas: list = field(default_factory=list)
+    pain_character: str = None
+    pain_timing: str = None
+    itching: bool = None
+    burning: bool = None
+    swelling: bool = None
+    gas: bool = None
+    recent_worsening: bool = None
     red_flags: list = field(default_factory=list)
     asked_fields: list = field(default_factory=list)
     # Track if the conditional weight-loss question (triggered by duration >= 1 month) has been asked

@@ -109,8 +109,12 @@ _SESSION_LOCK = RLock()
 conversation_manager = ConversationManager()
 
 
+MAX_USER_MESSAGE_CHARS = 2000
+
 class ChatRequest(BaseModel):
     session_id: str = Field(min_length=1, max_length=128)
+    # Keep Pydantic above the production UX limit so we can return a friendly
+    # application-level message instead of an opaque 422 validation error.
     message: str = Field(min_length=1, max_length=4000)
 
 
@@ -176,6 +180,13 @@ def chat(req: ChatRequest):
         # Pydantic rejects an empty string before reaching here, but keep the
         # guard because whitespace-only input becomes empty after stripping.
         raise HTTPException(status_code=400, detail="Message cannot be empty.")
+
+    if len(message) > MAX_USER_MESSAGE_CHARS:
+        raise HTTPException(
+            status_code=400,
+            detail="That message is a little too long for me to process safely. "
+                   "Please shorten it to about 2,000 characters and send it again.",
+        )
 
     # Never silently turn an expired/unknown session into a brand-new chat.
     # The widget can explicitly create a new session when this happens.

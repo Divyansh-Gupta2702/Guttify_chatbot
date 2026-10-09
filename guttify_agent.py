@@ -12,6 +12,7 @@ from dataclasses import dataclass, field
 from threading import RLock
 import re
 import time
+import logging
 
 from gibberish_checker import is_gibberish, random_gibberish_response
 from greeting_checker import is_greeting, random_greeting_response
@@ -26,9 +27,11 @@ from symptom_questionnaire import next_question
 from clinical_rule_engine import evaluate as evaluate_screening, _duration_days
 from safety_checker import check_safety, detect_red_flags, derive_red_flags, is_pregnancy_or_lactation
 from recommendation_engine import evaluate as evaluate_product, find_named_product, has_domain_overlap, IRRELEVANT_MESSAGE, products as ALL_PRODUCTS
+from nlu_extractor import extract_natural_facts
 from product_concern_router import detect_product_concerns
 
 SESSION_ENDED_MESSAGE = "This conversation has already wrapped up. Please start a new chat if you'd like help with another question."
+logger = logging.getLogger("gutgpt.nlu")
 MAX_QUESTIONS = 15
 
 
@@ -127,6 +130,130 @@ class ConversationManager:
     def _set(data, key, value):
         if value is not None:
             data[key] = value
+
+    def _apply_nlu_facts(self, session, facts):
+        """Merge validated NLU facts; never diagnose or select products."""
+        if not isinstance(facts, dict):
+            return
+        s = session.symptom_state
+        data = s.to_dict()
+        symptoms = [x for x in (facts.get("symptoms") or []) if isinstance(x, str)]
+
+        primary = data.get("primary_symptom")
+        if not primary and symptoms:
+            data["primary_symptom"] = symptoms[0]
+            primary = symptoms[0]
+
+        secondary = list(data.get("secondary_symptoms") or [])
+        for symptom in symptoms:
+            if symptom != primary and symptom not in secondary:
+                secondary.append(symptom)
+        data["secondary_symptoms"] = secondary
+
+        def set_if(value, key):
+            if value is not None:
+                data[key] = value
+
+        set_if(facts.get("duration"), "duration")
+        set_if(facts.get("age"), "age")
+        if facts.get("severity") in {"mild", "moderate", "severe"}:
+            data["severity"] = facts["severity"]
+
+        for src, dst in {
+            "straining": "straining",
+            "weight_loss": "weight_loss",
+            "lump_or_protrusion": "lump_or_prolapse",
+            "itching": "itching",
+            "burning": "burning",
+            "swelling": "swelling",
+            "gas": "gas",
+            "recent_worsening": "recent_worsening",
+        }.items():
+            if isinstance(facts.get(src), bool):
+                data[dst] = facts[src]
+
+        if isinstance(facts.get("hard_stools"), bool):
+            data["stool_form"] = 2 if facts["hard_stools"] else (
+                None if data.get("stool_form") in (1, 2) else data.get("stool_form")
+            )
+            if facts["hard_stools"] and "hard stools" not in data["secondary_symptoms"]:
+                data["secondary_symptoms"].append("hard stools")
+
+        if isinstance(facts.get("constipation"), bool):
+            data["constipation_explicit"] = facts["constipation"]
+            if facts["constipation"] and "constipation" not in data["secondary_symptoms"]:
+                data["secondary_symptoms"].append("constipation")
+
+        if isinstance(facts.get("loose_stools"), bool):
+            data["diarrhea"] = facts["loose_stools"]
+            data["diarrhea_explicit"] = facts["loose_stools"]
+
+        if isinstance(facts.get("pain"), bool):
+            body_areas = {str(x).lower() for x in (facts.get("body_areas") or [])}
+            question_context = session.last_question
+            anal_context = (
+                question_context == "anal_pain"
+                or "anal" in body_areas
+                or primary in {"piles", "anal fissures", "anal burning", "anal swelling"}
+            )
+            abdominal_context = question_context in {"bloating_pain", "pain", "ibs_pain", "pain_relation"}
+            if anal_context:
+                data["anal_pain"] = facts["pain"]
+            elif abdominal_context:
+                data["abdominal_pain"] = facts["pain"]
+
+        body_areas = list(data.get("body_areas") or [])
+        for area in facts.get("body_areas") or []:
+            if area not in body_areas:
+                body_areas.append(area)
+        data["body_areas"] = body_areas
+        set_if(facts.get("pain_character"), "pain_character")
+        set_if(facts.get("pain_timing"), "pain_timing")
+
+        if facts.get("pain_character") in {"sharp", "sharp/tearing", "tearing", "cutting"}:
+            data["sharp_pain_during_stool"] = True
+
+        if facts.get("bleeding") is True:
+            data["blood_present"] = True
+            if "bleeding" not in data["secondary_symptoms"] and primary != "bleeding":
+                data["secondary_symptoms"].append("bleeding")
+        elif facts.get("bleeding") is False:
+            data["blood_present"] = False
+
+        if facts.get("blood_type") == "bright_red":
+            data["blood_colour"] = "bright_red"
+            data["blood_present"] = True
+        elif facts.get("blood_type") in {"black", "dark"}:
+            data["blood_colour"] = "black"
+            data["blood_present"] = True
+
+        if facts.get("blood_location") in {"tissue", "dripping", "mixed"}:
+            data["blood_location"] = facts["blood_location"]
+
+        if facts.get("red_flags"):
+            data["red_flags"] = list(dict.fromkeys(
+                (data.get("red_flags") or []) + [str(x) for x in facts["red_flags"]]
+            ))
+
+        # Explicit contextual negatives can correct stale generic positives.
+        if facts.get("weight_loss") is False:
+            data["weight_loss"] = False
+        if facts.get("hard_stools") is False and data.get("stool_form") in (1, 2):
+            data["stool_form"] = None
+        if facts.get("straining") is False:
+            data["straining"] = False
+
+        session.symptom_state = SymptomState(**data)
+
+    def _run_nlu(self, session, text):
+        facts = extract_natural_facts(text, session.last_question, session.symptom_state)
+        logger.info(
+            "[NLU] message_length=%d last_question=%s intent=%s confidence=%.2f extracted=%s",
+            len(text), session.last_question, facts.get("intent"), facts.get("confidence", 0.0),
+            {k: v for k, v in facts.items() if v not in (None, [], "", False)}
+        )
+        self._apply_nlu_facts(session, facts)
+        return facts
 
     def _apply_answer(self, session, text):
         """Parse an answer using the exact question context, then merge any
@@ -670,15 +797,21 @@ class ConversationManager:
             session.awaiting_close = True
             return {"status": "PRODUCT_INFO_FOUND", "message": "", "product": named, "recommendations": [named]}
 
-        # First message establishes the branch. Every later message is treated
-        # as an answer to the last question when a question is pending.
+        # Contextual NLU runs before relevance routing. An active question has
+        # priority over generic domain/product classification.
         pending_question = session.last_question
+        nlu_facts = self._run_nlu(session, user_message)
+
+        # Keep the existing deterministic parser as a second layer.
         if pending_question:
             self._apply_answer(session, user_message)
+            self._apply_nlu_facts(session, nlu_facts)
             session.last_question = None
         else:
             session.symptom_state = merge_state(session.symptom_state, user_message, [])
-            session.symptom_state.red_flags = derive_red_flags(session.symptom_state)
+            self._apply_nlu_facts(session, nlu_facts)
+
+        session.symptom_state.red_flags = derive_red_flags(session.symptom_state)
 
         # Structured questionnaire answers can reveal a warning sign after the
         # raw-message safety check has already run. Never continue to product
@@ -720,8 +853,28 @@ class ConversationManager:
                 if product_result:
                     return product_result
 
-        if not session.symptom_state.primary_symptom and not has_domain_overlap(user_message) and session.last_question is None:
+        # Never use product/domain keyword overlap to judge an answer while an
+        # assessment is active. "2 days" is a valid answer to a duration
+        # question even though it contains no symptom/product keyword.
+        nlu_intent = nlu_facts.get("intent") if isinstance(nlu_facts, dict) else None
+        if (
+            not session.symptom_state.primary_symptom
+            and not has_domain_overlap(user_message)
+            and nlu_intent not in {"assessment", "answer_question", "new_symptom"}
+            and not session.last_question
+        ):
             return {"status": "IRRELEVANT", "message": IRRELEVANT_MESSAGE, "recommendations": []}
+
+        if (
+            not session.symptom_state.primary_symptom
+            and nlu_intent in {"assessment", "answer_question", "new_symptom"}
+            and not has_domain_overlap(user_message)
+        ):
+            return {
+                "status": "ASK",
+                "message": "I'm not completely sure I understood the main symptom. Could you tell me whether you're mainly experiencing pain, bleeding, itching, constipation, loose stools, bloating, acidity, or another digestive symptom?",
+                "recommendations": [],
+            }
 
         screening = evaluate_screening(session.symptom_state)
         session.screening = screening
