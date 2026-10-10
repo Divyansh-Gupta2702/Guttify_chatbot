@@ -217,18 +217,41 @@ def score_product(product, state: SymptomState, raw_query: str, match_context=No
     # engine explicitly supplied that pattern. This is the bridge that lets a
     # pattern such as "Possible anal fissure" reach Piloease even though the
     # raw primary symptom is "bleeding".
-    if not primary and not context_match:
-        return 0
-    if primary not in symptom_set and primary not in alias_set and not context_match:
+    secondary_matches = [
+        normalize_text(secondary)
+        for secondary in (state.secondary_symptoms or [])
+        if normalize_text(secondary) in symptom_set or normalize_text(secondary) in alias_set
+    ]
+    primary_match = bool(primary and (primary in symptom_set or primary in alias_set))
+
+    # Multi-symptom routing: a product may be eligible because an explicitly
+    # reported secondary symptom maps directly to that product. This is
+    # intentionally limited to products that the clinical/eligibility layer
+    # has already allowed; it does not let arbitrary keyword overlap create a
+    # recommendation. This fixes cases such as bleeding + constipation, where
+    # the anorectal product is the primary match but the constipation product
+    # must still be considered.
+    if not primary_match and not context_match and not secondary_matches:
         return 0
 
-    score = PRIMARY_MATCH_POINTS if primary in symptom_set or primary in alias_set else CONTEXT_MATCH_POINTS
-    if context_match and score == PRIMARY_MATCH_POINTS:
+    if primary_match:
+        score = PRIMARY_MATCH_POINTS
+    elif context_match:
+        score = CONTEXT_MATCH_POINTS
+    else:
+        # A direct secondary-symptom match is a full eligibility signal once
+        # the caller has explicitly allow-listed the product for that symptom
+        # cluster. It is scored at the same base level as a primary match so
+        # a third symptom (for example acidity) is not silently dropped merely
+        # because another symptom was selected as primary.
+        score = PRIMARY_MATCH_POINTS
+
+    if context_match and primary_match:
         # Keep a direct symptom match slightly ahead of a contextual match.
         score += 1
 
     for secondary in state.secondary_symptoms or []:
-        if normalize_text(secondary) in symptom_set:
+        if normalize_text(secondary) in symptom_set or normalize_text(secondary) in alias_set:
             score += SECONDARY_MATCH_POINTS
 
     if state.food_trigger:
@@ -335,9 +358,11 @@ def build_ambiguous_message(tied_candidates):
     """Lay out every tied product with what makes it distinct, so the
     user (or a follow-up message) can pick between them instead of us
     guessing."""
+    count = len(tied_candidates)
+    noun = "both" if count == 2 else "these options"
     lines = [
         "More than one Guttify product is a suitable match based on what you've shared. "
-        "I'm showing both so you can choose the one that best fits your intended use:",
+        f"I'm showing {noun} so you can choose the one that best fits your intended use:",
         "",
     ]
     for candidate in tied_candidates:
@@ -358,10 +383,17 @@ def build_ambiguous_message(tied_candidates):
             lines.append(f"- Supports: {', '.join(support)}")
         lines.append("")
 
-    lines.append(
-        "Both are valid options for the symptoms you've described. You can "
-        "choose the product whose intended use best matches what you want support for."
-    )
+    if count == 2:
+        closing = (
+            "Both are valid options for the symptoms you've described. You can "
+            "choose the product whose intended use best matches what you want support for."
+        )
+    else:
+        closing = (
+            "These are the valid options for the symptoms you've described. You can "
+            "choose the products whose intended uses best match what you want support for."
+        )
+    lines.append(closing)
     return "\n".join(lines)
 
 
@@ -412,6 +444,48 @@ def evaluate(state: SymptomState, raw_query: str, allowed_names=None, match_cont
     top = candidates[0]
     if top["score"] < MIN_SCORE:
         return {"status": "NO_MATCH", "recommendations": [], "message": NO_MATCH_MESSAGE}
+
+    # Multi-symptom rule: when the caller has explicitly allow-listed products
+    # for multiple reported symptom clusters, do not let TOP_K discard the
+    # product that belongs to a secondary cluster. For example, bleeding +
+    # constipation must retain the anorectal product AND the constipation
+    # product(s), even when their global scores are not close enough to be a
+    # traditional tie.
+    if allowed_names is not None:
+        primary = normalize_text(state.primary_symptom) if state.primary_symptom else None
+        alias_by_product = {
+            p["product_name"]: {normalize_text(x) for x in PRODUCT_PRIMARY_ALIASES.get(p.get("product_name"), set())}
+            for p in products
+        }
+        symptom_set_by_product = {p["product_name"]: _product_symptom_set(p) for p in products}
+        cluster_candidates = []
+        for candidate in candidates:
+            name = candidate["product"].get("product_name")
+            symptom_set = symptom_set_by_product.get(name, set())
+            aliases = alias_by_product.get(name, set())
+            secondary_match = any(
+                normalize_text(s) in symptom_set or normalize_text(s) in aliases
+                for s in (state.secondary_symptoms or [])
+            )
+            primary_or_context = bool(
+                (primary and (primary in symptom_set or primary in aliases))
+                or (match_context and name in CLINICAL_PATTERN_PRODUCT_MATCHES.get(match_context, {}))
+            )
+            if secondary_match or primary_or_context:
+                cluster_candidates.append(candidate)
+
+        # If more than two distinct symptom/product matches are explicitly
+        # eligible, return them all. This prevents a third symptom such as
+        # acidity from disappearing behind the global TOP_K=2 limit.
+        if len(cluster_candidates) > TOP_K:
+            return {
+                "status": "AMBIGUOUS",
+                "recommendations": [
+                    _build_recommendation(c["product"], c["score"])
+                    for c in cluster_candidates
+                ],
+                "message": build_ambiguous_message(cluster_candidates),
+            }
 
     tied = [c for c in get_tied_candidates(candidates) if c["score"] >= MIN_SCORE]
     if len(tied) > 1:

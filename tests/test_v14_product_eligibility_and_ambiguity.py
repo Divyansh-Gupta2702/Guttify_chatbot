@@ -47,3 +47,52 @@ def test_ambiguous_matches_return_all_suitable_products_without_forcing_one():
     assert set(names) == {"Digest Boost", "Guttify Poopie"}
     assert "intended use" in result["message"].lower()
     assert "choose the product" in result["message"].lower()
+
+
+def test_secondary_constipation_adds_products_to_anorectal_recommendation():
+    # A bleeding/fissure assessment may legitimately recommend the topical
+    # product, but an explicitly reported constipation/hard-stool cluster must
+    # also be evaluated rather than being lost because bleeding is primary.
+    state = SymptomState(
+        primary_symptom="bleeding",
+        secondary_symptoms=["constipation", "hard stools"],
+        blood_present=True,
+        blood_colour="bright_red",
+        sharp_pain_during_stool=True,
+        lump_or_prolapse=False,
+        constipation_explicit=True,
+        stool_form=2,
+    )
+    screening = clinical_evaluate(state)
+    assert screening["pattern"] == "Possible anal fissure pattern"
+    allowed = _approved_names_for_screening(screening, state)
+    result = product_evaluate(
+        state,
+        "bright red blood, sharp pain, constipation and hard stools",
+        allowed_names=allowed,
+        match_context=screening["pattern"],
+    )
+    names = {p["product_name"] for p in result["recommendations"]}
+    assert "Piloease Anal Care Spray" in names
+    assert "Guttify Poopie" in names
+    assert "Digest Boost" in names
+
+
+def test_three_symptoms_route_to_all_relevant_product_clusters():
+    # More than two symptoms must not collapse into one primary-symptom route.
+    state = SymptomState(
+        primary_symptom="constipation",
+        secondary_symptoms=["hard stools", "acidity"],
+        constipation_explicit=True,
+        stool_form=2,
+    )
+    screening = {"pattern": "Functional constipation pattern", "product_allowed": True}
+    allowed = _approved_names_for_screening(screening, state)
+    result = product_evaluate(
+        state,
+        "constipation, hard stools and acidity",
+        allowed_names=allowed,
+        match_context=screening["pattern"],
+    )
+    names = {p["product_name"] for p in result["recommendations"]}
+    assert {"Digest Boost", "Guttify Poopie", "Acid Ease"}.issubset(names)

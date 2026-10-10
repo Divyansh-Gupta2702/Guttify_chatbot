@@ -57,6 +57,26 @@ PRODUCT_ELIGIBILITY = {
     "Possible anal fissure pattern": {"Piloease Anal Care Spray"},
 }
 
+# Additional symptom-cluster routing. These are deliberately explicit rather
+# than inferred from every product.json symptom field, so a broad database
+# match can never silently turn into a recommendation. The completed clinical
+# pattern remains the safety gate; these routes only add products for other
+# symptoms that the user explicitly reported in the same assessment.
+ADDITIONAL_SYMPTOM_PRODUCT_ELIGIBILITY = {
+    "constipation": {"Digest Boost", "Guttify Poopie"},
+    "hard stools": {"Digest Boost", "Guttify Poopie"},
+    "acidity": {"Acid Ease"},
+    "heartburn": {"Acid Ease"},
+    "acid reflux": {"Acid Ease"},
+    "indigestion": {"Acid Ease"},
+    "bloating": {"Digest Boost", "Acid Ease", "Guttify Poopie"},
+    "gas": {"Digest Boost", "Acid Ease", "Guttify Poopie"},
+    "piles": {"Piles Pure", "Piloease Anal Care Spray"},
+    "haemorrhoids": {"Piles Pure", "Piloease Anal Care Spray"},
+    "hemorrhoids": {"Piles Pure", "Piloease Anal Care Spray"},
+    "anal fissures": {"Piloease Anal Care Spray"},
+}
+
 # Product-concern branches are not medical diagnoses. They route explicit
 # product-relevant concerns to the product database (skin, vitamins, weight
 # management, liver support) after the gut-symptom parser has had first pick.
@@ -77,15 +97,29 @@ def _approved_names_for_screening(screening, state=None):
     heartburn/acidity/reflux is explicitly present.
     """
     pattern = screening.get("pattern") if isinstance(screening, dict) else None
-    allowed = PRODUCT_ELIGIBILITY.get(pattern)
+    allowed = set(PRODUCT_ELIGIBILITY.get(pattern) or set())
+
     if pattern == "Upper-abdominal meal-related dyspepsia pattern" and state is not None:
         secondary = {str(x).strip().lower() for x in (state.secondary_symptoms or [])}
         clear_acid = bool(
             getattr(state, "reflux_present", None) is True
             or secondary.intersection({"acidity", "heartburn", "acid reflux"})
         )
-        return {"Acid Ease"} if clear_acid else {"Digest Boost"}
-    return allowed
+        allowed = {"Acid Ease"} if clear_acid else {"Digest Boost"}
+
+    # Add independently eligible products for other symptoms explicitly
+    # present in this same assessment. Primary-pattern safety remains intact;
+    # this only broadens the product allow-list for already reported symptom
+    # clusters.
+    if state is not None and allowed:
+        reported = set()
+        if state.primary_symptom:
+            reported.add(str(state.primary_symptom).strip().lower())
+        reported.update(str(x).strip().lower() for x in (state.secondary_symptoms or []))
+        for symptom in reported:
+            allowed.update(ADDITIONAL_SYMPTOM_PRODUCT_ELIGIBILITY.get(symptom, set()))
+
+    return allowed or None
 
 
 def _filter_approved_products(result, screening, state=None):
