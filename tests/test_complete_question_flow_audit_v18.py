@@ -256,3 +256,45 @@ def test_every_symptom_state_field_is_classified_in_audit_registry():
     from question_schema import STATE_FIELD_POLICY
     fields = set(SymptomState().__dict__.keys())
     assert fields <= set(STATE_FIELD_POLICY)
+
+
+def test_pain_conjunctive_question_bare_yes_answers_whole_question():
+    cm, sid, session = active("pain", "stomach pain")
+    result = cm.handle_message(sid, "yes")
+    s = session.symptom_state
+    assert s.abdominal_pain is True
+    assert s.pain_related_to_bowel_movement is True
+    assert session.last_question != "pain"
+    assert result["status"] in {"ASK", "AMBIGUOUS", "DIAGNOSIS_FOUND", "RECOMMENDATION_FOUND", "SAFETY_REVIEW"}
+
+
+def test_pain_conjunctive_question_bare_no_answers_whole_question():
+    cm, sid, session = active("pain", "stomach pain")
+    cm.handle_message(sid, "no")
+    s = session.symptom_state
+    assert s.abdominal_pain is False
+    assert s.pain_related_to_bowel_movement is False
+    assert session.last_question != "pain"
+
+
+def test_pain_statement_without_relation_gets_focused_clarification():
+    cm, sid, session = active("pain", "stomach pain")
+    result = cm.handle_message(sid, "I do have some pain")
+    s = session.symptom_state
+    assert s.abdominal_pain is True
+    assert s.pain_related_to_bowel_movement is None
+    assert session.last_question == "pain"
+    assert result["status"] == "ASK"
+    assert "bowel movement" in result["message"].lower()
+    assert "Does the pain improve" in result["message"]
+
+
+def test_pain_relation_after_focused_clarification_resolves():
+    cm, sid, session = active("pain", "stomach pain")
+    cm.handle_message(sid, "I do have some pain")
+    result = cm.handle_message(sid, "yes")
+    s = session.symptom_state
+    assert s.abdominal_pain is True
+    assert s.pain_related_to_bowel_movement is True
+    assert session.last_question != "pain"
+    assert result["status"] in {"ASK", "AMBIGUOUS", "DIAGNOSIS_FOUND", "RECOMMENDATION_FOUND", "SAFETY_REVIEW"}

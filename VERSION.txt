@@ -1,1 +1,1 @@
-GutGPT v18.1 - Question Ownership / Resolution Hardening
+18.2

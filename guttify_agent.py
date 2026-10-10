@@ -449,6 +449,7 @@ class ConversationManager:
             "weight_loss": "weight_loss",
             "weight_loss_duration": "weight_loss",
             "infection": "recent_infection",
+            "pain": "pain",
             "timing": "timing_relation",
         }
         key = contextual_to_state.get(field)
@@ -1327,6 +1328,22 @@ class ConversationManager:
             # clinical field or declaring a diagnosis prematurely.
             if not self._question_has_answer(session, pending_question):
                 session.last_question = pending_question
+                # Use a focused clarification when the user answered only
+                # part of a multi-concept question. Repeating the entire
+                # question ("I do have some pain" -> repeat the same pain
+                # question) creates a conversational loop and does not tell
+                # the user which missing concept is unresolved.
+                focused_clarifications = {}
+                if pending_question == "pain":
+                    if session.symptom_state.abdominal_pain is True and session.symptom_state.pain_related_to_bowel_movement is None:
+                        focused_clarifications["pain"] = "Does the pain improve, worsen, or change after you have a bowel movement?"
+                    elif session.symptom_state.abdominal_pain is None and session.symptom_state.pain_related_to_bowel_movement is None:
+                        focused_clarifications["pain"] = "Do you have recurring abdominal pain, and if so, does it improve, worsen, or change after a bowel movement?"
+                if pending_question == "bloating_pain":
+                    if session.symptom_state.abdominal_pain is True and session.symptom_state.pain_related_to_bowel_movement is None:
+                        focused_clarifications["bloating_pain"] = "Does the abdominal pain improve, worsen, or change after a bowel movement?"
+                    elif session.symptom_state.bloating is True and session.symptom_state.abdominal_pain is None:
+                        focused_clarifications["bloating_pain"] = "Do you also have recurring abdominal pain, and if so, does it change after a bowel movement?"
                 # Use the exact question text associated with the pending field.
                 question_texts = {
                     "duration": "How long has this been happening?",
@@ -1353,7 +1370,10 @@ class ConversationManager:
                     "bowel_pattern": "Do you mainly have constipation, diarrhea, or both at different times?",
                     "symptoms": "What happens after the food: bloating, gas, diarrhea, cramps, constipation, or something else?",
                 }
-                question_text = question_texts.get(pending_question, "Could you answer the question above in a little more detail?")
+                question_text = focused_clarifications.get(
+                    pending_question,
+                    question_texts.get(pending_question, "Could you answer the question above in a little more detail?")
+                )
                 logger.info("[QUESTION][BLOCK] field=%s reason=answer_not_understood action=ASK_CLARIFICATION", pending_question)
                 logger.info("[NLU] unanswered_question field=%s; preserving context", pending_question)
                 return {

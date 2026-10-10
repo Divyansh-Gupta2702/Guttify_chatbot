@@ -612,6 +612,48 @@ def _question_specific_fallback(message: str, last_question: str | None, state) 
             out["constipation"] = False
             out["loose_stools"] = False
 
+    elif last_question == "pain":
+        # This question is a single conjunctive proposition in the
+        # questionnaire ("Do you have recurring abdominal pain that changes
+        # with bowel movements?" / equivalent wording). Therefore a bare
+        # "yes" or "no" answers the whole proposition, unlike an OR-style
+        # composite safety question where "yes" would be ambiguous.
+        pain_neg = bool(re.search(
+            r"\b(?:no|not|never|without|don't|dont|do not|doesn't|does not)\b.{0,45}\b(?:abdominal pain|stomach pain|belly pain|cramps?|pain)\b", n
+        ))
+        bowel_pos = bool(re.search(
+            r"\b(?:after\s+(?:a\s+)?(?:bowel movement|stool|poop)|when\s+i\s+poop|related\s+to\s+(?:bowel movements?|stool)|changes?\s+with\s+(?:bowel movements?|stool)|improves?\s+after\s+(?:a\s+)?(?:bowel movement|stool)|worse?\s+after\s+(?:a\s+)?(?:bowel movement|stool))\b", n
+        ))
+        bowel_neg = bool(re.search(
+            r"\b(?:not|isn't|is not|never|without)\b.{0,35}\b(?:related to\s+)?(?:bowel movements?|stool|poop)\b", n
+        ))
+        pain_pos = bool(re.search(
+            r"\b(?:abdominal pain|stomach pain|belly pain|stomach ache|cramps?|cramping|i do have some pain|i have some pain|i have pain)\b", n
+        ))
+
+        if bare_yes:
+            out["pain"] = True
+            out["abdominal_pain"] = True
+            out["pain_related_to_bowel_movement"] = True
+        elif bare_no:
+            out["pain"] = False
+            out["abdominal_pain"] = False
+            out["pain_related_to_bowel_movement"] = False
+        elif pain_neg and not pain_pos:
+            out["pain"] = False
+            out["abdominal_pain"] = False
+            # If the user explicitly denies pain, there is no pain relation
+            # to collect for this conjunctive question.
+            out["pain_related_to_bowel_movement"] = False
+        else:
+            if pain_pos:
+                out["pain"] = True
+                out["abdominal_pain"] = True
+            if bowel_pos and not bowel_neg:
+                out["pain_related_to_bowel_movement"] = True
+            elif bowel_neg:
+                out["pain_related_to_bowel_movement"] = False
+
     elif last_question in {"pain_relation", "food_relation"}:
         meal_pos = bool(re.search(r"\b(?:after\s+(?:meals?|eating|food)|when\s+i\s+eat|whenever\s+i\s+eat|related\s+to\s+meals?|triggered\s+by\s+meals?)\b", n))
         bowel_pos = bool(re.search(r"\b(?:after\s+(?:a\s+)?(?:bowel movement|stool|poop)|when\s+i\s+poop|related\s+to\s+(?:bowel movements?|stool)|changes?\s+with\s+(?:bowel movements?|stool))\b", n))

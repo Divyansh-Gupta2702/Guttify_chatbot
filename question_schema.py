@@ -42,7 +42,7 @@ QUESTION_SCHEMA = {
     "straining": QuestionSpec(frozenset({"straining"}), "boolean"),
     "incomplete_evacuation": QuestionSpec(frozenset({"incomplete_evacuation"}), "boolean"),
     "bloating_pain": QuestionSpec(frozenset({"bloating", "abdominal_pain", "pain_related_to_bowel_movement"}), "composite_boolean"),
-    "pain": QuestionSpec(frozenset({"abdominal_pain", "pain_related_to_bowel_movement"}), "composite_boolean"),
+    "pain": QuestionSpec(frozenset({"abdominal_pain", "pain_related_to_bowel_movement"}), "conjunctive_boolean", allow_bare_yes_all=True, allow_bare_no_all=True),
     "pain_relation": QuestionSpec(frozenset({"food_related", "pain_related_to_bowel_movement"}), "choice"),
     "blood": QuestionSpec(frozenset({"blood_present"}), "boolean"),
     "bleeding": QuestionSpec(frozenset({"blood_present"}), "boolean"),
