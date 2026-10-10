@@ -694,7 +694,7 @@ class ConversationManager:
             elif n in {"high", "high fibre", "high fiber", "good"}: data["fibre_intake"] = "high"
 
         elif field in ("medications",):
-            self._set(data, "medications", extract_medications(text) or ("none" if n in {"no", "none", "no medicines", "no medication"} else None))
+            self._set(data, "medications", extract_medications(text) or ("none" if n in {"no", "none", "no medicines", "no medication", "no medications", "no supplements", "not taking anything"} else None))
 
         elif field == "infection":
             self._set(data, "recent_infection", extract_bool(text,
@@ -765,17 +765,14 @@ class ConversationManager:
             )
 
         elif field == "timing":
-            # For reflux timing, store the actual night/lying-down answer.
-            # Do not confuse this with meal association.
+            # This is a timing/choice question, not a boolean presence question.
+            # A bare "no" does not answer "How soon after eating does it start?"
+            # and must therefore keep the question active. Only explicit timing
+            # language can resolve this field.
             if re.search(r"\b(at night|during the night|when lying down|while lying down|when i lie down)\b", n):
                 data["night_time_symptoms"] = True
-            elif re.search(r"\b(not at night|does not happen at night|doesn't happen at night|not when lying down|not lying down)\b", n):
+            elif re.search(r"\b(not at night|does not happen at night|doesn't happen at night|not when lying down|not lying down|not after eating|not after meals|not related to meals)\b", n):
                 data["night_time_symptoms"] = False
-            else:
-                data["night_time_symptoms"] = extract_bool(
-                    text, ["at night", "when lying down", "while lying down"],
-                    ["not at night", "not when lying down"]
-                )
 
         elif field == "food_relation":
             data["food_related"] = extract_bool(

@@ -89,3 +89,45 @@ def test_bare_no_does_not_become_duration_false(monkeypatch):
     assert result["status"] == "ASK"
     assert session.last_question == "duration"
     assert result["status"] != "AMBIGUOUS"
+
+
+def test_bare_no_medications_is_resolved(monkeypatch):
+    bot, session = _active(monkeypatch, "neg-med-bare", "medications")
+    result = bot.handle_message("neg-med-bare", "no")
+    assert session.symptom_state.medications == "none"
+    assert session.last_question != "medications"
+    assert result["status"] != "AMBIGUOUS"
+
+
+def test_bare_no_reflux_is_resolved(monkeypatch):
+    bot, session = _active(monkeypatch, "neg-reflux", "reflux")
+    result = bot.handle_message("neg-reflux", "no")
+    assert session.symptom_state.reflux_present is False
+    assert session.last_question != "reflux"
+    assert result["status"] != "AMBIGUOUS"
+
+
+def test_bare_no_timing_is_not_resolved(monkeypatch):
+    bot, session = _active(monkeypatch, "neg-timing", "timing")
+    result = bot.handle_message("neg-timing", "no")
+    assert session.symptom_state.night_time_symptoms is None
+    assert session.last_question == "timing"
+    assert result["status"] == "ASK"
+
+
+def test_bare_no_triggers_is_resolved(monkeypatch):
+    bot, session = _active(monkeypatch, "neg-triggers", "triggers")
+    result = bot.handle_message("neg-triggers", "no")
+    assert session.symptom_state.food_related is False
+    assert session.last_question != "triggers"
+    assert result["status"] != "AMBIGUOUS"
+
+
+def test_bare_no_swallowing_resolves_all_negative_subfields(monkeypatch):
+    bot, session = _active(monkeypatch, "neg-swallow", "swallowing")
+    result = bot.handle_message("neg-swallow", "no")
+    assert session.symptom_state.difficulty_swallowing is False
+    assert session.symptom_state.persistent_vomiting is False
+    assert session.symptom_state.vomiting_blood is False
+    assert session.last_question != "swallowing"
+    assert result["status"] != "AMBIGUOUS"
