@@ -687,6 +687,20 @@ def _question_specific_fallback(message: str, last_question: str | None, state) 
     return out
 
 
+def _is_generic_negative(n: str) -> bool:
+    """Recognize a context-free negative that can only be resolved by the active question."""
+    compact = re.sub(r"[\s,.;!?]+", " ", n).strip()
+    return bool(re.fullmatch(
+        r"(?:no|nope|nah|not really|not at all|none|nothing|"
+        r"no i don't|no i do not|i don't|i do not|i dont|i do not|"
+        r"i haven't|i have not|i havent|there isn't any|there is not any|"
+        r"there isn't|there is not|i don't have it|i don't have that|"
+        r"i do not have it|i do not have that|i dont have it|i dont have that|"
+        r"i haven't got it|i have not got it|false)",
+        compact,
+    ))
+
+
 def _deterministic_context_fallback(message: str, last_question: str | None, state) -> dict:
     """Small high-value fallback for common conversational forms.
 
@@ -697,16 +711,21 @@ def _deterministic_context_fallback(message: str, last_question: str | None, sta
     out = _question_specific_fallback(message, last_question, state)
 
     # Question-aware yes/no.
-    negative = bool(re.search(r"\b(no|nope|not really|not at all|none|i don't|i do not|i haven't|i have not|never)\b", n))
+    negative = bool(re.search(
+        r"\b(?:no|nope|nah|not really|not at all|none|nothing|"
+        r"i don't|i do not|i haven't|i have not|i dont|i havent|never)\b",
+        n,
+    ))
     affirmative = bool(re.search(r"\b(yes|yeah|yep|i do|i have|that's right|correct|definitely)\b", n))
+    generic_negative = _is_generic_negative(n)
 
-    if last_question == "blood":
-        if negative:
+    if last_question in {"blood", "bleeding"}:
+        if generic_negative or re.search(r"\b(?:no|not|never|without|don't|dont|do not|haven't|have not)\b.*\b(?:blood|bleeding)\b", n):
             out["bleeding"] = False
         elif affirmative or re.search(r"\b(blood|bleeding)\b", n):
             out["bleeding"] = True
-    elif last_question == "lump":
-        if negative or re.search(r"\bno\s+(?:lump|prolapse|bulge|bump)\b", n):
+    elif last_question in {"lump", "lump_or_prolapse"}:
+        if generic_negative or re.search(r"\b(?:no|not|never|without|don't|dont|do not|haven't|have not)\b.*\b(?:lump|prolapse|bulge|bump)\b", n):
             out["lump_or_protrusion"] = False
         elif affirmative or re.search(r"\b(lump|prolapse|bulge|bump|comes out|protrud)\b", n):
             out["lump_or_protrusion"] = True
@@ -717,18 +736,24 @@ def _deterministic_context_fallback(message: str, last_question: str | None, sta
             if 0 <= value <= 120:
                 out["age"] = value
     elif last_question in {"weight_loss", "weight_loss_duration"}:
-        out["weight_loss"] = False if negative or re.search(r"\bgained\s+(?:a little\s+)?weight\b", n) else True if affirmative or re.search(r"\b(?:lost|losing)\s+(?:a lot of\s+|significant\s+)?weight\b", n) else None
+        out["weight_loss"] = False if generic_negative or re.search(r"\b(?:no|not|never|without|don't|dont|do not|haven't|have not)\b.*\b(?:weight|lost weight)\b", n) or re.search(r"\bgained\s+(?:a little\s+)?weight\b", n) else True if affirmative or re.search(r"\b(?:lost|losing)\s+(?:a lot of\s+|significant\s+)?weight\b", n) else None
     elif last_question == "anal_pain":
-        out["pain"] = False if negative else True if affirmative or re.search(r"\b(pain|sharp|tearing|cutting)\b", n) else None
+        out["pain"] = False if generic_negative or re.search(r"\b(?:no|not|never|without|don't|dont|do not|haven't|have not)\b.*\b(?:pain|hurt|hurts|tearing|sharp|cutting)\b", n) else True if affirmative or re.search(r"\b(pain|sharp|tearing|cutting)\b", n) else None
         if out["pain"] is True and re.search(r"\b(sharp|tearing|cutting)\b", n):
             out["pain_character"] = "sharp/tearing"
     elif last_question in {"stool_straining", "constipation"}:
         no_answer = n in {"no", "nope", "nah", "none", "false"}
         yes_answer = n in {"yes", "yeah", "yep", "yup", "sure", "true"}
-        explicit_no_constipation = bool(re.search(r"\b(?:no|not|never|without|dont|don't|do not)\s+(?:have\s+)?(?:constipation|constipated)\b", n))
+        explicit_no_constipation = bool(re.search(
+            r"\b(?:no|not|never|without|dont|don't|do not)\s+"
+            r"(?:have\s+)?(?:any\s+)?(?:constipation|constipated)\b", n
+        ))
         explicit_constipation = bool(re.search(r"\b(constipation|constipated)\b", n))
 
-        if no_answer or explicit_no_constipation:
+        # This is a combined constipation/stool-straining question. A clear
+        # negative therefore answers the combined slot; it is not a global
+        # "no means false" rule.
+        if no_answer or generic_negative or explicit_no_constipation:
             out["straining"] = False
             out["hard_stools"] = False
             out["constipation"] = False
@@ -745,6 +770,18 @@ def _deterministic_context_fallback(message: str, last_question: str | None, sta
         if explicit_constipation or yes_answer:
             out["constipation"] = True
 
+    elif last_question == "hard_stools":
+        if generic_negative or re.search(r"\b(?:no|not|never|without|aren't|are not|isn't|is not|don't|dont|do not)\b.*\b(?:hard|lumpy|firm)\b", n) or re.search(r"\b(?:stools?|poop|poo)\s+(?:aren't|are not|isn't|is not)\s+(?:hard|lumpy|firm)\b", n):
+            out["hard_stools"] = False
+        elif affirmative or re.search(r"\b(?:hard|lumpy|firm)\s+(?:stools?|poop|poo)\b", n):
+            out["hard_stools"] = True
+
+    elif last_question == "straining":
+        if generic_negative or re.search(r"\b(?:no|not|never|without|don't|dont|do not)\b.*\b(?:strain|straining)\b", n):
+            out["straining"] = False
+        elif affirmative or re.search(r"\b(?:strain|straining|push hard|pushing hard)\b", n):
+            out["straining"] = True
+
     if last_question == "duration":
         duration = _duration_from_text(n)
         if duration:
@@ -754,10 +791,10 @@ def _deterministic_context_fallback(message: str, last_question: str | None, sta
         elif re.search(r"\b(a few|several)\s+days\b", n):
             out["duration"] = "3 days"
     elif last_question in {"weight_loss", "weight_loss_duration"}:
-        out["weight_loss"] = False if negative or "gained weight" in n else True if affirmative or "lost weight" in n else None
+        out["weight_loss"] = False if generic_negative or re.search(r"\b(?:no|not|never|without|don't|dont|do not|haven't|have not)\b.*\b(?:weight|lost weight)\b", n) or "gained weight" in n else True if affirmative or "lost weight" in n else None
     # stool/strain is handled in the question-aware block above.
     elif last_question in {"anal_pain", "pain_relation"}:
-        out["pain"] = False if negative else True if affirmative or re.search(r"\b(pain|sharp|tearing|cutting)\b", n) else None
+        out["pain"] = False if generic_negative or re.search(r"\b(?:no|not|never|without|don't|dont|do not|haven't|have not)\b.*\b(?:pain|hurt|hurts|tearing|sharp|cutting)\b", n) else True if affirmative or re.search(r"\b(pain|sharp|tearing|cutting)\b", n) else None
         if not negative and re.search(r"\b(sharp|tearing|cutting)\b", n):
             out["pain_character"] = "sharp/tearing"
     elif last_question == "blood_colour":
@@ -799,7 +836,7 @@ def _deterministic_context_fallback(message: str, last_question: str | None, sta
     if re.search(r"\b(on (the )?(toilet )?(paper|tissue)|when i wipe|wiping)\b", n):
         out["bleeding"] = True
         out["blood_location"] = "tissue"
-    if re.search(r"\b(blood|bleeding)\b", n) and not negative:
+    if re.search(r"\b(blood|bleeding)\b", n) and not re.search(r"\b(?:no|not|never|without|don't|dont|do not|haven't|have not)\b.*\b(?:blood|bleeding)\b", n):
         out["bleeding"] = True
         out["symptoms"].append("bleeding")
     if re.search(r"\bitch(y|ing)\b", n):

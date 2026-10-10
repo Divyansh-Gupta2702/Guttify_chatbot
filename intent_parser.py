@@ -428,6 +428,8 @@ class SymptomState:
     bowel_frequency_per_week: float = None
     bowel_frequency_per_day: float = None
     stool_form: int = None
+    # Explicit contextual boolean used when the active question asks about hard stools.
+    hard_stools: bool = None
     straining: bool = None
     incomplete_evacuation: bool = None
     abdominal_pain: bool = None

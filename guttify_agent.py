@@ -271,6 +271,7 @@ class ConversationManager:
             data["abdominal_distension"] = facts["swelling"]
 
         if isinstance(facts.get("hard_stools"), bool):
+            data["hard_stools"] = facts["hard_stools"]
             data["stool_form"] = 2 if facts["hard_stools"] else (
                 None if data.get("stool_form") in (1, 2) else data.get("stool_form")
             )
@@ -376,11 +377,15 @@ class ConversationManager:
             # a bare "yes" is not.
             "pain_relation": lambda: s.food_related is not None or s.pain_related_to_bowel_movement is not None,
             "blood": lambda: s.blood_present is not None,
+            "bleeding": lambda: s.blood_present is not None,
             "blood_colour": lambda: s.blood_colour is not None,
             "blood_location": lambda: s.blood_location is not None,
             "blood_mucus": lambda: s.blood_present is not None or s.mucus is not None,
             "anal_pain": lambda: s.sharp_pain_during_stool is not None or s.anal_pain is not None,
             "lump": lambda: s.lump_or_prolapse is not None,
+            "lump_or_prolapse": lambda: s.lump_or_prolapse is not None,
+            "hard_stools": lambda: s.hard_stools is not None,
+            "straining": lambda: s.straining is not None,
             "vomiting_fever_swelling": lambda: (
                 s.vomiting is not None and s.fever is not None and s.abdominal_distension is not None
             ),
