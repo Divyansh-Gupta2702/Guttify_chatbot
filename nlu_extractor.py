@@ -18,6 +18,8 @@ import re
 from functools import lru_cache
 from typing import Any
 
+from intent_parser import extract_food_trigger, extract_stool_form
+
 
 logger = logging.getLogger("gutgpt.nlu")
 
@@ -37,6 +39,7 @@ ALLOWED_SEVERITIES = {"mild", "moderate", "severe", "unknown"}
 SCHEMA_KEYS = {
     "intent", "symptoms", "body_areas", "duration", "severity", "pain",
     "pain_character", "pain_timing", "bleeding", "blood_type",
+    "stool_form", "food_trigger", "food_related",
     "blood_location", "itching", "burning", "swelling", "lump_or_protrusion",
     "stool_pattern", "hard_stools", "straining", "constipation",
     "loose_stools", "weight_loss", "age", "food_triggers",
@@ -47,6 +50,7 @@ SCHEMA_KEYS = {
 
 BOOL_FIELDS = {
     "pain", "bleeding", "itching", "burning", "swelling", "reflux_present",
+    "food_related",
     "lump_or_protrusion", "hard_stools", "straining", "constipation",
     "loose_stools", "weight_loss", "recent_worsening", "gas", "meal_relation", "pain_relation", "bowel_pattern",
 }
@@ -103,6 +107,9 @@ def _blank_result(intent="answer_question") -> dict:
         "swelling": None,
         "lump_or_protrusion": None,
         "stool_pattern": None,
+        "stool_form": None,
+        "food_trigger": None,
+        "food_related": None,
         "hard_stools": None,
         "straining": None,
         "constipation": None,
@@ -155,10 +162,16 @@ def _validate(raw: Any, forced_intent: str | None = None) -> dict:
         if isinstance(value, bool):
             out[key] = value
 
-    for key in ("duration", "pain_character", "pain_timing", "stool_pattern", "meal_relation", "pain_relation", "bowel_pattern", "water_intake", "fibre_intake", "medications", "meal_timing", "symptom_onset_after_food", "timing_relation"):
+    for key in ("duration", "pain_character", "pain_timing", "stool_pattern", "food_trigger", "meal_relation", "pain_relation", "bowel_pattern", "water_intake", "fibre_intake", "medications", "meal_timing", "symptom_onset_after_food", "timing_relation"):
         value = raw.get(key)
         if isinstance(value, str) and value.strip():
             out[key] = value.strip()[:160]
+
+    stool_form = raw.get("stool_form")
+    if isinstance(stool_form, int) and 1 <= stool_form <= 7:
+        out["stool_form"] = stool_form
+    elif isinstance(stool_form, str) and stool_form == "unknown":
+        out["stool_form"] = "unknown"
 
     severity = raw.get("severity")
     if isinstance(severity, (int, float)) and 0 <= float(severity) <= 10:
@@ -700,6 +713,35 @@ def _question_specific_fallback(message: str, last_question: str | None, state) 
             out["reflux_present"] = False
         elif positive or bare_yes:
             out["reflux_present"] = True
+
+    elif last_question in {"triggers", "food_trigger", "trigger"}:
+        # Food-trigger questions are finite-choice questions. Resolve common
+        # food categories deterministically so a short answer such as
+        # "dairy" never requires an LLM call.
+        trigger = extract_food_trigger(message)
+        if trigger:
+            out["food_trigger"] = trigger
+            out["food_related"] = True
+        elif re.search(r"\b(?:no|none|nothing|no particular food|not related to any food|no known trigger)\b", n):
+            out["food_related"] = False
+
+    elif last_question == "stool_form":
+        # This question is phrased as an optional Bristol-type question.
+        # A user who does not know the type has answered the question by
+        # explicitly declining/unknowning it; do not trap them in the same
+        # question forever. Otherwise accept a numeric Bristol type or a
+        # clear consistency description (hard/loose/watery).
+        if (
+            re.fullmatch(r"(?:i\s+)?(?:dont|don't|do not|don t)\s+know", n)
+            or re.fullmatch(r"(?:not sure|unsure|no idea|i have no idea)", n)
+            or re.fullmatch(r"i(?:\s+am| m)?\s+not\s+sure", n)
+            or re.fullmatch(r"(?:i\s+)?(?:cant|can t)\s+tell", n)
+        ):
+            out["stool_form"] = "unknown"
+        else:
+            value = extract_stool_form(message)
+            if value is not None:
+                out["stool_form"] = value
 
     elif last_question == "timing":
         m = re.search(r"\b(?:right\s+after|immediately\s+after|straight\s+after)\s+(?:i\s+)?eat(?:ing)?\b", n)

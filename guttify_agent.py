@@ -391,7 +391,7 @@ class ConversationManager:
         logger.info("[NLU][STATE_UPDATE] newly_added=%s", changed)
         return facts
 
-    def _apply_answer(self, session, text):
+    def _apply_answer(self, session, text, precomputed_facts=None):
         """Parse an answer using the exact question context, then merge any
         additional volunteered details without replacing the primary branch.
         """
@@ -402,7 +402,7 @@ class ConversationManager:
 
         # Deterministic contextual extractor is the first authority for the
         # active question. It may resolve multiple slots in one message.
-        contextual = extract_natural_facts(text, field, s)
+        contextual = precomputed_facts if isinstance(precomputed_facts, dict) else extract_natural_facts(text, field, s)
         if field == "vomiting_fever_swelling" and isinstance(contextual.get("swelling"), bool):
             data["abdominal_distension"] = contextual["swelling"]
 
@@ -802,7 +802,15 @@ class ConversationManager:
                 data["food_related"] = False
 
         elif field == "stool_form":
-            self._set(data, "stool_form", extract_stool_form(text))
+            if (
+                re.fullmatch(r"(?:i\s+)?(?:dont|don't|do not|don t)\s+know", n)
+                or re.fullmatch(r"(?:not sure|unsure|no idea|i have no idea)", n)
+                or re.fullmatch(r"i(?:\s+am| m)?\s+not\s+sure", n)
+                or re.fullmatch(r"(?:i\s+)?(?:cant|can t)\s+tell", n)
+            ):
+                data["stool_form"] = "unknown"
+            else:
+                self._set(data, "stool_form", extract_stool_form(text))
 
         elif field == "severity":
             value = extract_severity(text)
@@ -1284,7 +1292,7 @@ class ConversationManager:
         if pending_question:
             # Active-question resolution is the sole state mutation path while
             # a question owns the turn. Generic NLU cannot merge independently.
-            resolution = self._apply_answer(session, user_message)
+            resolution = self._apply_answer(session, user_message, nlu_facts)
             session.symptom_state.red_flags = derive_red_flags(session.symptom_state)
             logger.info(
                 "[QUESTION][CONTEXTUAL_FACTS] %s",

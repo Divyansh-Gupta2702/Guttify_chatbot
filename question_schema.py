@@ -226,7 +226,10 @@ def question_has_answer(state: Any, question_id: str | None) -> bool:
         # answer, not pre-existing pain/frequency, is required.
         return any(_has(state, f) for f in ("bloating", "diarrhea", "abdominal_pain", "constipation_explicit"))
     if question_id == "stool_form":
-        return _has(state, "stool_form")
+        # "I don't know" is a valid answer to the optional
+        # "if you know it" Bristol-type question. The sentinel prevents the
+        # questionnaire from looping while remaining clinically non-numeric.
+        return _has(state, "stool_form") or getattr(state, "stool_form", None) == "unknown"
     if question_id == "severity":
         return _has(state, "severity")
     if question_id == "pain_location":

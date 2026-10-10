@@ -75,7 +75,7 @@ def next_question(state):
     elif branch == "diarrhea":
         qs = [
             q("daily_frequency", "How many loose or watery stools are you having per day?", state.bowel_frequency_per_day is None),
-            q("stool_form", "If you know it, what Bristol Stool Scale type is it (1–7)?", state.stool_form is None),
+            q("stool_form", "If you know it, what Bristol Stool Scale type is it (1–7)?", not question_has_answer(state, "stool_form")),
             q("pain", "Do you have abdominal pain or cramps, and does it change after passing stool?", state.abdominal_pain is None or state.pain_related_to_bowel_movement is None),
             q("infection", "Did this begin after food poisoning, a stomach infection, travel, or antibiotics?", state.recent_infection is None),
             q("blood_mucus", "Any blood or mucus in the stool?", state.blood_present is None or state.mucus is None),
@@ -94,7 +94,7 @@ def next_question(state):
             q("bowel_pattern", "Do you also have constipation, diarrhea, or alternating bowel habits?", not question_has_answer(state, "bowel_pattern")),
             q("food_trigger", "Is it repeatedly linked to dairy, wheat, beans/lentils, or another particular food?", state.food_trigger is None and state.food_related is not False),
             q("pain", "Do you have recurring abdominal pain that changes with bowel movements?", state.abdominal_pain is None or state.pain_related_to_bowel_movement is None),
-            q("stool_form", "What is your usual Bristol stool type, if you know it?", state.stool_form is None),
+            q("stool_form", "What is your usual Bristol stool type, if you know it?", not question_has_answer(state, "stool_form")),
         ]
     elif branch == "stomach pain":
         qs = [
