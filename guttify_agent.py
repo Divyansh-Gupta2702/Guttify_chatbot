@@ -28,6 +28,7 @@ from clinical_rule_engine import evaluate as evaluate_screening, _duration_days
 from safety_checker import check_safety, detect_red_flags, derive_red_flags, is_pregnancy_or_lactation
 from recommendation_engine import evaluate as evaluate_product, find_named_product, has_domain_overlap, IRRELEVANT_MESSAGE, products as ALL_PRODUCTS
 from nlu_extractor import extract_natural_facts
+from question_schema import QUESTION_SCHEMA, QuestionResolution, question_has_answer
 from product_concern_router import detect_product_concerns
 
 SESSION_ENDED_MESSAGE = "This conversation has already wrapped up. Please start a new chat if you'd like help with another question."
@@ -257,9 +258,12 @@ class ConversationManager:
                 ]
             elif bp == "constipation":
                 data["constipation_explicit"] = True
+                data["diarrhea"] = False
+                data["diarrhea_explicit"] = False
             elif bp == "diarrhea":
                 data["diarrhea"] = True
                 data["diarrhea_explicit"] = True
+                data["constipation_explicit"] = False
             elif bp == "mixed":
                 data["constipation_explicit"] = True
                 data["diarrhea"] = True
@@ -337,102 +341,37 @@ class ConversationManager:
         # Explicit contextual negatives can correct stale generic positives.
         if facts.get("weight_loss") is False:
             data["weight_loss"] = False
-        if facts.get("hard_stools") is False and data.get("stool_form") in (1, 2):
-            data["stool_form"] = None
+        if facts.get("hard_stools") is False:
+            if data.get("stool_form") in (1, 2):
+                data["stool_form"] = None
+            data["secondary_symptoms"] = [
+                x for x in (data.get("secondary_symptoms") or [])
+                if x != "hard stools"
+            ]
         if facts.get("straining") is False:
             data["straining"] = False
+        if facts.get("constipation") is False:
+            data["constipation_explicit"] = False
+            data["secondary_symptoms"] = [
+                x for x in (data.get("secondary_symptoms") or [])
+                if x != "constipation"
+            ]
 
         session.symptom_state = SymptomState(**data)
 
     @staticmethod
     def _question_has_answer(session, field):
-        """Return True only when the pending question has actually been answered.
-
-        `asked_fields` records that a question was shown; it must NOT be treated
-        as proof that the user answered it. This prevents a mismatched reply
-        such as "no lump" from causing the missing stool/strain question to be
-        skipped and the assessment to terminate prematurely.
-        """
-        s = session.symptom_state
-        # Only enforce answer-consumption for question fields whose parser has
-        # an exact contextual handler. Other multi-part questions intentionally
-        # retain the existing questionnaire behavior.
-        checks = {
-            "duration": lambda: s.duration not in (None, "unknown"),
-            "age": lambda: s.age is not None,
-            "weight_loss": lambda: s.weight_loss is not None,
-            "weight_loss_duration": lambda: s.weight_loss is not None,
-            "bowel_frequency": lambda: s.bowel_frequency_per_week is not None,
-            "daily_frequency": lambda: s.bowel_frequency_per_day is not None,
-            # These are intentionally OR-based: the user may explicitly deny
-            # constipation, explicitly confirm it, or describe only one of the
-            # two supporting features (hard stools / straining).
-            "stool_straining": lambda: s.stool_form is not None or s.straining is not None or s.constipation_explicit is not None,
-            "constipation": lambda: s.stool_form is not None or s.straining is not None or s.constipation_explicit is not None,
-            "incomplete_evacuation": lambda: s.incomplete_evacuation is not None,
-            "bloating_pain": lambda: s.bloating is not None or s.abdominal_pain is not None,
-            "pain": lambda: s.abdominal_pain is not None or s.pain_related_to_bowel_movement is not None,
-            # The question explicitly asks for the relationship; either a meal
-            # relationship or a bowel-movement relationship is sufficient, but
-            # a bare "yes" is not.
-            "pain_relation": lambda: s.food_related is not None or s.pain_related_to_bowel_movement is not None,
-            "blood": lambda: s.blood_present is not None,
-            "bleeding": lambda: s.blood_present is not None,
-            "blood_colour": lambda: s.blood_colour is not None,
-            "blood_location": lambda: s.blood_location is not None,
-            "blood_mucus": lambda: s.blood_present is not None or s.mucus is not None,
-            "anal_pain": lambda: s.sharp_pain_during_stool is not None or s.anal_pain is not None,
-            "lump": lambda: s.lump_or_prolapse is not None,
-            "lump_or_prolapse": lambda: s.lump_or_prolapse is not None,
-            "hard_stools": lambda: s.hard_stools is not None,
-            "straining": lambda: s.straining is not None,
-            "vomiting_fever_swelling": lambda: (
-                s.vomiting is not None and s.fever is not None and s.abdominal_distension is not None
-            ),
-            "vomiting_fever": lambda: s.vomiting is not None and s.fever is not None,
-            "water": lambda: s.water_intake is not None,
-            "fibre": lambda: s.fibre_intake is not None,
-            "medications": lambda: s.medications is not None,
-            "infection": lambda: s.recent_infection is not None,
-            "night_weight_fever": lambda: s.night_time_symptoms is not None or s.weight_loss is not None or s.fever is not None,
-            "swallowing": lambda: s.difficulty_swallowing is not None or s.persistent_vomiting is not None or s.vomiting_blood is not None,
-            "weight_swallow": lambda: s.weight_loss is not None or s.difficulty_swallowing is not None or s.persistent_vomiting is not None or s.vomiting_blood is not None,
-            "upper_symptoms": lambda: s.abdominal_pain is not None,
-            "symptoms": lambda: s.abdominal_pain is not None or s.bloating is not None or s.diarrhea is not None or "constipation" in (s.secondary_symptoms or []),
-            "stool_form": lambda: s.stool_form is not None,
-            "severity": lambda: s.severity not in (None, "unknown"),
-            "pain_location": lambda: s.pain_location is not None,
-            "bowel_pattern": lambda: (
-                s.diarrhea is not None
-                or s.constipation_explicit is not None
-                or s.bowel_frequency_per_week is not None
-                or (s.stool_form is None and s.primary_symptom is not None and getattr(s, "diarrhea_explicit", None) is False and s.constipation_explicit is False)
-            ),
-            "reflux": lambda: getattr(s, "reflux_present", None) is not None,
-            # For trigger questions, food_related=False is a valid explicit
-            # answer meaning that no repeatable food/meal trigger was reported.
-            "timing": lambda: s.night_time_symptoms is not None,
-            "triggers": lambda: s.food_trigger is not None or s.food_related is False,
-            "food_trigger": lambda: s.food_trigger is not None or s.food_related is False,
-            "food_relation": lambda: s.food_related is not None,
-            "trigger": lambda: s.food_trigger is not None or s.food_related is False,
-        }
-        check = checks.get(field)
-        if check is None:
-            return True
-        return bool(check())
+        """Single authoritative semantic question-completion check."""
+        return question_has_answer(session.symptom_state, field)
 
     def _run_nlu(self, session, text):
         before = session.symptom_state.to_dict()
         current_question = session.last_question
         facts = extract_natural_facts(text, current_question, session.symptom_state)
-        self._apply_nlu_facts(session, facts)
+        # IMPORTANT: extraction is observational here. It must not mutate
+        # state before active-question ownership has resolved the answer.
         after = session.symptom_state.to_dict()
-
-        changed = {}
-        for key, value in after.items():
-            if before.get(key) != value and value not in (None, [], "unknown"):
-                changed[key] = value
+        changed = {k: v for k, v in facts.items() if v not in (None, [], "", False)}
 
         logger.info("[NLU][QUESTION_CONTEXT] last_question=%s", current_question)
         logger.info("[NLU][RAW] %r", text)
@@ -448,7 +387,7 @@ class ConversationManager:
                                [session.symptom_state.primary_symptom] +
                                (session.symptom_state.secondary_symptoms or []))),
         )
-        logger.info("[NLU][QUESTION_RESOLUTION] field=%s answered=%s", current_question, self._question_has_answer(session, current_question) if current_question else True)
+        logger.info("[NLU][EXTRACTION] active_question=%s contextual_candidate=%s", current_question, {k:v for k,v in facts.items() if v not in (None, [], "", False)})
         logger.info("[NLU][STATE_UPDATE] newly_added=%s", changed)
         return facts
 
@@ -464,6 +403,38 @@ class ConversationManager:
         # Deterministic contextual extractor is the first authority for the
         # active question. It may resolve multiple slots in one message.
         contextual = extract_natural_facts(text, field, s)
+        if field == "vomiting_fever_swelling" and isinstance(contextual.get("swelling"), bool):
+            data["abdominal_distension"] = contextual["swelling"]
+
+        # Question-aware NLU facts that map 1:1 to state slots are applied
+        # before legacy compatibility handlers. These are contextual facts,
+        # not generic extraction.
+        for _key in (
+            "vomiting", "fever", "weight_loss", "hard_stools", "straining",
+            "incomplete_evacuation", "recent_worsening", "reflux_present",
+            "difficulty_swallowing", "persistent_vomiting", "vomiting_blood",
+            "lump_or_protrusion", "meal_relation", "gas", "itching", "burning",
+            "swelling", "constipation", "loose_stools",
+        ):
+            if isinstance(contextual.get(_key), bool):
+                if _key == "lump_or_protrusion":
+                    data["lump_or_prolapse"] = contextual[_key]
+                elif _key == "constipation":
+                    data["constipation_explicit"] = contextual[_key]
+                elif _key == "loose_stools":
+                    data["diarrhea"] = contextual[_key]
+                    data["diarrhea_explicit"] = contextual[_key]
+                elif _key == "meal_relation":
+                    data["food_related"] = contextual[_key]
+                else:
+                    data[_key] = contextual[_key]
+                    if _key == "hard_stools" and contextual[_key] is False:
+                        data["stool_form"] = None
+                        data["secondary_symptoms"] = [
+                            x for x in (data.get("secondary_symptoms") or [])
+                            if x != "hard stools"
+                        ]
+
 
         # The contextual NLU is authoritative for the active question. The
         # legacy field-specific parsers below remain as compatibility fallbacks,
@@ -478,7 +449,7 @@ class ConversationManager:
             "weight_loss": "weight_loss",
             "weight_loss_duration": "weight_loss",
             "infection": "recent_infection",
-            "timing": "night_time_symptoms",
+            "timing": "timing_relation",
         }
         key = contextual_to_state.get(field)
         if key and isinstance(contextual.get(key), bool):
@@ -495,16 +466,32 @@ class ConversationManager:
             else:
                 data[key] = contextual[key]
 
+        if field == "timing":
+            for k in ("meal_timing", "symptom_onset_after_food", "timing_relation"):
+                if contextual.get(k) is not None:
+                    data[k] = contextual[k]
+            # Preserve legacy night flag for downstream rules, while timing_relation
+            # remains the authoritative completion slot.
+            if contextual.get("timing_relation") == "at_night":
+                data["night_time_symptoms"] = True
+            elif contextual.get("timing_relation") == "not_meal_related":
+                data["night_time_symptoms"] = False
+
         if isinstance(contextual.get("incomplete_evacuation"), bool):
             data["incomplete_evacuation"] = contextual["incomplete_evacuation"]
         if isinstance(contextual.get("pain_related_to_bowel_movement"), bool):
             data["pain_related_to_bowel_movement"] = contextual["pain_related_to_bowel_movement"]
         if isinstance(contextual.get("water_intake"), str):
-            data["water_intake"] = contextual["water_intake"]
+            m_water = re.search(r"(\d+(?:\.\d+)?)", contextual["water_intake"])
+            data["water_intake"] = (m_water.group(1) + " L") if m_water else contextual["water_intake"]
         if isinstance(contextual.get("fibre_intake"), str):
             data["fibre_intake"] = contextual["fibre_intake"]
         if isinstance(contextual.get("medications"), str):
             data["medications"] = contextual["medications"]
+        if field == "age" and contextual.get("age") is not None:
+            data["age"] = contextual["age"]
+        if field == "duration" and contextual.get("duration"):
+            data["duration"] = contextual["duration"]
 
         if field == "severity" and contextual.get("severity") is not None:
             data["severity"] = contextual["severity"]
@@ -523,9 +510,12 @@ class ConversationManager:
                 ]
             elif bp == "constipation":
                 data["constipation_explicit"] = True
+                data["diarrhea"] = False
+                data["diarrhea_explicit"] = False
             elif bp == "diarrhea":
                 data["diarrhea"] = True
                 data["diarrhea_explicit"] = True
+                data["constipation_explicit"] = False
             elif bp == "mixed":
                 data["constipation_explicit"] = True
                 data["diarrhea"] = True
@@ -542,10 +532,16 @@ class ConversationManager:
                 data["pain_related_to_bowel_movement"] = False
 
         if field == "duration":
-            self._set(data, "duration", extract_duration(text))
+            if contextual.get("duration"):
+                data["duration"] = contextual["duration"]
+            else:
+                self._set(data, "duration", extract_duration(text))
 
         elif field == "age":
-            self._set(data, "age", extract_age(text))
+            if contextual.get("age") is not None:
+                data["age"] = contextual["age"]
+            else:
+                self._set(data, "age", extract_age(text))
 
         elif field == "bowel_frequency":
             value = extract_bowel_frequency(text)
@@ -570,8 +566,16 @@ class ConversationManager:
             elif n in {"no", "nope", "nah", "none", "false"}:
                 v = False
             else:
-                v = extract_bool(text, ["strain", "straining", "push hard", "pushing hard"], ["no strain", "without straining"])
+                v = extract_bool(
+                    text,
+                    ["strain", "straining", "push hard", "pushing hard"],
+                    ["no strain", "no straining", "without straining", "don't strain", "dont strain", "do not strain", "not strain", "never strain", "don't have to strain", "dont have to strain", "do not have to strain"],
+                )
             self._set(data, "straining", v)
+            # A natural-language combined negative answers both requested
+            # dimensions, even when it does not literally say "constipation".
+            if data.get("hard_stools") is False and data.get("straining") is False:
+                data["constipation_explicit"] = False
 
             # Explicit constipation answers are useful even when the user does
             # not specify which supporting feature they mean.
@@ -643,21 +647,20 @@ class ConversationManager:
             data["weight_loss_duration_asked"] = True
 
         elif field == "vomiting_fever_swelling":
-            if n in {"yes", "yeah", "yep", "yup", "sure", "true"}:
-                # A bare yes is ambiguous for a 3-part question; leave the
-                # fields unset so the caller asks a targeted clarification.
-                pass
-            else:
-                self._set(data, "vomiting", extract_bool(text, ["vomiting", "vomit", "throwing up"], ["no vomiting", "not vomiting", "no"]))
-                self._set(data, "fever", extract_bool(text, ["fever", "high temperature"], ["no fever", "no"]))
-                self._set(data, "abdominal_distension", extract_bool(text, ["severe swelling", "severe abdominal swelling", "severe abdominal distension", "very swollen"], ["no severe swelling", "no swelling", "no"]))
+            if n not in {"yes", "yeah", "yep", "yup", "sure", "true"}:
+                if contextual.get("vomiting") is None:
+                    self._set(data, "vomiting", extract_bool(text, ["vomiting", "vomit", "throwing up"], ["no vomiting", "not vomiting", "no"]))
+                if contextual.get("fever") is None:
+                    self._set(data, "fever", extract_bool(text, ["fever", "high temperature"], ["no fever", "no"]))
+                if contextual.get("swelling") is None:
+                    self._set(data, "abdominal_distension", extract_bool(text, ["severe swelling", "severe abdominal swelling", "severe abdominal distension", "very swollen"], ["no severe swelling", "no swelling", "no"]))
 
         elif field == "vomiting_fever":
-            if n in {"yes", "yeah", "yep", "yup", "sure", "true"}:
-                pass
-            else:
-                self._set(data, "vomiting", extract_bool(text, ["vomiting", "vomit", "throwing up"], ["no vomiting", "not vomiting", "no"]))
-                self._set(data, "fever", extract_bool(text, ["fever", "high temperature"], ["no fever", "no"]))
+            if n not in {"yes", "yeah", "yep", "yup", "sure", "true"}:
+                if contextual.get("vomiting") is None:
+                    self._set(data, "vomiting", extract_bool(text, ["vomiting", "vomit", "throwing up"], ["no vomiting", "not vomiting", "no"]))
+                if contextual.get("fever") is None:
+                    self._set(data, "fever", extract_bool(text, ["fever", "high temperature"], ["no fever", "no"]))
 
         elif field == "blood_mucus":
             if n in {"yes", "yeah", "yep", "yup", "sure", "true"}:
@@ -674,7 +677,8 @@ class ConversationManager:
         elif field == "water":
             water, _ = extract_lifestyle(text)
             if water:
-                data["water_intake"] = water
+                m_water = re.search(r"(\d+(?:\.\d+)?)", water)
+                data["water_intake"] = (m_water.group(1) + " L") if m_water else water
             else:
                 m = re.search(r"\b(\d+(?:\.\d+)?)\s*(?:litres?|liters?|litters?|l)\b", n)
                 if m:
@@ -758,20 +762,22 @@ class ConversationManager:
         elif field == "reflux":
             # `reflux_present` is a questionnaire slot only; it is deliberately
             # separate from `food_related`, which means meal association.
-            data["reflux_present"] = extract_bool(
-                text,
-                ["acid coming back up", "acid reflux", "sour taste", "food coming back up", "regurgitation", "yes"],
-                ["no acid coming up", "no reflux", "no sour taste", "no food coming back up", "no"]
-            )
+            if contextual.get("reflux_present") is not None:
+                data["reflux_present"] = contextual["reflux_present"]
+            else:
+                data["reflux_present"] = extract_bool(
+                    text,
+                    ["acid coming back up", "acid reflux", "sour taste", "food coming back up", "regurgitation", "yes"],
+                    ["no acid coming up", "no reflux", "no sour taste", "no food coming back up", "no"]
+                )
 
         elif field == "timing":
-            # This is a timing/choice question, not a boolean presence question.
-            # A bare "no" does not answer "How soon after eating does it start?"
-            # and must therefore keep the question active. Only explicit timing
-            # language can resolve this field.
-            if re.search(r"\b(at night|during the night|when lying down|while lying down|when i lie down)\b", n):
+            for k in ("meal_timing", "symptom_onset_after_food", "timing_relation"):
+                if contextual.get(k) is not None:
+                    data[k] = contextual[k]
+            if contextual.get("timing_relation") == "at_night":
                 data["night_time_symptoms"] = True
-            elif re.search(r"\b(not at night|does not happen at night|doesn't happen at night|not when lying down|not lying down|not after eating|not after meals|not related to meals)\b", n):
+            elif contextual.get("timing_relation") == "not_meal_related":
                 data["night_time_symptoms"] = False
 
         elif field == "food_relation":
@@ -840,36 +846,111 @@ class ConversationManager:
                 data["diarrhea"] = False
                 data["secondary_symptoms"] = [x for x in (data.get("secondary_symptoms") or []) if x != "diarrhea"]
 
-        # Generic merge captures facts the user volunteered in addition to the answer.
-        # A bare yes/no is already interpreted against the exact pending question
-        # above. Passing it through generic extraction would otherwise make every
-        # boolean field True/False (e.g. "Yes" to anal pain becomes vomiting,
-        # fever, weight loss, etc.).
-        if n in {"yes", "yeah", "yep", "yup", "sure", "true", "no", "nope", "nah", "none", "false"}:
-            merged_state = SymptomState(**data)
-            merged_data = merged_state.to_dict()
-        else:
-            merged = merge_state(SymptomState(**data), text, [])
-            merged_data = merged.to_dict()
-        # Contextual answers always win over generic extraction. This is
-        # important for short numeric answers such as "5" to severity: the
-        # generic parser must not reinterpret them as an age.
-        for key, value in data.items():
-            if value is not None:
-                merged_data[key] = value
+        # Generic extraction is subordinate to the active question. It may add
+        # clearly explicit volunteered facts, but contextual/implicit facts that
+        # belong to another field are discarded.
+        merged = merge_state(SymptomState(**data), text, [])
+        merged_data = merged.to_dict()
 
-        # A contextual numeric/lifestyle answer must not be reinterpreted by
-        # the generic parser as an unrelated clinical score. For example,
-        # "3 litters" is water intake, not pain severity 3. Preserve the
-        # pre-merge severity unless the same message explicitly contains a
-        # severity expression.
-        if field == "water" and contextual.get("water_intake"):
-            if not re.search(r"\b(?:pain|severity)\s*(?:is|of|around|about)?\s*\d|\b\d+\s*/\s*10\b", n):
-                merged_data["severity"] = data.get("severity")
+        active_owned = set((QUESTION_SCHEMA.get(field).fields if QUESTION_SCHEMA.get(field) else set()))
+        normalized = n
 
+        def explicit_field(f):
+            patterns = {
+                "duration": r"\b(?:for|since|started|began|been having|lasting|lasted|ago)\b.{0,80}\b(?:\d+(?:\.\d+)?|one|two|three|four|five|six|seven|eight|nine|ten)\s*(?:hours?|days?|weeks?|months?|years?)\b",
+                "age": r"\b(?:i am|i'm|im|my age is|aged)\s*\d{1,3}\b",
+                "severity": r"\b(?:pain|severity)\s*(?:is|of|around|about)?\s*(?:10|[0-9])(?:\s*/\s*10)?\b",
+                "weight_loss": r"\b(?:lost|losing|loss of|gained|put on)\s+(?:a little\s+|significant\s+|any\s+)?weight\b",
+                "blood_present": r"\b(?:blood|bleeding|blood in stool|rectal bleeding)\b",
+                "blood_colour": r"\b(?:bright red|fresh red|dark|black|tarry)\b",
+                "blood_location": r"\b(?:toilet paper|tissue|dripping|mixed into the stool)\b",
+                "reflux_present": r"\b(?:acid reflux|acid coming back up|sour taste|food coming back up|regurgitation)\b",
+                "vomiting": r"\b(?:vomit(?:ing)?|throwing up)\b",
+                "fever": r"\bfever\b",
+                "abdominal_distension": r"\b(?:severe swelling|abdominal swelling|abdominal distension|very swollen)\b",
+                "difficulty_swallowing": r"\b(?:difficulty|trouble|painful) swallowing\b",
+                "persistent_vomiting": r"\b(?:persistent vomiting|vomiting repeatedly|can't stop vomiting|cant stop vomiting)\b",
+                "vomiting_blood": r"\b(?:vomiting blood|throwing up blood|hematemesis)\b",
+                "water_intake": r"\b\d+(?:\.\d+)?\s*(?:litres?|liters?|l)\b",
+                "fibre_intake": r"\b(?:low|average|normal|high|good|poor)\s+(?:fibre|fiber)\b",
+                "medications": r"\b(?:medicine|medication|medicines|supplement|supplements|taking)\b",
+                "recent_infection": r"\b(?:infection|food poisoning|gastroenteritis|antibiotics|travel)\b",
+                "recent_worsening": r"\b(?:getting worse|worsening|worsened|not getting worse|stable|unchanged|no change)\b",
+                "food_related": r"\b(?:after meals?|after eating|after food|related to meals?|not related to meals?)\b",
+                "food_trigger": r"\b(?:trigger|triggers|dairy|wheat|beans?|lentils?|spicy|oily|coffee|tea)\b",
+                "pain_related_to_bowel_movement": r"\b(?:after bowel movement|after stool|related to bowel movement|changes? with bowel movement|not related to bowel movement)\b",
+                "pain_location": r"\b(?:upper|lower|right|left|navel|belly button)\b",
+                "anal_pain": r"\b(?:anal pain|sharp pain|tearing pain|pain during stool)\b",
+                "lump_or_prolapse": r"\b(?:lump|prolapse|protrud)\b",
+                "hard_stools": r"\b(?:hard|lumpy|firm|normal|soft)\s+(?:stools?|poop)\b|\b(?:stools?|poop|poo)\s+(?:are|is)\s+(?:hard|lumpy|firm|normal|soft)\b",
+                "straining": r"\b(?:strain|straining|push hard|pushing hard)\b",
+                "incomplete_evacuation": r"\b(?:incomplete|not completely empty|not fully empty|still feel like i need to go)\b",
+                "night_time_symptoms": r"\b(?:at night|wakes? me at night|when lying down)\b",
+                "bowel_frequency_per_week": r"\b\d+(?:\.\d+)?\s*(?:bowel movements?|times?|motions?)\s*(?:per|a)\s*week\b",
+                "bowel_frequency_per_day": r"\b\d+(?:\.\d+)?\s*(?:bowel movements?|times?|stools?|motions?)\s*(?:per|a)\s*day\b",
+                "stool_form": r"\b(?:bristol|stool (?:type|form))\s*[1-7]\b",
+                "meal_timing": r"\b(?:after meals?|after eating|right after eating|immediately after eating|\d+(?:\.\d+)?\s*(?:minutes?|hours?) later|when i lie down|at night|not related to meals?)\b",
+                "symptom_onset_after_food": r"\b(?:right after|immediately after|\d+(?:\.\d+)?\s*(?:minutes?|hours?)\s+(?:later|after))\b",
+                "timing_relation": r"\b(?:after meals?|after eating|when i lie down|at night|not related to meals?)\b",
+            }
+            pat = patterns.get(f)
+            return bool(pat and re.search(pat, normalized))
+
+        # Restore every unrelated field unless it was explicitly volunteered.
+        # This prevents generic numeric/keyword extraction from contaminating
+        # the active question (e.g. "34 years" -> duration).
+        if field and QUESTION_SCHEMA.get(field):
+            for k, old_value in s.to_dict().items():
+                if k in active_owned:
+                    # The active question owns this slot. Generic extraction
+                    # never wins over the contextual value (including None).
+                    merged_data[k] = data.get(k)
+                    continue
+                if explicit_field(k):
+                    continue
+                if old_value != merged_data.get(k):
+                    merged_data[k] = old_value
+
+        # Explicit negatives are first-class and can correct stale values, but
+        # only when the user's message explicitly names the affected concept.
+        if re.search(r"\b(?:no|not|never|without|don't|dont|do not|haven't|have not)\b", normalized):
+            if re.search(r"\b(?:blood|bleeding)\b", normalized) and not re.search(r"\b(?:no|not|never|without)\b.{0,35}\b(?:exception|but)\b", normalized):
+                merged_data["blood_present"] = False if re.search(r"\b(?:no|not|never|without)\b.{0,35}\b(?:blood|bleeding)\b", normalized) else merged_data.get("blood_present")
+            if re.search(r"\b(?:weight loss|lost weight)\b", normalized) and re.search(r"\b(?:no|not|never|without|haven't|have not)\b.{0,35}\b(?:weight|lost weight)\b", normalized):
+                merged_data["weight_loss"] = False
+
+        if field == "hard_stools" and data.get("hard_stools") is False:
+            merged_data["stool_form"] = None
+            merged_data["secondary_symptoms"] = [
+                x for x in (merged_data.get("secondary_symptoms") or [])
+                if x != "hard stools"
+            ]
+        discarded = {}
+        if field and QUESTION_SCHEMA.get(field):
+            for k, value in merged.to_dict().items():
+                if value not in (None, [], "", "unknown") and merged_data.get(k) != value:
+                    discarded[k] = value
+        if discarded:
+            logger.info("[QUESTION][DISCARDED_UNRELATED_FACTS] %s", discarded)
         merged_state = SymptomState(**merged_data)
         merged_state.red_flags = derive_red_flags(merged_state)
         session.symptom_state = merged_state
+        state_changes = {
+            k: v for k, v in merged_state.to_dict().items()
+            if s.to_dict().get(k) != v and v not in (None, [], "unknown")
+        }
+        if state_changes:
+            logger.info("[QUESTION][STATE_UPDATE] %s", state_changes)
+        return QuestionResolution(
+            field=field,
+            answered=question_has_answer(session.symptom_state, field),
+            values={
+                k: getattr(session.symptom_state, k, None)
+                for k in (QUESTION_SCHEMA.get(field).fields if QUESTION_SCHEMA.get(field) else set())
+            },
+            confidence=float(contextual.get("confidence") or 0.0),
+            clarification_needed=not question_has_answer(session.symptom_state, field),
+        )
 
     def _can_assess(self, session, screening):
         s = session.symptom_state
@@ -1030,7 +1111,19 @@ class ConversationManager:
 
     @staticmethod
     def _remember_recommendation(session, result):
-        """Record the product already shown so later messages do not rerun diagnosis."""
+        """Record a recommendation only after all active questions are resolved."""
+        if session.last_question and not question_has_answer(session.symptom_state, session.last_question):
+            logger.error(
+                "[QUESTION][INVARIANT_VIOLATION] recommendation_blocked field=%s",
+                session.last_question,
+            )
+            return {
+                "status": "ASK",
+                "message": "I still need an answer to the question above before I can complete the assessment.",
+                "recommendations": [],
+                "screening": result.get("screening"),
+                "safety": result.get("safety"),
+            }
         recommendations = result.get("recommendations") or []
         if recommendations:
             session.last_product = recommendations[0]
@@ -1095,7 +1188,10 @@ class ConversationManager:
 
         if is_greeting(user_message):
             return {"status": "GREETING", "message": random_greeting_response(), "recommendations": []}
-        if is_gibberish(user_message):
+        # A pending questionnaire question owns the turn. Numeric/short answers
+        # such as "34 years", "7", "no", and "2.5 litres" must never be rejected
+        # by the generic gibberish detector before contextual resolution.
+        if not session.last_question and is_gibberish(user_message):
             return {"status": "GIBBERISH", "message": random_gibberish_response(), "recommendations": []}
 
         # A final diagnosis is a terminal state for the clinical pipeline.
@@ -1185,9 +1281,21 @@ class ConversationManager:
 
         # Keep the existing deterministic parser as a second layer.
         if pending_question:
-            self._apply_answer(session, user_message)
-            self._apply_nlu_facts(session, nlu_facts)
+            # Active-question resolution is the sole state mutation path while
+            # a question owns the turn. Generic NLU cannot merge independently.
+            resolution = self._apply_answer(session, user_message)
             session.symptom_state.red_flags = derive_red_flags(session.symptom_state)
+            logger.info(
+                "[QUESTION][CONTEXTUAL_FACTS] %s",
+                resolution.values if resolution else {},
+            )
+            logger.info(
+                "[QUESTION][RESOLUTION] field=%s answered=%s confidence=%.2f clarification_needed=%s",
+                pending_question,
+                resolution.answered if resolution else False,
+                resolution.confidence if resolution else 0.0,
+                resolution.clarification_needed if resolution else True,
+            )
 
             # Safety overrides question completeness: a newly extracted red
             # flag must stop the assessment even when a multi-part question
@@ -1322,6 +1430,18 @@ class ConversationManager:
                 "status": "ASK",
                 "message": "I'm not completely sure I understood the main symptom. Could you tell me whether you're mainly experiencing pain, bleeding, itching, constipation, loose stools, bloating, acidity, or another digestive symptom?",
                 "recommendations": [],
+            }
+
+        if session.last_question and not question_has_answer(session.symptom_state, session.last_question):
+            logger.error(
+                "[QUESTION][BLOCK] unresolved_active_question_before_diagnosis field=%s",
+                session.last_question,
+            )
+            return {
+                "status": "ASK",
+                "message": "I still need an answer to the question above before I can complete the assessment.",
+                "recommendations": [],
+                "safety": safety,
             }
 
         screening = evaluate_screening(session.symptom_state)

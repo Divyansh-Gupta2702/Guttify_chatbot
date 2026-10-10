@@ -70,6 +70,7 @@ def test_negated_stool_facts_are_not_created_by_nlu():
     for message in [
         "I have bright red blood when I poop",
         "2 months",
+        "no weight loss",
         "23",
         "on tissue",
         "no sharp pain",
@@ -104,6 +105,7 @@ def test_active_question_interprets_natural_stool_negative():
     cm.handle_message(sid, "I have constipation")
     cm.handle_message(sid, "2 weeks")
     cm.handle_message(sid, "23")
+    cm.handle_message(sid, "2 times a week")
     cm.handle_message(sid, "No, my stools are pretty normal and I don't have to strain.")
     state = visible_state(cm, sid)
     assert state["straining"] is False

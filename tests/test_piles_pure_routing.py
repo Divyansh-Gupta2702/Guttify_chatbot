@@ -16,7 +16,7 @@ def test_explicit_piles_reaches_piles_pure_without_bleeding():
     sid = "explicit-piles"
     result = cm.handle_message(sid, "I have piles")
     assert result["status"] == "ASK"
-    for message in ["2 months", "23", "no bleeding", "no sharp pain", "no lump", "no hard stools and no straining"]:
+    for message in ["2 months", "no weight loss", "23", "no bleeding", "no sharp pain", "no lump", "no hard stools and no straining"]:
         result = cm.handle_message(sid, message)
     assert result["status"] in ("RECOMMENDATION_FOUND", "AMBIGUOUS")
     names = {p["product_name"] for p in result["recommendations"]}
@@ -30,7 +30,7 @@ def test_explicit_hemorrhoids_reaches_piles_pure():
     cm = ConversationManager()
     sid = "hemorrhoids"
     result = cm.handle_message(sid, "I have hemorrhoids")
-    for message in ["1 month", "30", "no bleeding", "no sharp pain", "no lump", "no hard stools and no straining"]:
+    for message in ["1 month", "no weight loss", "30", "no bleeding", "no sharp pain", "no lump", "no hard stools and no straining"]:
         result = cm.handle_message(sid, message)
     names = {p["product_name"] for p in result["recommendations"]}
     assert "Piles Pure" in names

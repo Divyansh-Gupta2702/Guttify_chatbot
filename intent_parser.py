@@ -422,6 +422,10 @@ class SymptomState:
     # Questionnaire-only slot for the acidity/heartburn reflux question.
     # Keep it separate from food_related, which represents meal association.
     reflux_present: bool = None
+    # Distinct timing representation: meal relation and onset interval are not symptom duration.
+    meal_timing: str = None
+    symptom_onset_after_food: str = None
+    timing_relation: str = None
     severity: str = "unknown"
     duration: str = "unknown"
     age: int = None
@@ -483,18 +487,19 @@ class SymptomState:
 
 def extract_symptoms(text):
     n = normalize(text)
-    found = []
+    positions = {}
     for canonical, pattern in _PATTERNS:
-        if canonical in found:
+        if canonical in positions:
             continue
         match = pattern.search(n)
         if match:
             phrase = match.group(0)
             if not is_negated(n, phrase):
-                found.append(canonical)
-    if not found:
+                positions[canonical] = match.start()
+    if not positions:
         return None, []
-    return found[0], found[1:]
+    ordered = [name for name, _ in sorted(positions.items(), key=lambda item: item[1])]
+    return ordered[0], ordered[1:]
 
 
 def extract_food_trigger(text):
@@ -536,6 +541,15 @@ def extract_named_aspect(text):
 
 def extract_duration(text):
     n = normalize(text)
+
+    # Natural word-number durations: "for two weeks", "three days", etc.
+    word_num = {
+        "one": 1, "two": 2, "three": 3, "four": 4, "five": 5,
+        "six": 6, "seven": 7, "eight": 8, "nine": 9, "ten": 10,
+    }
+    m_word = re.search(r"\b(?:for\s+)?(one|two|three|four|five|six|seven|eight|nine|ten)\s+(hours?|days?|weeks?|months?|years?)\b", n)
+    if m_word:
+        return f"{word_num[m_word.group(1)]} {m_word.group(2)}"
 
     # Standard numeric durations, including hour-based answers and ranges.
     m = re.search(
@@ -708,6 +722,9 @@ def extract_bool(text, positives, negatives):
 
 def extract_stool_form(text):
     n = normalize(text)
+    # Negation must win over keyword detection: "no hard stools" is not Bristol 2.
+    if re.search(r"\b(?:no|not|never|without|don't|dont|do not|aren't|are not|isn't|is not)\b.{0,35}\b(?:hard|lumpy|firm|pellet)\s+(?:stools?|poop|poo)\b", n):
+        return None
     m = re.search(r"\b(?:bristol(?:\s+stool)?(?:\s+type|\s+scale)?|stool\s+(?:type|form))\s*([1-7])\b", n)
     if m:
         return int(m.group(1))

@@ -13,6 +13,7 @@ import os
 import uuid
 import time
 import logging
+import subprocess
 from threading import RLock
 
 from fastapi import FastAPI, HTTPException
@@ -31,9 +32,11 @@ from guttify_agent import ConversationManager
 from guttify_chatbot import _deterministic_product_reply, _deterministic_screening_reply
 BASE_DIR = Path(__file__).resolve().parent
 WIDGET_FILE = BASE_DIR / "gutgpt-widget.js"
+VERSION_FILE = BASE_DIR / "VERSION.txt"
+QUESTION_FLOW_SCHEMA_VERSION = "v18.1"
 FRONTEND_FILE = BASE_DIR / "index.html"
 
-app = FastAPI(title="GutGPT API", version="1.0.0")
+app = FastAPI(title="GutGPT API", version="18.1.0")
 
 # Shopify storefront origins are supplied as a comma-separated environment
 # variable, for example:
@@ -69,6 +72,21 @@ def validate_production_configuration():
             "Missing required production environment variable(s): "
             + ", ".join(missing)
         )
+    try:
+        version = VERSION_FILE.read_text(encoding="utf-8").strip() if VERSION_FILE.exists() else "unknown"
+    except Exception:
+        version = "unknown"
+    try:
+        git_sha = subprocess.check_output(
+            ["git", "rev-parse", "--short", "HEAD"], cwd=BASE_DIR, stderr=subprocess.DEVNULL,
+            text=True, timeout=2,
+        ).strip() or "not-a-git-checkout"
+    except Exception:
+        git_sha = os.getenv("GIT_SHA", "unknown")
+    logger.info(
+        "GutGPT build fingerprint: version=%s git_sha=%s question_flow_schema=%s",
+        version, git_sha, QUESTION_FLOW_SCHEMA_VERSION,
+    )
     logger.info(
         "GutGPT production configuration validated: origins=%d session_ttl=%ss max_sessions=%d",
         len(allowed_origins), SESSION_TTL_SECONDS, MAX_SESSIONS,

@@ -42,11 +42,11 @@ SCHEMA_KEYS = {
     "loose_stools", "weight_loss", "age", "food_triggers",
     "aggravating_factors", "relieving_factors", "red_flags",
     "new_information", "confidence", "recent_worsening", "gas", "meal_relation", "pain_relation", "bowel_pattern",
-    "water_intake", "fibre_intake", "medications", "incomplete_evacuation", "pain_related_to_bowel_movement",
+    "water_intake", "fibre_intake", "medications", "incomplete_evacuation", "pain_related_to_bowel_movement", "reflux_present", "meal_timing", "symptom_onset_after_food", "timing_relation",
 }
 
 BOOL_FIELDS = {
-    "pain", "bleeding", "itching", "burning", "swelling",
+    "pain", "bleeding", "itching", "burning", "swelling", "reflux_present",
     "lump_or_protrusion", "hard_stools", "straining", "constipation",
     "loose_stools", "weight_loss", "recent_worsening", "gas", "meal_relation", "pain_relation", "bowel_pattern",
 }
@@ -125,6 +125,10 @@ def _blank_result(intent="answer_question") -> dict:
         "medications": None,
         "incomplete_evacuation": None,
         "pain_related_to_bowel_movement": None,
+        "reflux_present": None,
+        "meal_timing": None,
+        "symptom_onset_after_food": None,
+        "timing_relation": None,
     }
 
 
@@ -151,7 +155,7 @@ def _validate(raw: Any, forced_intent: str | None = None) -> dict:
         if isinstance(value, bool):
             out[key] = value
 
-    for key in ("duration", "pain_character", "pain_timing", "stool_pattern", "meal_relation", "pain_relation", "bowel_pattern", "water_intake", "fibre_intake", "medications"):
+    for key in ("duration", "pain_character", "pain_timing", "stool_pattern", "meal_relation", "pain_relation", "bowel_pattern", "water_intake", "fibre_intake", "medications", "meal_timing", "symptom_onset_after_food", "timing_relation"):
         value = raw.get(key)
         if isinstance(value, str) and value.strip():
             out[key] = value.strip()[:160]
@@ -647,6 +651,49 @@ def _question_specific_fallback(message: str, last_question: str | None, state) 
         elif re.search(r"\b(?:around\s+(?:the\s+)?navel|belly button)\b", n):
             out["pain_location"] = "around navel"
 
+    elif last_question == "reflux":
+        positive = bool(re.search(r"\b(?:sour taste|acid coming back up|acid reflux|food coming back up|regurgitation)\b", n))
+        negative_reflux = bool(re.search(r"\b(?:no|not|never|without|don't|dont|do not|doesn't|does not)\b.{0,40}\b(?:acid|reflux|sour taste|food coming back up|that)\b", n))
+        if bare_no or negative_reflux:
+            out["reflux_present"] = False
+        elif positive or bare_yes:
+            out["reflux_present"] = True
+
+    elif last_question == "timing":
+        m = re.search(r"\b(?:right\s+after|immediately\s+after|straight\s+after)\s+(?:i\s+)?eat(?:ing)?\b", n)
+        if m:
+            out["meal_timing"] = "immediately_after_eating"
+            out["symptom_onset_after_food"] = "immediately after eating"
+            out["timing_relation"] = "after_eating"
+        else:
+            m = re.search(r"\b(\d+(?:\.\d+)?)\s*(minutes?|mins?|hours?|hrs?)\s*(?:later|after\s+(?:i\s+)?eat(?:ing)?)\b", n)
+            if m:
+                out["symptom_onset_after_food"] = f"{m.group(1)} {m.group(2)} after eating"
+                out["meal_timing"] = "after_eating"
+                out["timing_relation"] = "after_eating"
+            else:
+                word_time = re.search(r"\b(one|two|three|four|five|six)\s+(minutes?|hours?)\s+(?:later|after)\b", n)
+                if word_time:
+                    out["symptom_onset_after_food"] = f"{word_time.group(1)} {word_time.group(2)} after eating"
+                    out["meal_timing"] = "after_eating"
+                    out["timing_relation"] = "after_eating"
+                elif re.search(r"\b(?:a\s+few|several)\s+hours?\s+(?:later|after)\b", n):
+                    out["symptom_onset_after_food"] = "several hours after eating"
+                    out["meal_timing"] = "after_eating"
+                    out["timing_relation"] = "after_eating"
+                elif re.search(r"\b(?:after\s+(?:meals?|eating|food)|after\s+dinner)\b", n):
+                    out["meal_timing"] = "after_eating"
+                    out["timing_relation"] = "after_eating"
+                elif re.search(r"\b(?:when|while)\s+(?:i\s+)?(?:lie|lying)\s+down\b", n):
+                    out["meal_timing"] = "when_lying_down"
+                    out["timing_relation"] = "lying_down"
+                elif re.search(r"\b(?:at|during)\s+night\b", n):
+                    out["meal_timing"] = "at_night"
+                    out["timing_relation"] = "at_night"
+                elif re.search(r"\b(?:not\s+related\s+to\s+meals?|not\s+after\s+(?:meals?|eating)|not\s+meal[- ]related)\b", n):
+                    out["meal_timing"] = "not_meal_related"
+                    out["timing_relation"] = "not_meal_related"
+
     # Shared natural facts can be volunteered while answering any question.
     if re.search(r"\b(?:upper\s+(?:abdomen|stomach|belly)|upper\s+stomach|upper\s+belly)\b", n):
         out["pain_location"] = "upper abdomen"
@@ -750,6 +797,8 @@ def _deterministic_context_fallback(message: str, last_question: str | None, sta
         ))
         explicit_constipation = bool(re.search(r"\b(constipation|constipated)\b", n))
 
+        normal_pooping = bool(re.search(r"\b(?:normal|regular|fine)\s+(?:poop(?:ing)?|stools?|bowel movements?)\b", n))
+        no_strain = bool(re.search(r"\b(?:no|not|never|don't|dont|do not)\s+(?:have to\s+)?strain(?:ing)?\b", n))
         # This is a combined constipation/stool-straining question. A clear
         # negative therefore answers the combined slot; it is not a global
         # "no means false" rule.
@@ -757,6 +806,12 @@ def _deterministic_context_fallback(message: str, last_question: str | None, sta
             out["straining"] = False
             out["hard_stools"] = False
             out["constipation"] = False
+        elif no_strain:
+            out["straining"] = False
+        if normal_pooping:
+            out["hard_stools"] = False
+            if no_strain:
+                out["constipation"] = False
         elif re.search(r"\b(no|not|don't|dont|do not|without)\b.*\b(strain|straining)\b", n):
             out["straining"] = False
         elif re.search(r"\b(strain|straining|push hard|pushing hard)\b", n):
@@ -764,7 +819,7 @@ def _deterministic_context_fallback(message: str, last_question: str | None, sta
 
         if re.search(r"\b(no|not|don't|dont|do not|without)\b.*\b(hard|lumpy|firm)\b|\b(normal|soft)\s+(?:stools?|poop|stool)\b", n):
             out["hard_stools"] = False
-        elif re.search(r"\b(hard|lumpy|firm)\s+(?:stools?|poop|stool)\b", n):
+        elif re.search(r"\b(hard|lumpy|firm)\s+(?:stools?|poop|stool)\b|\b(?:stools?|poop|poo)\s+(?:are|is)\s+(?:hard|lumpy|firm)\b", n):
             out["hard_stools"] = True
 
         if explicit_constipation or yes_answer:
@@ -1049,6 +1104,13 @@ def extract_natural_facts(message: str, last_question: str | None, state) -> dic
             "lump": {"lump_or_protrusion"},
             "stool_straining": {"hard_stools", "straining", "constipation"},
             "constipation": {"hard_stools", "straining", "constipation"},
+            "timing": {"meal_timing", "symptom_onset_after_food", "timing_relation"},
+            "reflux": {"reflux_present"},
+            "vomiting_fever": {"vomiting", "fever"},
+            "vomiting_fever_swelling": {"vomiting", "fever", "swelling"},
+            "swallowing": {"difficulty_swallowing", "persistent_vomiting", "vomiting_blood"},
+            "weight_swallow": {"weight_loss", "difficulty_swallowing", "persistent_vomiting", "vomiting_blood"},
+            "night_weight_fever": {"weight_loss", "fever"},
         }
         forced_fields = context_fields.get(last_question or "", set())
         for key in ("duration", "blood_type", "blood_location", "age", "severity",
@@ -1062,6 +1124,13 @@ def extract_natural_facts(message: str, last_question: str | None, state) -> dic
                 result[key] = fallback[key]
             elif result.get(key) is None and fallback.get(key) is not None:
                 result[key] = fallback[key]
+        for key in ("meal_timing", "symptom_onset_after_food", "timing_relation", "reflux_present"):
+            if key in forced_fields and fallback.get(key) is not None:
+                result[key] = fallback[key]
+        for key in ("vomiting", "fever", "swelling", "difficulty_swallowing", "persistent_vomiting", "vomiting_blood"):
+            if key in forced_fields and fallback.get(key) is not None:
+                result[key] = fallback[key]
+
         result["symptoms"] = list(dict.fromkeys(
             (result.get("symptoms") or []) + (fallback.get("symptoms") or [])
         ))

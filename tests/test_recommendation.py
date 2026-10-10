@@ -274,7 +274,7 @@ def test_ambiguous_products_are_not_collapsed_to_first_product():
     answers = [
         "I am constipated", "5 months", "no weight loss", "23", "2 times a week",
         "hard and I strain", "yes incomplete",
-        "no abdominal pain", "no blood", "no sharp pain",
+        "no bloating or abdominal pain", "no blood", "no sharp pain",
         "no vomiting, no fever, no severe swelling", "2 litres", "average", "no medicines",
     ]
     result = None

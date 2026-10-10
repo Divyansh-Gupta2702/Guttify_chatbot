@@ -19,7 +19,7 @@ class TestV8RegressionFixes(unittest.TestCase):
         self.assertEqual(extract_symptoms("no constipation no diarrhea"), (None, []))
         cm = ConversationManager()
         sid = "bowel-negation"
-        for msg in ["stomach pain", "2 months", "23", "upper abdomen", "5", "no constipation no diarrhea", "no vomiting and no fever"]:
+        for msg in ["stomach pain", "2 months", "no weight loss", "23", "upper abdomen", "5", "no constipation no diarrhea", "no vomiting and no fever"]:
             cm.handle_message(sid, msg)
         state = cm.sessions[sid].symptom_state
         self.assertNotIn("constipation", state.secondary_symptoms)
@@ -80,6 +80,7 @@ class TestV8RegressionFixes(unittest.TestCase):
         for msg in [
             "I have bright red blood when I poop",
             "2 months",
+            "no weight loss",
             "23",
             "on tissue",
             "no sharp pain",
