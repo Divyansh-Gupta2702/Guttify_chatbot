@@ -14,7 +14,8 @@ def next_question(state):
     def q(name, text, condition=True):
         # A question is asked once per assessment. `asked_fields` prevents
         # malformed/ambiguous answers from causing an infinite repeat loop.
-        if condition and name not in asked:
+        unknown_fields = set(getattr(state, "answered_unknown_fields", []) or [])
+        if condition and name not in asked and name not in unknown_fields:
             return name, text
         return None
 

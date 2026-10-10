@@ -28,7 +28,7 @@ from clinical_rule_engine import evaluate as evaluate_screening, _duration_days
 from safety_checker import check_safety, detect_red_flags, derive_red_flags, is_pregnancy_or_lactation
 from recommendation_engine import evaluate as evaluate_product, find_named_product, has_domain_overlap, IRRELEVANT_MESSAGE, products as ALL_PRODUCTS
 from nlu_extractor import extract_natural_facts
-from question_schema import QUESTION_SCHEMA, QuestionResolution, question_has_answer
+from question_schema import QUESTION_SCHEMA, QuestionResolution, question_has_answer, resolve_against_active_question
 from product_concern_router import detect_product_concerns
 
 SESSION_ENDED_MESSAGE = "This conversation has already wrapped up. Please start a new chat if you'd like help with another question."
@@ -169,6 +169,10 @@ class SessionState:
     # Product recommendations remain blocked for the rest of this session
     # after pregnancy/lactation is disclosed.
     pregnancy_lactation_caution: bool = False
+    # Conversation-level guard against repeating the same clarification forever.
+    clarification_question: str | None = None
+    clarification_response: str | None = None
+    clarification_count: int = 0
 
 
 class ConversationManager:
@@ -388,6 +392,12 @@ class ConversationManager:
                                (session.symptom_state.secondary_symptoms or []))),
         )
         logger.info("[NLU][EXTRACTION] active_question=%s contextual_candidate=%s", current_question, {k:v for k,v in facts.items() if v not in (None, [], "", False)})
+        logger.info("[NLU][RESOLVER] source=%s status=%s field=%s",
+                    facts.get("_resolver_source", "unknown"),
+                    facts.get("_answer_status", "unresolved"),
+                    current_question)
+        logger.info("[NLU][MODEL_CALL] called=%s",
+                    "true" if facts.get("_resolver_source") == "model" else "false")
         logger.info("[NLU][STATE_UPDATE] newly_added=%s", changed)
         return facts
 
@@ -403,6 +413,33 @@ class ConversationManager:
         # Deterministic contextual extractor is the first authority for the
         # active question. It may resolve multiple slots in one message.
         contextual = precomputed_facts if isinstance(precomputed_facts, dict) else extract_natural_facts(text, field, s)
+        question_resolution = contextual.get("_question_resolution") if isinstance(contextual, dict) else None
+
+        # Unknown is a resolved conversational outcome, not a clinical value.
+        # Record the question as completed without writing True/False/None into
+        # the clinical slot, so diagnosis and safety rules never treat "I don't
+        # know" as evidence either way.
+        if isinstance(question_resolution, dict) and question_resolution.get("status") == "unknown":
+            unknown_fields = list(getattr(s, "answered_unknown_fields", []) or [])
+            if field not in unknown_fields:
+                unknown_fields.append(field)
+            s.answered_unknown_fields = unknown_fields
+            if field == "stool_form":
+                s.stool_form = "unknown"
+            s.red_flags = derive_red_flags(s)
+            logger.info("[NLU][ANSWER] field=%s value=unknown status=unknown", field)
+            logger.info("[NLU][CONFIDENCE] type=deterministic value=%.2f", float(question_resolution.get("confidence") or 0.99))
+            logger.info("[QUESTION][RESOLUTION] field=%s value=unknown status=unknown confidence=%.2f", field, float(question_resolution.get("confidence") or 0.99))
+            return QuestionResolution(
+                field=field,
+                answered=True,
+                values={k: getattr(s, k, None) for k in (QUESTION_SCHEMA.get(field).fields if QUESTION_SCHEMA.get(field) else set())},
+                confidence=float(question_resolution.get("confidence") or 0.99),
+                clarification_needed=False,
+                answer_status="unknown",
+                source="deterministic",
+            )
+
         if field == "vomiting_fever_swelling" and isinstance(contextual.get("swelling"), bool):
             data["abdominal_distension"] = contextual["swelling"]
 
@@ -950,15 +987,44 @@ class ConversationManager:
         }
         if state_changes:
             logger.info("[QUESTION][STATE_UPDATE] %s", state_changes)
+        preserved = [
+            k for k, v in s.to_dict().items()
+            if k not in state_changes and v not in (None, [], "", "unknown")
+            and getattr(session.symptom_state, k, None) == v
+        ]
+        if preserved:
+            logger.info("[QUESTION][STATE_PRESERVE] preserved=%s", preserved)
+        answered = question_has_answer(session.symptom_state, field)
+        answer_status = "answered" if answered else "unresolved"
+        resolver_source = contextual.get("_resolver_source", "fallback") if isinstance(contextual, dict) else "fallback"
+        confidence = float(
+            (question_resolution or {}).get("confidence")
+            or contextual.get("confidence")
+            or 0.0
+        )
+        logger.info("[NLU][ANSWER] field=%s value=%s status=%s", field, {
+            k: getattr(session.symptom_state, k, None)
+            for k in (QUESTION_SCHEMA.get(field).fields if QUESTION_SCHEMA.get(field) else set())
+        }, answer_status)
+        logger.info("[NLU][CONFIDENCE] type=%s value=%.2f",
+                    "deterministic" if resolver_source == "deterministic" else "model",
+                    confidence)
+        logger.info("[QUESTION][RESOLUTION] field=%s value=%s status=%s confidence=%.2f",
+                    field,
+                    {k: getattr(session.symptom_state, k, None)
+                     for k in (QUESTION_SCHEMA.get(field).fields if QUESTION_SCHEMA.get(field) else set())},
+                    answer_status, confidence)
         return QuestionResolution(
             field=field,
-            answered=question_has_answer(session.symptom_state, field),
+            answered=answered,
             values={
                 k: getattr(session.symptom_state, k, None)
                 for k in (QUESTION_SCHEMA.get(field).fields if QUESTION_SCHEMA.get(field) else set())
             },
-            confidence=float(contextual.get("confidence") or 0.0),
-            clarification_needed=not question_has_answer(session.symptom_state, field),
+            confidence=confidence,
+            clarification_needed=not answered,
+            answer_status=answer_status,
+            source=resolver_source,
         )
 
     def _can_assess(self, session, screening):
@@ -1382,15 +1448,37 @@ class ConversationManager:
                     pending_question,
                     question_texts.get(pending_question, "Could you answer the question above in a little more detail?")
                 )
-                logger.info("[QUESTION][BLOCK] field=%s reason=answer_not_understood action=ASK_CLARIFICATION", pending_question)
-                logger.info("[NLU] unanswered_question field=%s; preserving context", pending_question)
-                return {
-                    "status": "ASK",
-                    "message": f"I want to make sure I understood that. {question_text}",
-                    "recommendations": [],
-                    "safety": safety,
-                }
+                normalized_reply = normalize(user_message)
+                repeated = (
+                    session.clarification_question == pending_question
+                    and session.clarification_response == normalized_reply
+                )
+                if repeated:
+                    unknown = list(getattr(session.symptom_state, "answered_unknown_fields", []) or [])
+                    if pending_question not in unknown:
+                        unknown.append(pending_question)
+                    session.symptom_state.answered_unknown_fields = unknown
+                    session.clarification_count += 1
+                    logger.info(
+                        "[QUESTION][BLOCK] field=%s reason=repeated_nonanswer action=MARK_UNKNOWN_AND_ADVANCE",
+                        pending_question,
+                    )
+                else:
+                    session.clarification_question = pending_question
+                    session.clarification_response = normalized_reply
+                    session.clarification_count += 1
+                    logger.info("[QUESTION][BLOCK] field=%s reason=answer_not_understood action=ASK_CLARIFICATION", pending_question)
+                    logger.info("[NLU] unanswered_question field=%s; preserving context", pending_question)
+                    return {
+                        "status": "ASK",
+                        "message": f"I want to make sure I understood that. {question_text}",
+                        "recommendations": [],
+                        "safety": safety,
+                    }
             session.last_question = None
+            session.clarification_question = None
+            session.clarification_response = None
+            session.clarification_count = 0
         else:
             session.symptom_state = merge_state(session.symptom_state, user_message, [])
             self._apply_nlu_facts(session, nlu_facts)

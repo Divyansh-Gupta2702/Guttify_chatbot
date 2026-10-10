@@ -478,6 +478,10 @@ class SymptomState:
     recent_worsening: bool = None
     red_flags: list = field(default_factory=list)
     asked_fields: list = field(default_factory=list)
+    # Question IDs explicitly declined/unknowned by the user. This is separate
+    # from clinical state so "I don't know" resolves the question without
+    # pretending the clinical fact is false or true.
+    answered_unknown_fields: list = field(default_factory=list)
     # Track if the conditional weight-loss question (triggered by duration >= 1 month) has been asked
     weight_loss_duration_asked: bool = False
 

@@ -19,6 +19,7 @@ from functools import lru_cache
 from typing import Any
 
 from intent_parser import extract_food_trigger, extract_stool_form
+from question_schema import resolve_against_active_question
 
 
 logger = logging.getLogger("gutgpt.nlu")
@@ -325,9 +326,29 @@ Return exactly one JSON object with these keys:
 {sorted(SCHEMA_KEYS)}
 """
     try:
+        logger.info("[NLU][MODEL_CALL] called=true")
         response = llm.invoke(prompt)
         content = getattr(response, "content", "")
-        raw = json.loads(_clean_json_text(content))
+        if isinstance(content, list):
+            # Chat-models may expose structured content blocks instead of one
+            # string. Join text blocks before JSON parsing.
+            parts = []
+            for block in content:
+                if isinstance(block, str):
+                    parts.append(block)
+                elif isinstance(block, dict) and isinstance(block.get("text"), str):
+                    parts.append(block["text"])
+            content = "\n".join(parts)
+        cleaned = _clean_json_text(content)
+        if not cleaned:
+            logger.warning("[NLU][MODEL_PARSE] success=false reason=empty_model_content")
+            return None
+        try:
+            raw = json.loads(cleaned)
+        except json.JSONDecodeError as parse_exc:
+            logger.warning("[NLU][MODEL_PARSE] success=false reason=json_decode_error")
+            return None
+        logger.info("[NLU][MODEL_PARSE] success=true")
         result = _validate(raw, forced_intent=forced_intent)
         # Prevent the extractor from turning a symptom description into a
         # diagnosis-like branch. Conditions such as fissure/piles are allowed
@@ -406,7 +427,7 @@ Return exactly one JSON object with these keys:
 
         return result
     except Exception as exc:
-        logger.warning("[NLU] model extraction failed: %s", type(exc).__name__)
+        logger.warning("[NLU][MODEL_PARSE] success=false reason=%s", type(exc).__name__)
         return None
 
 
@@ -1157,62 +1178,97 @@ def _needs_llm(message: str, last_question: str | None, fallback: dict) -> bool:
 
 
 def extract_natural_facts(message: str, last_question: str | None, state) -> dict:
-    """
-    Extract facts with question-aware context.
+    """Extract facts once, with an explicit question-resolution boundary.
 
-    Active-question messages are always treated as answers first. The LLM is
-    used for ambiguity/complexity; deterministic extraction handles trivial
-    answers. If the model fails, the fallback result is returned.
+    Order:
+      1. deterministic extraction
+      2. deterministic active-question resolution
+      3. at most one Groq attempt when unresolved
+      4. model parse/validation
+      5. deterministic fallback merge
     """
     forced_intent = "answer_question" if last_question else None
     fallback = _deterministic_context_fallback(message, last_question, state)
-    llm_result = _llm_extract(message, last_question, state, forced_intent) if _needs_llm(message, last_question, fallback) else None
+
+    # A deterministic question resolution is sufficient by itself. This is
+    # especially important for yes/no, unknown, age, duration, stool and food
+    # answers: no model call is needed and model confidence cannot downgrade them.
+    resolution = resolve_against_active_question(
+        last_question, message, extracted=fallback, state=state
+    )
+    if resolution["status"] in {"answered", "unknown"}:
+        for key, value in resolution["values"].items():
+            if value == "unknown":
+                continue
+            fallback[key] = value
+        fallback["_question_resolution"] = resolution
+        fallback["_answer_status"] = resolution["status"]
+        fallback["_resolver_source"] = "deterministic"
+        fallback["confidence"] = max(float(fallback.get("confidence") or 0.0), resolution["confidence"])
+        logger.info(
+            "[NLU][RESOLVER] source=deterministic status=%s field=%s values=%s",
+            resolution["status"], last_question, resolution["values"],
+        )
+        logger.info(
+            "[NLU][CONFIDENCE] type=deterministic value=%.2f",
+            resolution["confidence"],
+        )
+        return fallback
+
+    llm_result = None
+    if _needs_llm(message, last_question, fallback):
+        llm_result = _llm_extract(message, last_question, state, forced_intent)
+
     if llm_result is None:
         logger.info(
-            "[NLU][FALLBACK] model_json_failed_or_unavailable=true deterministic_extraction=true"
+            "[NLU][RESOLVER] source=fallback status=unresolved field=%s",
+            last_question,
         )
+        logger.info("[NLU][FALLBACK] model_json_failed_or_unavailable=true deterministic_extraction=true")
         result = fallback
+        result["_resolver_source"] = "fallback"
     else:
         result = llm_result
+        result["_resolver_source"] = "model"
+        logger.info("[NLU][RESOLVER] source=model status=unresolved field=%s", last_question)
+
         # Deterministic fallback fills only genuinely missing high-confidence
-        # facts. It never overwrites a validated LLM negative with a positive.
+        # facts. It never overwrites a validated model negative with a positive.
         context_fields = {
-            "duration": {"duration"},
-            "age": {"age"},
-            "weight_loss": {"weight_loss"},
-            "weight_loss_duration": {"weight_loss"},
-            "blood": {"bleeding"},
-            "blood_colour": {"blood_type"},
-            "blood_location": {"blood_location"},
-            "anal_pain": {"pain", "pain_character"},
-            "lump": {"lump_or_protrusion"},
-            "stool_straining": {"hard_stools", "straining", "constipation"},
+            "duration": {"duration"}, "age": {"age"},
+            "weight_loss": {"weight_loss"}, "weight_loss_duration": {"weight_loss"},
+            "blood": {"bleeding"}, "blood_colour": {"blood_type"},
+            "blood_location": {"blood_location"}, "anal_pain": {"pain", "pain_character"},
+            "lump": {"lump_or_protrusion"}, "stool_straining": {"hard_stools", "straining", "constipation"},
             "constipation": {"hard_stools", "straining", "constipation"},
             "timing": {"meal_timing", "symptom_onset_after_food", "timing_relation"},
-            "reflux": {"reflux_present"},
-            "vomiting_fever": {"vomiting", "fever"},
+            "reflux": {"reflux_present"}, "vomiting_fever": {"vomiting", "fever"},
             "vomiting_fever_swelling": {"vomiting", "fever", "swelling"},
             "swallowing": {"difficulty_swallowing", "persistent_vomiting", "vomiting_blood"},
             "weight_swallow": {"weight_loss", "difficulty_swallowing", "persistent_vomiting", "vomiting_blood"},
             "night_weight_fever": {"weight_loss", "fever"},
         }
         forced_fields = context_fields.get(last_question or "", set())
-        for key in ("duration", "blood_type", "blood_location", "age", "severity",
-                    "pain_character", "pain_timing", "stool_pattern"):
-            if key in forced_fields and fallback.get(key) is not None:
-                result[key] = fallback[key]
-            elif result.get(key) is None and fallback.get(key) is not None:
+        scalar_keys = (
+            "duration", "blood_type", "blood_location", "age", "severity",
+            "pain_character", "pain_timing", "stool_pattern",
+            "meal_timing", "symptom_onset_after_food", "timing_relation",
+        )
+        for key in scalar_keys:
+            if (key in forced_fields and fallback.get(key) is not None) or (
+                result.get(key) is None and fallback.get(key) is not None
+            ):
                 result[key] = fallback[key]
         for key in BOOL_FIELDS:
-            if key in forced_fields and fallback.get(key) is not None:
+            if (key in forced_fields and fallback.get(key) is not None) or (
+                result.get(key) is None and fallback.get(key) is not None
+            ):
                 result[key] = fallback[key]
-            elif result.get(key) is None and fallback.get(key) is not None:
-                result[key] = fallback[key]
-        for key in ("meal_timing", "symptom_onset_after_food", "timing_relation", "reflux_present"):
-            if key in forced_fields and fallback.get(key) is not None:
-                result[key] = fallback[key]
-        for key in ("vomiting", "fever", "swelling", "difficulty_swallowing", "persistent_vomiting", "vomiting_blood"):
-            if key in forced_fields and fallback.get(key) is not None:
+        for key in ("vomiting", "fever", "swelling", "difficulty_swallowing",
+                    "persistent_vomiting", "vomiting_blood", "reflux_present"):
+            if (key in forced_fields and fallback.get(key) is not None) or (
+                result.get(key) is None and fallback.get(key) is not None
+            ):
                 result[key] = fallback[key]
 
         result["symptoms"] = list(dict.fromkeys(
@@ -1222,4 +1278,22 @@ def extract_natural_facts(message: str, last_question: str | None, state) -> dic
             (result.get("new_information") or []) + (fallback.get("new_information") or [])
         ))
 
+    # A model answer may still be semantically obvious once its validated
+    # fields are available. Run the resolver once more without invoking the
+    # model again. This is the single ownership boundary for the active field.
+    final_resolution = resolve_against_active_question(
+        last_question, message, extracted=result, state=state
+    )
+    result["_question_resolution"] = final_resolution
+    result["_answer_status"] = final_resolution["status"]
+    result["_resolver_source"] = result.get("_resolver_source", "fallback")
+    if final_resolution["status"] in {"answered", "unknown"}:
+        for key, value in final_resolution["values"].items():
+            if value != "unknown":
+                result[key] = value
+        result["confidence"] = max(
+            float(result.get("confidence") or 0.0),
+            final_resolution["confidence"],
+        )
     return result
+
