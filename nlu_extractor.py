@@ -1005,16 +1005,9 @@ def _deterministic_context_fallback(message: str, last_question: str | None, sta
             # Keep this as an irritation/symptom branch. Do not convert
             # itching alone into a fissure or hemorrhoid diagnosis.
             out["symptoms"].append("anal burning")
-    if (
-        re.search(r"\bbloat(ed|ing)?\b|\bbelly feels swollen\b|\bstomach feels full of air\b", n)
-        and not re.search(r"\b(?:no|not|never|without|don't|dont|do not)\b.{0,35}\b(?:bloating|bloated|bloat)\b", n)
-    ):
+    if re.search(r"\bbloat(ed|ing)?\b|\bbelly feels swollen\b|\bstomach feels full of air\b", n):
         out["symptoms"].append("bloating")
-        out["bloating"] = True
-    if (
-        re.search(r"\b(gas|gassy|flatulence|farting|passing gas)\b", n)
-        and not re.search(r"\b(?:no|not|never|without|don't|dont|do not)\b.{0,35}\b(?:gas|gassy|flatulence)\b", n)
-    ):
+    if re.search(r"\b(lots of gas|a lot of gas|excess gas|gassy|farting a lot|passing gas)\b", n):
         out["symptoms"].append("gas")
         out["gas"] = True
     if re.search(r"\b(can't|cant|cannot|not able to|haven't|havent|don't|dont|do not).{0,35}\b(po(o)?p|pass stool|bowel movement|go to the toilet)\b", n):
@@ -1042,12 +1035,8 @@ def _deterministic_context_fallback(message: str, last_question: str | None, sta
         out["symptoms"].append("acidity")
     if re.search(r"\b(piles|haemorrhoids|hemorrhoids)\b", n):
         out["symptoms"].append("piles")
-    if (
-        re.search(r"\b(stomach pain|stomach ache|belly pain|abdominal pain|belly ache)\b", n)
-        and not re.search(r"\b(?:no|not|never|without|don't|dont|do not)\b.{0,35}\b(?:stomach pain|abdominal pain|belly pain|stomach ache|belly ache)\b", n)
-    ):
+    if re.search(r"\b(stomach pain|stomach ache|belly pain|abdominal pain|belly ache)\b", n):
         out["symptoms"].append("stomach pain")
-        out["pain"] = True
 
     # Lifestyle/medication answers are contextual facts too. Keep them in
     # NLU so the active-question resolver does not depend on exact spelling.
@@ -1188,6 +1177,69 @@ def _needs_llm(message: str, last_question: str | None, fallback: dict) -> bool:
     return bool(last_question and len(message) > 25)
 
 
+def _filter_unrelated_active_question_symptoms(result: dict, message: str, last_question: str | None) -> dict:
+    """Keep only symptoms explicitly evidenced by the current user message.
+
+    The generic symptom classifier can legitimately classify the session's
+    primary symptom (for example ``acidity``) even when the current turn is
+    merely an answer such as ``yes``/``no`` to an unrelated active question.
+    Those inferred labels must never cross the active-question ownership
+    boundary. Explicitly volunteered symptoms in the same message remain
+    valid and are preserved.
+    """
+    if not last_question or not isinstance(result, dict):
+        return result
+
+    text = _norm_answer_text(message)
+    symptoms = result.get("symptoms")
+    if not isinstance(symptoms, list):
+        return result
+
+    patterns = {
+        "constipation": r"\b(?:constipat(?:ion|ed)|can't\s+poop|cant\s+poop|hard\s+stools?)\b",
+        "hard stools": r"\b(?:hard|lumpy|firm)\s+(?:stools?|poop|poo)\b",
+        "bloating": r"\b(?:bloat(?:ed|ing)?|belly\s+feels\s+swollen|stomach\s+feels\s+full\s+of\s+air)\b",
+        "gas": r"\b(?:gas|gassy|flatulence|farting|passing\s+gas)\b",
+        "acidity": r"\b(?:acid(?:ity|ic)|acid\s+reflux|acid\s+coming\s+up)\b",
+        "heartburn": r"\b(?:heartburn|burning\s+in\s+(?:my\s+)?(?:chest|throat)|burning\s+after\s+meals?)\b",
+        "diarrhea": r"\b(?:diarr(?:hea|hoea)|loose\s+(?:stools?|motions?)|watery\s+(?:stools?|poop))\b",
+        "stomach pain": r"\b(?:stomach\s+pain|abdominal\s+pain|belly\s+pain|stomach\s+ache|cramps?)\b",
+        "piles": r"\b(?:piles|haemorrhoids?|hemorrhoids?)\b",
+        "anal fissures": r"\b(?:anal\s+fissures?|fissure|sharp\s+pain|tearing\s+pain|pain\s+(?:when|during)\s+(?:stool|poop|bowel\s+movement))\b",
+        "anal burning": r"\b(?:anal\s+burning|burning\s+(?:around|near)\s+(?:my\s+)?anus|itch(?:y|ing)\s+(?:around|near)\s+(?:my\s+)?anus)\b",
+        "anal swelling": r"\b(?:anal\s+swelling|swelling\s+(?:around|near)\s+(?:my\s+)?anus)\b",
+        "bleeding": r"\b(?:blood|bleeding|rectal\s+bleeding)\b",
+        "indigestion": r"\bindigestion\b",
+        "food intolerance": r"\b(?:food\s+intolerance|intolerant\s+to\s+\w+)\b",
+    }
+
+    kept = []
+    dropped = []
+    for symptom in symptoms:
+        pat = patterns.get(symptom)
+        if pat and re.search(pat, text):
+            kept.append(symptom)
+        else:
+            dropped.append(symptom)
+
+    # Preserve genuinely volunteered symptoms even when the deterministic
+    # resolver returned early and the generic symptom parser never ran.
+    # Negative mentions are excluded so "no gas" cannot become gas=True.
+    for symptom, pat in patterns.items():
+        if not re.search(pat, text):
+            continue
+        negative_pat = rf"\b(?:no|not|never|without|don't|dont|do not|haven't|have not)\b.{{0,35}}(?:{pat})"
+        if re.search(negative_pat, text):
+            continue
+        if symptom not in kept:
+            kept.append(symptom)
+
+    if dropped:
+        logger.info("[NLU][ACTIVE_QUESTION_SYMPTOM_GUARD] question=%s kept=%s discarded=%s", last_question, kept, dropped)
+    result["symptoms"] = list(dict.fromkeys(kept))
+    return result
+
+
 def extract_natural_facts(message: str, last_question: str | None, state) -> dict:
     """Extract facts once, with an explicit question-resolution boundary.
 
@@ -1224,7 +1276,7 @@ def extract_natural_facts(message: str, last_question: str | None, state) -> dic
             "[NLU][CONFIDENCE] type=deterministic value=%.2f",
             resolution["confidence"],
         )
-        return fallback
+        return _filter_unrelated_active_question_symptoms(fallback, message, last_question)
 
     llm_result = None
     if _needs_llm(message, last_question, fallback):
@@ -1328,5 +1380,5 @@ def extract_natural_facts(message: str, last_question: str | None, state) -> dic
             float(result.get("confidence") or 0.0),
             final_resolution["confidence"],
         )
-    return result
+    return _filter_unrelated_active_question_symptoms(result, message, last_question)
 

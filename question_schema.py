@@ -385,8 +385,15 @@ def resolve_against_active_question(
             return {"status": "answered", "values": {"abdominal_pain": False, "pain_related_to_bowel_movement": False}, "confidence": 0.99, "source": "deterministic"}
     if question_id == "swallowing":
         neg = lambda term: bool(re.search(r"\b(?:no|not|never|without|don't|dont|do not)\b.{0,35}\b" + term + r"\b", n))
-        if neg(r"difficulty\s+swallowing") and neg(r"persistent\s+vomiting") and neg(r"vomiting\s+blood"):
-            return {"status": "answered", "values": {"difficulty_swallowing": False, "persistent_vomiting": False, "vomiting_blood": False}, "confidence": 0.99, "source": "deterministic"}
+        vals = {}
+        if neg(r"difficulty\s+swallowing"):
+            vals["difficulty_swallowing"] = False
+        if neg(r"persistent\s+vomiting"):
+            vals["persistent_vomiting"] = False
+        if neg(r"vomiting\s+blood"):
+            vals["vomiting_blood"] = False
+        if vals:
+            return {"status": "answered", "values": vals, "confidence": 0.99, "source": "deterministic"}
 
     # Question-specific aliases bridge the extractor's canonical vocabulary
     # to the schema's state slots. This is still deterministic and contextual;
