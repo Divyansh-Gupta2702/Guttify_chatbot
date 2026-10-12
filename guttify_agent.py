@@ -388,12 +388,17 @@ class ConversationManager:
             len(text), bool(session.symptom_state.primary_symptom or current_question),
             current_question, facts.get("intent"), facts.get("confidence", 0.0),
         )
+        # Keep per-turn extraction distinct from the accumulated session
+        # symptom state. Combining them under `normalized_symptoms` made an
+        # answer such as "yes" appear to have re-detected an earlier symptom.
         logger.info(
-            "[NLU][EXTRACTED] facts=%s normalized_symptoms=%s",
+            "[NLU][EXTRACTED] facts=%s current_message_symptoms=%s session_symptoms=%s",
             {k: v for k, v in facts.items() if v not in (None, [], "", False)},
-            list(dict.fromkeys((facts.get("symptoms") or []) +
-                               [session.symptom_state.primary_symptom] +
-                               (session.symptom_state.secondary_symptoms or []))),
+            list(dict.fromkeys(x for x in (facts.get("symptoms") or []) if isinstance(x, str))),
+            list(dict.fromkeys(
+                [x for x in [session.symptom_state.primary_symptom] if isinstance(x, str)] +
+                [x for x in (session.symptom_state.secondary_symptoms or []) if isinstance(x, str)]
+            )),
         )
         logger.info("[NLU][EXTRACTION] active_question=%s contextual_candidate=%s", current_question, {k:v for k,v in facts.items() if v not in (None, [], "", False)})
         logger.info("[NLU][RESOLVER] source=%s status=%s field=%s",

@@ -26,6 +26,8 @@ logger = logging.getLogger("gutgpt.nlu")
 
 # These are the only normalized symptom values the existing deterministic
 # engine understands. The LLM may not invent new clinical categories.
+BLEEDING_MENTION_PATTERN = r"\b(?:blood(?:y)?|bleed(?:ing)?|rectal\s+bleeding|blood\s+in\s+(?:my\s+)?(?:stool|poop|poo)|(?:stool|poop|poo)s?\s+with\s+blood|blood\s+(?:while|when)\s+(?:i\s+)?poop(?:ing)?|seeing\s+blood\s+in\s+(?:my\s+)?stool)\b"
+
 ALLOWED_SYMPTOMS = {
     "constipation", "hard stools", "bloating", "gas", "acidity",
     "heartburn", "diarrhea", "stomach pain", "piles", "anal fissures",
@@ -372,7 +374,7 @@ Return exactly one JSON object with these keys:
         text = message.lower()
         evidence = {
             "pain": r"\b(pain|hurts?|ache|aching|sore|sharp|tearing|cutting)\b",
-            "bleeding": r"\b(blood|bleeding|bleed|bloody)\b",
+            "bleeding": BLEEDING_MENTION_PATTERN,
             "itching": r"\b(itch|itchy|itching)\b",
             "burning": r"\b(burning|burn)\b",
             "swelling": r"\b(swelling|swollen|swell)\b",
@@ -874,7 +876,7 @@ def _deterministic_context_fallback(message: str, last_question: str | None, sta
     if last_question in {"blood", "bleeding"}:
         if generic_negative or re.search(r"\b(?:no|not|never|without|don't|dont|do not|haven't|have not)\b.*\b(?:blood|bleeding)\b", n):
             out["bleeding"] = False
-        elif affirmative or re.search(r"\b(blood|bleeding)\b", n):
+        elif affirmative or re.search(BLEEDING_MENTION_PATTERN, n):
             out["bleeding"] = True
     elif last_question in {"lump", "lump_or_prolapse"}:
         if generic_negative or re.search(r"\b(?:no|not|never|without|don't|dont|do not|haven't|have not)\b.*\b(?:lump|prolapse|bulge|bump)\b", n):
@@ -996,7 +998,7 @@ def _deterministic_context_fallback(message: str, last_question: str | None, sta
     if re.search(r"\b(on (the )?(toilet )?(paper|tissue)|when i wipe|wiping)\b", n):
         out["bleeding"] = True
         out["blood_location"] = "tissue"
-    if re.search(r"\b(blood|bleeding)\b", n) and not re.search(r"\b(?:no|not|never|without|don't|dont|do not|haven't|have not)\b.*\b(?:blood|bleeding)\b", n):
+    if re.search(BLEEDING_MENTION_PATTERN, n) and not re.search(r"\b(?:no|not|never|without|don't|dont|do not|haven't|have not)\b.{0,45}" + BLEEDING_MENTION_PATTERN, n):
         out["bleeding"] = True
         out["symptoms"].append("bleeding")
     if re.search(r"\bitch(y|ing)\b", n):
@@ -1208,7 +1210,7 @@ def _filter_unrelated_active_question_symptoms(result: dict, message: str, last_
         "anal fissures": r"\b(?:anal\s+fissures?|fissure|sharp\s+pain|tearing\s+pain|pain\s+(?:when|during)\s+(?:stool|poop|bowel\s+movement))\b",
         "anal burning": r"\b(?:anal\s+burning|burning\s+(?:around|near)\s+(?:my\s+)?anus|itch(?:y|ing)\s+(?:around|near)\s+(?:my\s+)?anus)\b",
         "anal swelling": r"\b(?:anal\s+swelling|swelling\s+(?:around|near)\s+(?:my\s+)?anus)\b",
-        "bleeding": r"\b(?:blood|bleeding|rectal\s+bleeding)\b",
+        "bleeding": BLEEDING_MENTION_PATTERN,
         "indigestion": r"\bindigestion\b",
         "food intolerance": r"\b(?:food\s+intolerance|intolerant\s+to\s+\w+)\b",
     }
