@@ -215,7 +215,26 @@ class ConversationManager:
         for symptom in symptoms:
             if symptom != primary and symptom not in secondary:
                 secondary.append(symptom)
-        data["secondary_symptoms"] = secondary
+
+        # Canonical symptom facts must agree with the normalized symptom list.
+        # This prevents states such as primary_symptom="gas" with gas=None.
+        symptom_to_field = {
+            "bloating": "bloating",
+            "gas": "gas",
+            "diarrhea": "diarrhea",
+            "constipation": "constipation_explicit",
+            "stomach pain": "abdominal_pain",
+        }
+        for symptom in symptoms:
+            field_name = symptom_to_field.get(symptom)
+            if field_name:
+                data[field_name] = True
+                if field_name == "diarrhea":
+                    data["diarrhea_explicit"] = True
+
+        # The primary branch is not also a secondary symptom.
+        secondary = [x for x in secondary if x != data.get("primary_symptom")]
+        data["secondary_symptoms"] = list(dict.fromkeys(secondary))
 
         def set_if(value, key):
             if value is not None:
@@ -239,6 +258,10 @@ class ConversationManager:
             "recent_worsening": "recent_worsening",
             "vomiting": "vomiting",
             "fever": "fever",
+            "bloating": "bloating",
+            "diarrhea": "diarrhea",
+            "constipation": "constipation_explicit",
+            "reflux_present": "reflux_present",
         }.items():
             if isinstance(facts.get(src), bool):
                 data[dst] = facts[src]
@@ -364,6 +387,99 @@ class ConversationManager:
         session.symptom_state = SymptomState(**data)
 
     @staticmethod
+    def _apply_explicit_symptom_corrections(data, text):
+        """Apply explicitly stated symptom positives/negatives without touching
+        unrelated questionnaire fields.
+
+        Active-question ownership controls the answer to the current question,
+        but a user can also volunteer a second symptom or explicitly correct an
+        earlier symptom. Those facts must survive the active-question merge.
+        """
+        n = normalize(text)
+        if not n:
+            return
+
+        def explicit_bool(positive, negative):
+            return extract_bool(n, positive, negative)
+
+        corrections = {
+            "bloating": ("bloating", ["bloating", "bloated", "bloat"], ["no bloating", "not bloated", "don't have bloating", "dont have bloating", "do not have bloating"]),
+            "gas": ("gas", ["gas", "gassy", "flatulence", "farting", "passing gas"], ["no gas", "not gassy", "don't have gas", "dont have gas", "do not have gas"]),
+            "diarrhea": ("diarrhea", ["diarrhea", "diarrhoea", "loose stool", "loose stools", "loose motion", "loose motions", "watery stool", "watery stools"], ["no diarrhea", "no diarrhoea", "no loose stool", "no loose stools", "no loose motion", "no loose motions", "don't have diarrhea", "dont have diarrhea", "do not have diarrhea"]),
+            "constipation_explicit": ("constipation", ["constipation", "constipated", "difficulty passing stool", "unable to pass stool"], ["no constipation", "not constipated", "don't have constipation", "dont have constipation", "do not have constipation"]),
+            "abdominal_pain": ("abdominal_pain", ["abdominal pain", "stomach pain", "belly pain", "stomach ache", "belly ache", "cramps", "cramping"], ["no abdominal pain", "no stomach pain", "no belly pain", "no cramps", "no pain", "don't have abdominal pain", "dont have abdominal pain", "do not have abdominal pain", "don't have stomach pain", "dont have stomach pain", "do not have stomach pain"]),
+            "anal_pain": ("anal_pain", ["anal pain", "pain around anus", "pain near anus", "pain during stool"], ["no anal pain", "don't have anal pain", "dont have anal pain", "do not have anal pain"]),
+            "mucus": ("mucus", ["mucus in stool", "mucus in my stool"], ["no mucus", "no mucus in stool", "don't have mucus", "do not have mucus"]),
+            "fever": ("fever", ["fever", "high temperature"], ["no fever", "no temperature", "don't have fever", "do not have fever"]),
+            "vomiting": ("vomiting", ["vomiting", "vomit", "throwing up"], ["no vomiting", "not vomiting", "don't have vomiting", "do not have vomiting", "haven't had vomiting", "have not had vomiting"]),
+            "reflux_present": ("reflux_present", ["acid reflux", "acid coming back up", "sour taste", "food coming back up", "regurgitation"], ["no acid reflux", "no reflux", "don't have reflux", "do not have reflux"]),
+            "weight_loss": ("weight_loss", ["weight loss", "lost weight", "losing weight"], ["no weight loss", "not losing weight", "haven't lost weight", "have not lost weight", "don't have weight loss", "do not have weight loss"]),
+            "lump_or_prolapse": ("lump_or_prolapse", ["lump near anus", "lump at anus", "lump comes out", "prolapse", "something comes out of anus"], ["no lump", "no prolapse", "don't have a lump", "do not have a lump"]),
+            "itching": ("itching", ["itching", "itchy"], ["no itching", "not itchy", "don't have itching", "do not have itching"]),
+            "burning": ("burning", ["burning"], ["no burning", "not burning", "don't have burning", "do not have burning"]),
+            "swelling": ("swelling", ["swelling", "swollen"], ["no swelling", "not swollen", "don't have swelling", "do not have swelling"]),
+            "straining": ("straining", ["straining", "strain to pass stool", "push hard to pass stool"], ["no straining", "not straining", "don't strain", "do not strain"]),
+            "incomplete_evacuation": ("incomplete_evacuation", ["incomplete evacuation", "not completely empty", "not fully empty", "still feel like i need to go"], ["complete evacuation", "completely empty", "fully empty"]),
+        }
+
+        explicit = set()
+        negative = set()
+        canonical_symptoms = {
+            "bloating": "bloating",
+            "gas": "gas",
+            "diarrhea": "diarrhea",
+            "constipation_explicit": "constipation",
+            "abdominal_pain": "stomach pain",
+        }
+
+        for field, (_label, positives, negatives) in corrections.items():
+            value = explicit_bool(positives, negatives)
+            if value is None:
+                continue
+            data[field] = value
+            explicit.add(field)
+            if value is False:
+                negative.add(field)
+
+        # Keep the two diarrhea slots synchronized.
+        if "diarrhea" in explicit:
+            data["diarrhea_explicit"] = data["diarrhea"]
+
+        # Reconcile symptom lists only for symptoms explicitly mentioned in
+        # this turn. Never remove an unrelated symptom merely because it was
+        # not mentioned.
+        secondary = list(data.get("secondary_symptoms") or [])
+        for field, canonical in canonical_symptoms.items():
+            if field not in explicit:
+                continue
+            if data.get(field) is True:
+                if canonical != data.get("primary_symptom") and canonical not in secondary:
+                    secondary.append(canonical)
+            else:
+                secondary = [x for x in secondary if x != canonical]
+
+        # A primary symptom that the user explicitly denies cannot remain as
+        # stale branch state. Promote the first still-positive explicit symptom
+        # if available; otherwise clear the branch so the questionnaire can
+        # re-establish it safely rather than diagnosing from stale state.
+        primary = data.get("primary_symptom")
+        primary_field = next((f for f, c in canonical_symptoms.items() if c == primary), None)
+        if primary_field in negative:
+            replacement = None
+            for f, c in canonical_symptoms.items():
+                if f in explicit and data.get(f) is True:
+                    replacement = c
+                    break
+            data["primary_symptom"] = replacement
+            primary = replacement
+
+        # Never duplicate the primary branch in secondary_symptoms.
+        if primary:
+            secondary = [x for x in secondary if x != primary]
+        data["secondary_symptoms"] = list(dict.fromkeys(secondary))
+        return data
+
+    @staticmethod
     def _question_has_answer(session, field):
         """Single authoritative semantic question-completion check."""
         return question_has_answer(session.symptom_state, field)
@@ -461,7 +577,7 @@ class ConversationManager:
             "incomplete_evacuation", "recent_worsening", "reflux_present",
             "difficulty_swallowing", "persistent_vomiting", "vomiting_blood",
             "lump_or_protrusion", "meal_relation", "gas", "itching", "burning",
-            "swelling", "constipation", "loose_stools",
+            "swelling", "constipation", "loose_stools", "bloating",
         ):
             if isinstance(contextual.get(_key), bool):
                 if _key == "lump_or_protrusion":
@@ -545,6 +661,19 @@ class ConversationManager:
             data["severity"] = contextual["severity"]
             if isinstance(contextual.get("recent_worsening"), bool):
                 data["recent_worsening"] = contextual["recent_worsening"]
+
+        # Apply volunteered symptoms from NLU extraction (multi-fact messages)
+        symptoms = [x for x in (contextual.get("symptoms") or []) if isinstance(x, str)]
+        primary = data.get("primary_symptom")
+        if not primary and symptoms:
+            data["primary_symptom"] = symptoms[0]
+            primary = symptoms[0]
+        secondary = list(data.get("secondary_symptoms") or [])
+        for symptom in symptoms:
+            if symptom != primary and symptom not in secondary:
+                secondary.append(symptom)
+        data["secondary_symptoms"] = secondary
+
         if field == "bowel_pattern" and contextual.get("bowel_pattern"):
             bp = contextual["bowel_pattern"]
             if bp == "normal":
@@ -957,6 +1086,11 @@ class ConversationManager:
         active_owned = set((QUESTION_SCHEMA.get(field).fields if QUESTION_SCHEMA.get(field) else set()))
         normalized = n
 
+        # Apply explicit volunteered symptom facts after generic merge but before
+        # the active-question restoration guard. This makes positives and
+        # negatives symmetric and prevents stale symptom state from winning.
+        merged_data = self._apply_explicit_symptom_corrections(merged_data, text)
+
         def explicit_field(f):
             patterns = {
                 "duration": r"\b(?:for|since|started|began|been having|lasting|lasted|ago)\b.{0,80}\b(?:\d+(?:\.\d+)?|one|two|three|four|five|six|seven|eight|nine|ten)\s*(?:hours?|days?|weeks?|months?|years?)\b",
@@ -994,6 +1128,21 @@ class ConversationManager:
                 "meal_timing": r"\b(?:after meals?|after eating|right after eating|immediately after eating|\d+(?:\.\d+)?\s*(?:minutes?|hours?) later|when i lie down|at night|not related to meals?)\b",
                 "symptom_onset_after_food": r"\b(?:right after|immediately after|\d+(?:\.\d+)?\s*(?:minutes?|hours?)\s+(?:later|after))\b",
                 "timing_relation": r"\b(?:after meals?|after eating|when i lie down|at night|not related to meals?)\b",
+                "bloating": r"\b(?:bloating|bloated|bloat)\b",
+                "gas": r"\b(?:gas|gassy|flatulence|farting|passing\s+gas)\b",
+                "constipation_explicit": r"\b(?:constipation|constipated)\b",
+                "diarrhea": r"\b(?:diarrhea|diarrhoea|loose\s+(?:stools?|motions?)|watery\s+(?:stools?|poop))\b",
+                "diarrhea_explicit": r"\b(?:diarrhea|diarrhoea|loose\s+(?:stools?|motions?)|watery\s+(?:stools?|poop))\b",
+                "primary_symptom": r"\b(?:constipat(?:ion|ed)|hard stools?|bloating|bloated|bloat|gas|gassy|diarrhea|diarrhoea|loose stools?|loose motions?|watery stools?|stomach pain|abdominal pain|belly pain)\b",
+                "secondary_symptoms": r"\b(?:constipat(?:ion|ed)|hard stools?|bloating|bloated|bloat|gas|gassy|diarrhea|diarrhoea|loose stools?|loose motions?|watery stools?|stomach pain|abdominal pain|belly pain)\b",
+                "abdominal_pain": r"\b(?:abdominal pain|stomach pain|belly pain|stomach ache|belly ache|cramps?|cramping)\b",
+                "anal_pain": r"\b(?:anal pain|pain around anus|pain near anus|pain during stool)\b",
+                "mucus": r"\bmucus\b",
+                "itching": r"\b(?:itching|itchy)\b",
+                "burning": r"\bburning\b",
+                "swelling": r"\b(?:swelling|swollen)\b",
+                "straining": r"\b(?:strain|straining)\b",
+                "incomplete_evacuation": r"\b(?:incomplete evacuation|not completely empty|not fully empty|still feel like i need to go)\b",
             }
             pat = patterns.get(f)
             return bool(pat and re.search(pat, normalized))

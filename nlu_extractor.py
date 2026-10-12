@@ -1005,9 +1005,16 @@ def _deterministic_context_fallback(message: str, last_question: str | None, sta
             # Keep this as an irritation/symptom branch. Do not convert
             # itching alone into a fissure or hemorrhoid diagnosis.
             out["symptoms"].append("anal burning")
-    if re.search(r"\bbloat(ed|ing)?\b|\bbelly feels swollen\b|\bstomach feels full of air\b", n):
+    if (
+        re.search(r"\bbloat(ed|ing)?\b|\bbelly feels swollen\b|\bstomach feels full of air\b", n)
+        and not re.search(r"\b(?:no|not|never|without|don't|dont|do not)\b.{0,35}\b(?:bloating|bloated|bloat)\b", n)
+    ):
         out["symptoms"].append("bloating")
-    if re.search(r"\b(lots of gas|a lot of gas|excess gas|gassy|farting a lot|passing gas)\b", n):
+        out["bloating"] = True
+    if (
+        re.search(r"\b(gas|gassy|flatulence|farting|passing gas)\b", n)
+        and not re.search(r"\b(?:no|not|never|without|don't|dont|do not)\b.{0,35}\b(?:gas|gassy|flatulence)\b", n)
+    ):
         out["symptoms"].append("gas")
         out["gas"] = True
     if re.search(r"\b(can't|cant|cannot|not able to|haven't|havent|don't|dont|do not).{0,35}\b(po(o)?p|pass stool|bowel movement|go to the toilet)\b", n):
@@ -1035,8 +1042,12 @@ def _deterministic_context_fallback(message: str, last_question: str | None, sta
         out["symptoms"].append("acidity")
     if re.search(r"\b(piles|haemorrhoids|hemorrhoids)\b", n):
         out["symptoms"].append("piles")
-    if re.search(r"\b(stomach pain|stomach ache|belly pain|abdominal pain|belly ache)\b", n):
+    if (
+        re.search(r"\b(stomach pain|stomach ache|belly pain|abdominal pain|belly ache)\b", n)
+        and not re.search(r"\b(?:no|not|never|without|don't|dont|do not)\b.{0,35}\b(?:stomach pain|abdominal pain|belly pain|stomach ache|belly ache)\b", n)
+    ):
         out["symptoms"].append("stomach pain")
+        out["pain"] = True
 
     # Lifestyle/medication answers are contextual facts too. Keep them in
     # NLU so the active-question resolver does not depend on exact spelling.
@@ -1247,6 +1258,28 @@ def extract_natural_facts(message: str, last_question: str | None, state) -> dic
             "swallowing": {"difficulty_swallowing", "persistent_vomiting", "vomiting_blood"},
             "weight_swallow": {"weight_loss", "difficulty_swallowing", "persistent_vomiting", "vomiting_blood"},
             "night_weight_fever": {"weight_loss", "fever"},
+            "bloating_pain": {"bloating", "abdominal_pain", "pain_related_to_bowel_movement"},
+            "pain": {"abdominal_pain", "pain_related_to_bowel_movement"},
+            "pain_relation": {"food_related", "pain_related_to_bowel_movement"},
+            "blood_mucus": {"blood_present", "mucus"},
+            "incomplete_evacuation": {"incomplete_evacuation"},
+            "hard_stools": {"hard_stools"},
+            "straining": {"straining"},
+            "severity": {"severity", "recent_worsening"},
+            "fibre": {"fibre_intake"},
+            "water": {"water_intake"},
+            "medications": {"medications"},
+            "infection": {"recent_infection"},
+            "pain_location": {"pain_location"},
+            "bowel_pattern": {"constipation_explicit", "diarrhea_explicit", "diarrhea"},
+            "triggers": {"food_trigger", "food_related"},
+            "food_trigger": {"food_trigger", "food_related"},
+            "trigger": {"food_trigger", "food_related"},
+            "food_relation": {"food_related"},
+            "upper_symptoms": {"abdominal_pain"},
+            "symptoms": {"bloating", "diarrhea", "abdominal_pain", "constipation_explicit"},
+            "red_flag_check": {"red_flags"},
+            "product_concern": set(),
         }
         forced_fields = context_fields.get(last_question or "", set())
         scalar_keys = (
