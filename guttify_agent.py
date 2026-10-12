@@ -28,7 +28,7 @@ from clinical_rule_engine import evaluate as evaluate_screening, _duration_days
 from safety_checker import check_safety, detect_red_flags, derive_red_flags, is_pregnancy_or_lactation
 from recommendation_engine import evaluate as evaluate_product, find_named_product, has_domain_overlap, IRRELEVANT_MESSAGE, products as ALL_PRODUCTS
 from nlu_extractor import extract_natural_facts
-from question_schema import QUESTION_SCHEMA, QuestionResolution, question_has_answer, resolve_against_active_question
+from question_schema import QUESTION_SCHEMA, QuestionResolution, question_has_answer, resolve_against_active_question, validate_question_resolution
 from product_concern_router import detect_product_concerns
 
 SESSION_ENDED_MESSAGE = "This conversation has already wrapped up. Please start a new chat if you'd like help with another question."
@@ -414,7 +414,17 @@ class ConversationManager:
         # active question. It may resolve multiple slots in one message.
         contextual = precomputed_facts if isinstance(precomputed_facts, dict) else extract_natural_facts(text, field, s)
         question_resolution = contextual.get("_question_resolution") if isinstance(contextual, dict) else None
-
+        question_resolution = validate_question_resolution(question_resolution)
+        resolution_is_unresolved = question_resolution.get("status") in {"unresolved", "clarification_needed"}
+        active_owned = set((QUESTION_SCHEMA.get(field).fields if QUESTION_SCHEMA.get(field) else set()))
+        protected_active_values = {k: data.get(k) for k in active_owned}
+        invalid_unresolved_fields = []
+        if isinstance(contextual.get("_question_resolution") if isinstance(contextual, dict) else None, dict):
+            raw_resolution = contextual["_question_resolution"]
+            if raw_resolution.get("status") in {"unresolved", "clarification_needed"} and raw_resolution.get("values"):
+                invalid_unresolved_fields = list(raw_resolution.get("values", {}).keys())
+        if invalid_unresolved_fields:
+            logger.warning("[NLU][RESOLUTION_GUARD] INVALID unresolved_with_values fields=%s", invalid_unresolved_fields)
         # Unknown is a resolved conversational outcome, not a clinical value.
         # Record the question as completed without writing True/False/None into
         # the clinical slot, so diagnosis and safety rules never treat "I don't
@@ -892,11 +902,57 @@ class ConversationManager:
                 data["diarrhea"] = False
                 data["secondary_symptoms"] = [x for x in (data.get("secondary_symptoms") or []) if x != "diarrhea"]
 
+        # The validated resolver owns the active question. Re-apply only the
+        # values it actually detected after legacy compatibility handlers so a
+        # generic parser cannot overwrite a contextual negative/positive.
+        if question_resolution.get("status") == "answered":
+            for _key, _value in (question_resolution.get("values") or {}).items():
+                if _key == "lump_or_prolapse":
+                    data["lump_or_prolapse"] = _value
+                elif _key == "constipation_explicit":
+                    data["constipation_explicit"] = _value
+                elif _key == "diarrhea_explicit":
+                    data["diarrhea_explicit"] = _value
+                    data["diarrhea"] = _value
+                elif _key == "blood_present":
+                    data["blood_present"] = _value
+                elif _key == "pain_related_to_bowel_movement":
+                    data["pain_related_to_bowel_movement"] = _value
+                elif _key in data:
+                    data[_key] = _value
+
         # Generic extraction is subordinate to the active question. It may add
         # clearly explicit volunteered facts, but contextual/implicit facts that
         # belong to another field are discarded.
         merged = merge_state(SymptomState(**data), text, [])
         merged_data = merged.to_dict()
+
+        # Re-assert resolver-owned values after generic merge_state as well;
+        # legacy phrase matching must not overturn a validated contextual fact.
+        if question_resolution.get("status") == "answered":
+            for _key, _value in (question_resolution.get("values") or {}).items():
+                if _key == "lump_or_prolapse":
+                    merged_data["lump_or_prolapse"] = _value
+                elif _key == "constipation_explicit":
+                    merged_data["constipation_explicit"] = _value
+                elif _key == "diarrhea_explicit":
+                    merged_data["diarrhea_explicit"] = _value
+                    merged_data["diarrhea"] = _value
+                elif _key == "blood_present":
+                    merged_data["blood_present"] = _value
+                elif _key == "pain_related_to_bowel_movement":
+                    merged_data["pain_related_to_bowel_movement"] = _value
+                elif _key in merged_data:
+                    merged_data[_key] = _value
+
+        # Unresolved/ambiguous turns may still contribute explicitly volunteered
+        # unrelated facts, but they can never change facts owned by the active
+        # question. This preserves the existing discarded-unrelated-facts
+        # behavior without allowing fallback defaults to answer the question.
+        if resolution_is_unresolved:
+            for _k, _v in protected_active_values.items():
+                merged_data[_k] = _v
+            logger.info("[NLU][RESOLUTION_GUARD] status=%s facts_written=0", question_resolution.get("status"))
 
         active_owned = set((QUESTION_SCHEMA.get(field).fields if QUESTION_SCHEMA.get(field) else set()))
         normalized = n
@@ -971,6 +1027,20 @@ class ConversationManager:
                 x for x in (merged_data.get("secondary_symptoms") or [])
                 if x != "hard stools"
             ]
+        # Final ownership guard: explicit resolver values win over every
+        # compatibility parser, including negation-sensitive legacy rules.
+        if question_resolution.get("status") == "answered":
+            for _key, _value in (question_resolution.get("values") or {}).items():
+                if _key in merged_data:
+                    merged_data[_key] = _value
+                elif _key == "lump_or_prolapse":
+                    merged_data["lump_or_prolapse"] = _value
+                elif _key == "constipation_explicit":
+                    merged_data["constipation_explicit"] = _value
+                elif _key == "diarrhea_explicit":
+                    merged_data["diarrhea_explicit"] = _value
+                    merged_data["diarrhea"] = _value
+
         discarded = {}
         if field and QUESTION_SCHEMA.get(field):
             for k, value in merged.to_dict().items():
@@ -994,9 +1064,12 @@ class ConversationManager:
         ]
         if preserved:
             logger.info("[QUESTION][STATE_PRESERVE] preserved=%s", preserved)
-        answered = question_has_answer(session.symptom_state, field)
-        answer_status = "answered" if answered else "unresolved"
+        resolver_status = question_resolution.get("status") if isinstance(question_resolution, dict) else "unresolved"
+        answered = resolver_status == "answered" and question_has_answer(session.symptom_state, field)
+        answer_status = "answered" if answered else resolver_status
         resolver_source = contextual.get("_resolver_source", "fallback") if isinstance(contextual, dict) else "fallback"
+        if answered:
+            logger.info("[NLU][RESOLUTION_GUARD] status=answered fields_written=%s", list((question_resolution.get("values") or {}).keys()))
         confidence = float(
             (question_resolution or {}).get("confidence")
             or contextual.get("confidence")
@@ -1396,11 +1469,19 @@ class ConversationManager:
                 return {"status": "SAFETY_REVIEW", "message": safety["message"],
                         "recommendations": [], "safety": safety, "screening": screening}
 
+            # The resolver owns answerability. Never infer completion from
+            # stale state when the current turn was unresolved/ambiguous.
+            resolution_status = resolution.answer_status if resolution else "unresolved"
+            if resolution_status in {"unresolved", "clarification_needed"}:
+                session.last_question = pending_question
+                logger.info("[NLU][RESOLUTION_GUARD] status=%s facts_written=0", resolution_status)
+                # Continue into the existing clarification response below.
+
             # Do not consume a question merely because it was displayed. If
             # the response did not answer that question, keep the context
             # active and ask for clarification instead of skipping a required
             # clinical field or declaring a diagnosis prematurely.
-            if not self._question_has_answer(session, pending_question):
+            if resolution_status in {"unresolved", "clarification_needed"} or not self._question_has_answer(session, pending_question):
                 session.last_question = pending_question
                 # Use a focused clarification when the user answered only
                 # part of a multi-concept question. Repeating the entire

@@ -153,7 +153,7 @@ _UNKNOWN_RE = re.compile(
     r"^(?:i\s+am|i'?m|im)\s+(?:not\s+sure|unsure)$|"
     r"^not\s+sure$|^unsure$|^uncertain$|^not\s+certain$|"
     r"^can'?t\s+tell$|^no\s+idea$|^i\s+have\s+no\s+idea$|"
-    r"^i\s+don'?t\s+remember$|^maybe$|^i\s+can'?t\s+say$",
+    r"^i\s+don'?t\s+remember$|^i\s+can'?t\s+say$",
     re.I,
 )
 _YES_RE = re.compile(
@@ -238,6 +238,15 @@ def resolve_against_active_question(
 
     n = normalize_answer_text(message)
     status = classify_answer_status(n)
+    if question_id == "vomiting_fever" and re.fullmatch(r"(?:no\s*,?\s*neither|neither|none)", n):
+        return {"status": "answered", "values": {"vomiting": False, "fever": False}, "confidence": 0.99, "source": "deterministic"}
+    if n == "maybe":
+        return {
+            "status": "clarification_needed",
+            "values": {},
+            "confidence": 0.95,
+            "source": "deterministic",
+        }
 
     if status == "unknown":
         return {
@@ -248,6 +257,8 @@ def resolve_against_active_question(
         }
 
     if status in {"yes", "no"}:
+        if status == "no" and question_id == "vomiting_fever" and re.search(r"\bneither\b", n):
+            return {"status": "answered", "values": {"vomiting": False, "fever": False}, "confidence": 0.99, "source": "deterministic"}
         # Bristol type is optional knowledge: "no" means the user does not
         # know the type, not that stool has a clinical negative value.
         if question_id == "stool_form" and status == "no":
@@ -257,6 +268,31 @@ def resolve_against_active_question(
                 "confidence": 0.99,
                 "source": "deterministic",
             }
+        if status == "no" and question_id == "medications":
+            return {"status": "answered", "values": {"medications": "none"}, "confidence": 0.99, "source": "deterministic"}
+        if status == "no" and question_id in {"triggers", "food_trigger", "trigger"}:
+            return {"status": "answered", "values": {"food_related": False}, "confidence": 0.99, "source": "deterministic"}
+        if status == "no" and question_id == "infection":
+            return {"status": "answered", "values": {"recent_infection": False}, "confidence": 0.99, "source": "deterministic"}
+        # Composite constipation is a special semantic question: a bare
+        # yes/no answers the canonical constipation proposition itself. A
+        # negative also explicitly establishes the requested supporting
+        # negative (no straining); absence must never be synthesized here.
+        if question_id in {"constipation", "stool_straining"}:
+            if status == "yes":
+                return {
+                    "status": "answered",
+                    "values": {"constipation_explicit": True},
+                    "confidence": 0.99,
+                    "source": "deterministic",
+                }
+            return {
+                "status": "answered",
+                "values": {"constipation_explicit": False, "straining": False},
+                "confidence": 0.99,
+                "source": "deterministic",
+            }
+
         value = status == "yes"
         if question_id in _BARE_BOOL:
             return {
@@ -325,6 +361,98 @@ def resolve_against_active_question(
     if question_id in {"duration"} and extracted and extracted.get("duration"):
         return {"status": "answered", "values": {"duration": extracted["duration"]}, "confidence": 0.98, "source": "deterministic"}
 
+    # Deterministic contextual patterns for composite natural-language answers.
+    if question_id == "bloating_pain":
+        bloating = None
+        abdominal = None
+        if re.search(r"\b(?:no|not|never|without|don't|dont|do not)\b.{0,25}\b(?:bloating|bloated|bloat)\b", n):
+            bloating = False
+        elif re.search(r"\b(?:bloating|bloated|bloat)\b", n):
+            bloating = True
+        if re.search(r"\b(?:no|not|never|without|don't|dont|do not)\b.{0,30}\b(?:abdominal pain|stomach pain|belly pain|stomach ache)\b", n):
+            abdominal = False
+        elif re.search(r"\b(?:abdominal pain|stomach pain|belly pain|stomach ache|cramps?)\b", n):
+            abdominal = True
+        if bloating is not None or abdominal is not None:
+            vals = {}
+            if bloating is not None: vals["bloating"] = bloating
+            if abdominal is not None: vals["abdominal_pain"] = abdominal
+            # No pain makes the relation dimension inapplicable.
+            if abdominal is False: vals["pain_related_to_bowel_movement"] = False
+            return {"status": "answered", "values": vals, "confidence": 0.99, "source": "deterministic"}
+    if question_id == "pain":
+        if re.search(r"\b(?:no|not|never|without|don't|dont|do not)\b.{0,30}\b(?:abdominal pain|stomach pain|belly pain|stomach ache|pain)\b", n):
+            return {"status": "answered", "values": {"abdominal_pain": False, "pain_related_to_bowel_movement": False}, "confidence": 0.99, "source": "deterministic"}
+    if question_id == "swallowing":
+        neg = lambda term: bool(re.search(r"\b(?:no|not|never|without|don't|dont|do not)\b.{0,35}\b" + term + r"\b", n))
+        if neg(r"difficulty\s+swallowing") and neg(r"persistent\s+vomiting") and neg(r"vomiting\s+blood"):
+            return {"status": "answered", "values": {"difficulty_swallowing": False, "persistent_vomiting": False, "vomiting_blood": False}, "confidence": 0.99, "source": "deterministic"}
+
+    # Question-specific aliases bridge the extractor's canonical vocabulary
+    # to the schema's state slots. This is still deterministic and contextual;
+    # it does not infer missing values.
+    if extracted:
+        semantic_aliases = {
+            "anal_pain": {"anal_pain": "pain", "sharp_pain_during_stool": "pain"},
+            "blood": {"blood_present": "bleeding"},
+            "bleeding": {"blood_present": "bleeding"},
+            "lump": {"lump_or_prolapse": "lump_or_protrusion"},
+            "lump_or_prolapse": {"lump_or_prolapse": "lump_or_protrusion"},
+            "infection": {"recent_infection": "recent_infection"},
+            "triggers": {"food_trigger": "food_trigger", "food_related": "food_related"},
+            "food_trigger": {"food_trigger": "food_trigger", "food_related": "food_related"},
+            "trigger": {"food_trigger": "food_trigger", "food_related": "food_related"},
+            "food_relation": {"food_related": "food_related"},
+            "pain_relation": {"pain_related_to_bowel_movement": "pain_related_to_bowel_movement", "food_related": "food_related", "pain_relation": "pain_relation"},
+            "medications": {"medications": "medications"},
+            "water": {"water_intake": "water_intake"},
+            "fibre": {"fibre_intake": "fibre_intake"},
+            "severity": {"severity": "severity"},
+            "bowel_pattern": {"constipation_explicit": "constipation", "diarrhea_explicit": "loose_stools", "diarrhea": "loose_stools", "bowel_pattern": "bowel_pattern"},
+            "constipation": {"constipation_explicit": "constipation", "straining": "straining", "hard_stools": "hard_stools"},
+            "stool_straining": {"constipation_explicit": "constipation", "straining": "straining", "hard_stools": "hard_stools"},
+        }
+        aliased = {}
+        for target, source in semantic_aliases.get(question_id, {}).items():
+            value = extracted.get(source)
+            if value is not None and value != "":
+                aliased[target] = value
+        if aliased:
+            # A canonical boolean/scalar answer is sufficient; only return
+            # fields actually present in the extraction.
+            return {"status": "answered", "values": aliased, "confidence": 0.98, "source": "deterministic"}
+
+    # Deterministic scalar/choice forms that the generic extractor may leave
+    # to legacy handlers are resolved here so the resolver remains the sole
+    # owner of question completion.
+    if question_id == "blood_colour":
+        if re.search(r"\b(?:bright|fresh)(?:\s+red)?\b", n):
+            return {"status": "answered", "values": {"blood_colour": "bright_red"}, "confidence": 0.99, "source": "deterministic"}
+        if re.search(r"\b(?:black|dark|tarry)\b", n):
+            return {"status": "answered", "values": {"blood_colour": "black"}, "confidence": 0.99, "source": "deterministic"}
+    if question_id == "bowel_frequency":
+        m = re.search(r"\b(\d+(?:\.\d+)?)\s*(?:bowel movements?|times?|motions?)\s*(?:per|a)\s*week\b", n)
+        if m:
+            return {"status": "answered", "values": {"bowel_frequency_per_week": float(m.group(1)) if "." in m.group(1) else int(m.group(1))}, "confidence": 0.99, "source": "deterministic"}
+    if question_id == "daily_frequency":
+        m = re.search(r"\b(\d+(?:\.\d+)?)\s*(?:bowel movements?|times?|stools?|motions?)\s*(?:per|a)\s*day\b", n)
+        if m:
+            return {"status": "answered", "values": {"bowel_frequency_per_day": float(m.group(1)) if "." in m.group(1) else int(m.group(1))}, "confidence": 0.99, "source": "deterministic"}
+    if question_id == "severity":
+        m = re.search(r"\b([1-9]|10)\b", n)
+        if m:
+            return {"status": "answered", "values": {"severity": m.group(1)}, "confidence": 0.99, "source": "deterministic"}
+    if question_id == "fibre":
+        m = re.search(r"\b(low|average|normal|high|good)\b(?:\s+(?:fibre|fiber))?", n)
+        if m:
+            return {"status": "answered", "values": {"fibre_intake": m.group(1)}, "confidence": 0.99, "source": "deterministic"}
+    if question_id == "infection" and re.search(r"\b(?:no|not|never|without)\b.{0,25}\b(?:infection|infected|stomach bug|gastro)\b", n):
+        return {"status": "answered", "values": {"recent_infection": False}, "confidence": 0.99, "source": "deterministic"}
+    if question_id == "medications" and re.fullmatch(r"(?:no|nope|nah|no medicines?|no medication|none)", n):
+        return {"status": "answered", "values": {"medications": "none"}, "confidence": 0.99, "source": "deterministic"}
+    if question_id == "vomiting_fever" and re.fullmatch(r"(?:neither|none|no neither|no)", n):
+        return {"status": "answered", "values": {"vomiting": False, "fever": False}, "confidence": 0.99, "source": "deterministic"}
+
     # If extraction has exactly one schema-owned, semantically typed value,
     # allow it to resolve the question without an LLM.
     if extracted:
@@ -348,6 +476,36 @@ def resolve_against_active_question(
             return {"status": "answered", "values": candidates, "confidence": 0.98, "source": "deterministic"}
 
     return {"status": "unresolved", "values": {}, "confidence": 0.0, "source": "unresolved"}
+
+def validate_question_resolution(resolution: dict | None) -> dict:
+    """Normalize resolver output at the state-mutation boundary.
+
+    An unresolved/clarification result owns no clinical facts. This prevents
+    fallback defaults (especially False) from masquerading as detected
+    negatives. An answered result must contain an actual value payload.
+    """
+    if not isinstance(resolution, dict):
+        return {"status": "unresolved", "values": {}, "confidence": 0.0, "source": "unresolved"}
+
+    status = resolution.get("status", "unresolved")
+    values = resolution.get("values")
+    if not isinstance(values, dict):
+        values = {}
+
+    normalized = dict(resolution)
+    normalized["status"] = status
+    normalized["values"] = values
+
+    if status in {"unresolved", "clarification_needed"}:
+        # Invalid resolver payloads are safely normalized rather than allowed
+        # to mutate state. The caller logs the discarded keys for observability.
+        normalized["values"] = {}
+    elif status == "answered":
+        # Empty answered payloads are not genuine answers.
+        if not values:
+            normalized["status"] = "unresolved"
+    return normalized
+
 
 def get_question_spec(question_id: str | None) -> QuestionSpec | None:
     return QUESTION_SCHEMA.get(question_id)

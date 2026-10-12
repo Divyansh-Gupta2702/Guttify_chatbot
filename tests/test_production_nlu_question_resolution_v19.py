@@ -39,8 +39,12 @@ def test_unknown_variants_resolve_and_do_not_repeat():
                 "can't tell", "no idea", "I have no idea", "I'm unsure",
                 "I don't remember", "not certain", "maybe", "I can't say"]:
         facts = extract_natural_facts(msg, "stool_form", SymptomState(primary_symptom="bloating"))
-        assert facts["_answer_status"] == "unknown", msg
-        assert facts["_question_resolution"]["status"] == "unknown", msg
+        if msg == "maybe":
+            assert facts["_answer_status"] == "clarification_needed", msg
+            assert facts["_question_resolution"]["status"] == "clarification_needed", msg
+        else:
+            assert facts["_answer_status"] == "unknown", msg
+            assert facts["_question_resolution"]["status"] == "unknown", msg
 
 
 def test_no_to_optional_stool_type_means_unknown():
@@ -137,3 +141,78 @@ def test_repeated_identical_clarification_advances_instead_of_looping():
     second = cm.handle_message(sid, "not sure which")
     assert s.last_question != "pain_relation"
     assert s.symptom_state.answered_unknown_fields
+
+
+def test_constipation_bare_no_is_deterministic_negative():
+    facts = extract_natural_facts("no", "constipation", SymptomState(primary_symptom="piles"))
+    assert facts["_answer_status"] == "answered"
+    assert facts["_resolver_source"] == "deterministic"
+    assert facts["constipation_explicit"] is False
+    assert facts["straining"] is False
+
+
+def test_constipation_bare_yes_is_deterministic_positive():
+    facts = extract_natural_facts("yes", "constipation", SymptomState(primary_symptom="piles"))
+    assert facts["_answer_status"] == "answered"
+    assert facts["_resolver_source"] == "deterministic"
+    assert facts["constipation_explicit"] is True
+
+
+def test_constipation_maybe_never_mutates_state_or_advances():
+    cm, sid, s = active("constipation", "piles")
+    s.symptom_state.constipation_explicit = None
+    s.symptom_state.straining = None
+    result = cm.handle_message(sid, "maybe")
+    assert result["status"] == "ASK"
+    assert s.last_question == "constipation"
+    assert s.symptom_state.constipation_explicit is None
+    assert s.symptom_state.straining is None
+
+
+def test_constipation_unrelated_message_never_mutates_question_facts():
+    facts = extract_natural_facts("I was travelling yesterday and watched a movie", "constipation",
+                                  SymptomState(primary_symptom="piles"))
+    assert facts["_answer_status"] == "unresolved"
+    assert facts["_question_resolution"]["values"] == {}
+    assert facts.get("constipation") is None
+    assert facts.get("straining") is None
+
+
+def test_unresolved_cannot_become_answered_from_existing_state():
+    cm, sid, s = active("constipation", "piles")
+    s.symptom_state.constipation_explicit = None
+    s.symptom_state.straining = None
+    result = cm.handle_message(sid, "something unrelated")
+    assert s.last_question == "constipation"
+    assert s.symptom_state.constipation_explicit is None
+    assert s.symptom_state.straining is None
+
+
+def test_answered_constipation_advances_to_next_question():
+    cm, sid, s = active("constipation", "piles")
+    result = cm.handle_message(sid, "no")
+    assert s.symptom_state.constipation_explicit is False
+    assert s.symptom_state.straining is False
+    assert s.last_question != "constipation"
+
+
+def test_resolution_guard_normalizes_invalid_unresolved_values():
+    from question_schema import validate_question_resolution
+    result = validate_question_resolution({
+        "status": "unresolved",
+        "values": {"constipation_explicit": False},
+        "confidence": 0.2,
+        "source": "fallback",
+    })
+    assert result["status"] == "unresolved"
+    assert result["values"] == {}
+
+
+def test_natural_straining_does_not_invent_other_constipation_negatives():
+    facts = extract_natural_facts(
+        "I sometimes strain but otherwise I'm fine",
+        "constipation",
+        SymptomState(primary_symptom="piles"),
+    )
+    assert facts.get("straining") is True
+    assert facts.get("constipation_explicit") is not False

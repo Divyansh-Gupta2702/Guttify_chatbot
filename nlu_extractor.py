@@ -19,7 +19,7 @@ from functools import lru_cache
 from typing import Any
 
 from intent_parser import extract_food_trigger, extract_stool_form
-from question_schema import resolve_against_active_question
+from question_schema import resolve_against_active_question, validate_question_resolution
 
 
 logger = logging.getLogger("gutgpt.nlu")
@@ -1193,9 +1193,9 @@ def extract_natural_facts(message: str, last_question: str | None, state) -> dic
     # A deterministic question resolution is sufficient by itself. This is
     # especially important for yes/no, unknown, age, duration, stool and food
     # answers: no model call is needed and model confidence cannot downgrade them.
-    resolution = resolve_against_active_question(
+    resolution = validate_question_resolution(resolve_against_active_question(
         last_question, message, extracted=fallback, state=state
-    )
+    ))
     if resolution["status"] in {"answered", "unknown"}:
         for key, value in resolution["values"].items():
             if value == "unknown":
@@ -1281,9 +1281,9 @@ def extract_natural_facts(message: str, last_question: str | None, state) -> dic
     # A model answer may still be semantically obvious once its validated
     # fields are available. Run the resolver once more without invoking the
     # model again. This is the single ownership boundary for the active field.
-    final_resolution = resolve_against_active_question(
+    final_resolution = validate_question_resolution(resolve_against_active_question(
         last_question, message, extracted=result, state=state
-    )
+    ))
     result["_question_resolution"] = final_resolution
     result["_answer_status"] = final_resolution["status"]
     result["_resolver_source"] = result.get("_resolver_source", "fallback")
