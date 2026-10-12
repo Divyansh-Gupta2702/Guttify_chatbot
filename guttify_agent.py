@@ -1526,6 +1526,14 @@ class ConversationManager:
                         focused_clarifications["bloating_pain"] = "Does the abdominal pain improve, worsen, or change after a bowel movement?"
                     elif session.symptom_state.bloating is True and session.symptom_state.abdominal_pain is None:
                         focused_clarifications["bloating_pain"] = "Do you also have recurring abdominal pain, and if so, does it change after a bowel movement?"
+                if pending_question == "timing":
+                    # A bare yes/no cannot identify which timing option the
+                    # user means. Never repeat the same multi-option question
+                    # verbatim; explicitly request the missing choice.
+                    focused_clarifications["timing"] = (
+                        "Which is it: after meals/eating, when lying down, or at night? "
+                        'You can also give the timing, for example, "10 minutes" or "immediately".'
+                    )
                 # Use the exact question text associated with the pending field.
                 question_texts = {
                     "duration": "How long has this been happening?",

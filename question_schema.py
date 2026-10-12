@@ -437,6 +437,57 @@ def resolve_against_active_question(
             return {"status": "answered", "values": {"blood_colour": "bright_red"}, "confidence": 0.99, "source": "deterministic"}
         if re.search(r"\b(?:black|dark|tarry)\b", n):
             return {"status": "answered", "values": {"blood_colour": "black"}, "confidence": 0.99, "source": "deterministic"}
+    if question_id == "timing":
+        # The timing question is context-owned. Short answers such as
+        # "10 mins", "soon", and "immediately" are complete answers because
+        # the question already establishes that the reference point is eating.
+        # They must not fall through to the LLM/fallback path and cause the
+        # same question to be repeated.
+        immediate = re.fullmatch(
+            r"(?:right\s+away|straight\s+away|immediately|instantly|right\s+after|immediate(?:ly)?)",
+            n,
+        )
+        if immediate:
+            return {
+                "status": "answered",
+                "values": {
+                    "meal_timing": "immediately_after_eating",
+                    "symptom_onset_after_food": "immediately after eating",
+                    "timing_relation": "after_eating",
+                },
+                "confidence": 0.99,
+                "source": "deterministic",
+            }
+        if re.fullmatch(r"(?:very\s+)?soon|shortly", n):
+            return {
+                "status": "answered",
+                "values": {
+                    "meal_timing": "soon_after_eating",
+                    "symptom_onset_after_food": "soon after eating",
+                    "timing_relation": "after_eating",
+                },
+                "confidence": 0.98,
+                "source": "deterministic",
+            }
+        m = re.fullmatch(
+            r"(?:within\s+)?(\d+(?:\.\d+)?)\s*(minutes?|mins?|hours?|hrs?)",
+            n,
+        )
+        if m:
+            unit = m.group(2)
+            value = m.group(1)
+            canonical_unit = "minutes" if unit.startswith("min") else "hours"
+            onset = f"{value} {canonical_unit} after eating"
+            return {
+                "status": "answered",
+                "values": {
+                    "meal_timing": "after_eating",
+                    "symptom_onset_after_food": onset,
+                    "timing_relation": "after_eating",
+                },
+                "confidence": 0.99,
+                "source": "deterministic",
+            }
     if question_id == "bowel_frequency":
         # This question explicitly asks for frequency PER WEEK, so short
         # contextual answers such as "3 times" or "3" are complete answers.

@@ -298,3 +298,35 @@ def test_pain_relation_after_focused_clarification_resolves():
     assert s.pain_related_to_bowel_movement is True
     assert session.last_question != "pain"
     assert result["status"] in {"ASK", "AMBIGUOUS", "DIAGNOSIS_FOUND", "RECOMMENDATION_FOUND", "SAFETY_REVIEW"}
+
+@pytest.mark.parametrize(
+    "message,expected_timing,expected_onset",
+    [
+        ("10 mins", "after_eating", "10 minutes after eating"),
+        ("10 minutes", "after_eating", "10 minutes after eating"),
+        ("within 10 minutes", "after_eating", "10 minutes after eating"),
+        ("soon", "after_eating", "soon after eating"),
+        ("very soon", "after_eating", "soon after eating"),
+        ("immediately", "after_eating", "immediately after eating"),
+        ("right away", "after_eating", "immediately after eating"),
+        ("30 mins", "after_eating", "30 minutes after eating"),
+        ("2 hours", "after_eating", "2 hours after eating"),
+    ],
+)
+def test_timing_short_answers_are_deterministic_and_advance(message, expected_timing, expected_onset):
+    cm, sid, session = active("timing", "acidity")
+    result = cm.handle_message(sid, message)
+    assert session.symptom_state.timing_relation == expected_timing
+    assert session.symptom_state.symptom_onset_after_food == expected_onset
+    assert session.last_question != "timing"
+    assert result["status"] != "ASK" or session.last_question != "timing"
+
+
+def test_timing_bare_yes_gets_focused_clarification_not_same_question():
+    cm, sid, session = active("timing", "acidity")
+    result = cm.handle_message(sid, "yes")
+    assert session.last_question == "timing"
+    assert result["status"] == "ASK"
+    assert "Which is it" in result["message"]
+    assert "after meals/eating" in result["message"]
+    assert result["message"] != "How soon after eating does it start?"
