@@ -216,3 +216,27 @@ def test_natural_straining_does_not_invent_other_constipation_negatives():
     )
     assert facts.get("straining") is True
     assert facts.get("constipation_explicit") is not False
+
+
+def test_bowel_frequency_accepts_contextual_short_answers_without_week_suffix():
+    cases = [
+        ("3 times", 3),
+        ("3", 3),
+        ("about 3 times", 3),
+        ("around 4 bowel movements", 4),
+        ("roughly 2", 2),
+    ]
+    for message, expected in cases:
+        facts = extract_natural_facts(message, "bowel_frequency", SymptomState(primary_symptom="constipation"))
+        assert facts["bowel_frequency_per_week"] == expected, (message, facts)
+        assert facts["_answer_status"] == "answered", (message, facts)
+        assert facts["_resolver_source"] == "deterministic", (message, facts)
+
+
+def test_bowel_frequency_short_answer_does_not_call_llm(monkeypatch):
+    calls = []
+    monkeypatch.setattr(nlu_extractor, "_llm_extract", lambda *a, **k: calls.append(a) or None)
+    facts = extract_natural_facts("3 times", "bowel_frequency", SymptomState(primary_symptom="constipation"))
+    assert facts["bowel_frequency_per_week"] == 3
+    assert facts["_answer_status"] == "answered"
+    assert calls == []

@@ -438,9 +438,17 @@ def resolve_against_active_question(
         if re.search(r"\b(?:black|dark|tarry)\b", n):
             return {"status": "answered", "values": {"blood_colour": "black"}, "confidence": 0.99, "source": "deterministic"}
     if question_id == "bowel_frequency":
+        # This question explicitly asks for frequency PER WEEK, so short
+        # contextual answers such as "3 times" or "3" are complete answers.
+        # Do not send these obvious numeric answers to the LLM/fallback path.
         m = re.search(r"\b(\d+(?:\.\d+)?)\s*(?:bowel movements?|times?|motions?)\s*(?:per|a)\s*week\b", n)
+        if not m:
+            m = re.fullmatch(r"(?:about\s+|around\s+|roughly\s+)?(\d+(?:\.\d+)?)\s*(?:bowel movements?|times?|motions?)", n)
+        if not m:
+            m = re.fullmatch(r"(?:about\s+|around\s+|roughly\s+)?(\d+(?:\.\d+)?)", n)
         if m:
-            return {"status": "answered", "values": {"bowel_frequency_per_week": float(m.group(1)) if "." in m.group(1) else int(m.group(1))}, "confidence": 0.99, "source": "deterministic"}
+            value = float(m.group(1)) if "." in m.group(1) else int(m.group(1))
+            return {"status": "answered", "values": {"bowel_frequency_per_week": value}, "confidence": 0.99, "source": "deterministic"}
     if question_id == "daily_frequency":
         m = re.search(r"\b(\d+(?:\.\d+)?)\s*(?:bowel movements?|times?|stools?|motions?)\s*(?:per|a)\s*day\b", n)
         if m:
