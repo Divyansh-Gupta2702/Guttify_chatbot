@@ -4,8 +4,12 @@ Questions are branch-specific and answerable in normal language. The agent
 records the exact field it asked, so replies like "5 months", "23", "no", or
 "yes, hard stools" are never treated as unrelated messages.
 """
+import logging
+
 from clinical_rule_engine import _duration_days
 from question_schema import question_has_answer
+
+logger = logging.getLogger("gutgpt.questionnaire")
 
 
 def next_question(state):
@@ -17,9 +21,21 @@ def next_question(state):
         unknown_fields = set(getattr(state, "answered_unknown_fields", []) or [])
         if condition and name not in asked and name not in unknown_fields:
             return name, text
+        if name in {"blood_colour", "blood_location", "anal_pain", "lump", "constipation"}:
+            if not condition:
+                logger.info("[QUESTION][BLEEDING][SKIP] field=%s reason=already_answered", name)
         return None
 
-    branch = state.primary_symptom
+    # Safety-critical bleeding owns the assessment whenever bleeding has been
+    # positively established, regardless of which symptom was detected first.
+    # Keep all other symptoms in state; this only changes question priority.
+    if state.blood_present is True:
+        logger.info(
+            "[QUESTION][BRANCH] bleeding_present=true selected_branch=bleeding reason=bleeding_priority"
+        )
+        branch = "bleeding"
+    else:
+        branch = state.primary_symptom
 
     # If the user has supplied enough information up front, these are skipped.
     # First ask duration, then conditionally ask weight-loss if duration >= 1 month,
@@ -41,6 +57,48 @@ def next_question(state):
     # questionnaire below.
     if state.age is None:
         return q("age", "What is your age?", True)
+
+    if branch == "bleeding":
+        bleeding_qs = [
+            q("blood_colour", "Is the blood bright/fresh red, or dark/black/tarry?", state.blood_colour is None),
+            q(
+                "blood_location",
+                "If it is bright red, is it on tissue, dripping into the toilet, or mixed into the stool?",
+                state.blood_colour == "bright_red" and state.blood_location is None,
+            ),
+            q("anal_pain", "Is there sharp or tearing pain during or just after a bowel movement?", state.sharp_pain_during_stool is None),
+            q("lump", "Is there a lump or something protruding from the anus?", state.lump_or_prolapse is None),
+            q("constipation", "Do you have hard stools or strain when passing stool?", state.stool_form is None or state.straining is None),
+        ]
+        missing_fields = []
+        if state.blood_colour is None:
+            missing_fields.append("blood_colour")
+        elif state.blood_colour == "bright_red" and state.blood_location is None:
+            missing_fields.append("blood_location")
+        if state.sharp_pain_during_stool is None:
+            missing_fields.append("anal_pain")
+        if state.lump_or_prolapse is None:
+            missing_fields.append("lump")
+        if state.stool_form is None or state.straining is None:
+            missing_fields.append("constipation")
+        answered_fields = [
+            f for f, value in (
+                ("blood_colour", state.blood_colour),
+                ("blood_location", state.blood_location),
+                ("anal_pain", state.sharp_pain_during_stool),
+                ("lump", state.lump_or_prolapse),
+                ("constipation", state.stool_form if state.stool_form is not None else state.straining),
+            ) if value is not None
+        ]
+        for item in bleeding_qs:
+            if item:
+                logger.info(
+                    "[QUESTION][BLEEDING] answered_fields=%s missing_fields=%s next=%s",
+                    answered_fields, missing_fields, item[0],
+                )
+                return item
+        logger.info("[QUESTION][BLEEDING][COMPLETE]")
+        return None
 
     if branch in ("constipation", "hard stools"):
         # If bleeding is reported during the constipation interview, switch
