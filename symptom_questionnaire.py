@@ -16,6 +16,22 @@ def next_question(state):
     asked = set(state.asked_fields or [])
 
     def q(name, text, condition=True):
+        # Show the Bristol chart immediately before any Bristol stool-type
+        # question. The widget replaces this marker with its embedded chart,
+        # so the image works on Shopify without a separately hosted asset.
+        if name == "stool_form":
+            text = (
+                "[[BRISTOL_STOOL_CHART]]\n"
+                "**How to identify your type:**\n"
+                "1 — Hard separate pellets; difficult to pass.\n"
+                "2 — Lumpy, sausage-shaped stool.\n"
+                "3 — Sausage-shaped with cracks on the surface.\n"
+                "4 — Smooth, soft sausage or snake shape (generally considered ideal).\n"
+                "5 — Soft blobs that pass easily.\n"
+                "6 — Mushy stool with ragged edges.\n"
+                "7 — Entirely liquid, with no solid pieces.\n\n"
+                f"{text} Please reply with a number from **1 to 7**, or say **I don't know**."
+            )
         # A question is asked once per assessment. `asked_fields` prevents
         # malformed/ambiguous answers from causing an infinite repeat loop.
         unknown_fields = set(getattr(state, "answered_unknown_fields", []) or [])
