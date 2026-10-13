@@ -14,14 +14,12 @@ import uuid
 import time
 import logging
 import subprocess
-import sqlite3
-from datetime import datetime, timezone
 from threading import RLock
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field
 
 logger = logging.getLogger("gutgpt.performance")
 if not logger.handlers:
@@ -43,83 +41,6 @@ MAX_HISTORY_MESSAGES = 100
 FRONTEND_FILE = BASE_DIR / "index.html"
 
 app = FastAPI(title="GutGPT API", version="18.1.0")
-
-# Customer details are stored separately from the in-memory chat history.
-# Set DATABASE_URL to a managed PostgreSQL database in production (e.g. Render
-# PostgreSQL). SQLite is a convenient local-development fallback only; its file
-# may be ephemeral on hosts without a persistent disk.
-DATABASE_URL = os.getenv("DATABASE_URL", "").strip()
-SQLITE_DB_PATH = Path(os.getenv("SQLITE_DB_PATH", str(BASE_DIR / "customer_data.db")))
-
-
-def _database_connection():
-    if DATABASE_URL.startswith(("postgres://", "postgresql://")):
-        try:
-            import psycopg
-        except ImportError as exc:
-            raise RuntimeError("PostgreSQL is configured but psycopg is not installed.") from exc
-        db_url = DATABASE_URL.replace("postgres://", "postgresql://", 1)
-        return psycopg.connect(db_url), True
-    SQLITE_DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(str(SQLITE_DB_PATH), timeout=10)
-    conn.row_factory = sqlite3.Row
-    return conn, False
-
-
-def _init_customer_database():
-    conn, is_postgres = _database_connection()
-    try:
-        with conn.cursor() if is_postgres else _sqlite_cursor_context(conn) as cur:
-            cur.execute("""
-                CREATE TABLE IF NOT EXISTS gutgpt_customers (
-                    id TEXT PRIMARY KEY,
-                    session_id TEXT NOT NULL UNIQUE,
-                    name TEXT NOT NULL,
-                    age INTEGER NOT NULL,
-                    contact TEXT NOT NULL,
-                    city TEXT NOT NULL,
-                    consent_given INTEGER NOT NULL,
-                    consented_at TEXT NOT NULL,
-                    created_at TEXT NOT NULL
-                )
-            """)
-        conn.commit()
-    finally:
-        conn.close()
-
-
-class _sqlite_cursor_context:
-    def __init__(self, conn):
-        self.conn = conn
-    def __enter__(self):
-        self.cursor = self.conn.cursor()
-        return self.cursor
-    def __exit__(self, exc_type, exc, tb):
-        self.cursor.close()
-
-
-def _save_customer_details(session_id: str, details: dict):
-    conn, is_postgres = _database_connection()
-    now = datetime.now(timezone.utc).isoformat()
-    customer_id = str(uuid.uuid4())
-    placeholders = "%s" if is_postgres else "?"
-    sql = f"""INSERT INTO gutgpt_customers
-        (id, session_id, name, age, contact, city, consent_given, consented_at, created_at)
-        VALUES ({', '.join([placeholders] * 9)})
-        ON CONFLICT(session_id) DO UPDATE SET
-            name = excluded.name, age = excluded.age, contact = excluded.contact,
-            city = excluded.city, consent_given = excluded.consent_given,
-            consented_at = excluded.consented_at"""
-    try:
-        with conn.cursor() if is_postgres else _sqlite_cursor_context(conn) as cur:
-            cur.execute(sql, (
-                customer_id, session_id, details["name"], details["age"],
-                details["contact"], details["city"], 1, now, now,
-            ))
-        conn.commit()
-    finally:
-        conn.close()
-
 
 # Shopify storefront origins are supplied as a comma-separated environment
 # variable, for example:
@@ -144,8 +65,7 @@ app.add_middleware(
 
 @app.on_event("startup")
 def validate_production_configuration():
-    """Validate configuration and initialize persistent customer storage."""
-    _init_customer_database()
+    """Fail fast when required final-site configuration is missing."""
     missing = []
     if not os.getenv("GROQ_API_KEY"):
         missing.append("GROQ_API_KEY")
@@ -212,45 +132,6 @@ HISTORY_LAST_ACCESS: dict[str, float] = {}
 _SESSION_LOCK = RLock()
 conversation_manager = ConversationManager()
 
-
-
-class CustomerDetailsRequest(BaseModel):
-    session_id: str = Field(min_length=1, max_length=128)
-    name: str = Field(min_length=2, max_length=100)
-    age: int = Field(ge=1, le=120)
-    contact: str = Field(min_length=5, max_length=254)
-    city: str = Field(min_length=2, max_length=100)
-    consent: bool
-
-    @field_validator("name", "contact", "city")
-    @classmethod
-    def strip_required_text(cls, value):
-        value = value.strip()
-        if not value:
-            raise ValueError("This field is required.")
-        return value
-
-
-@app.post("/api/customer-details")
-def save_customer_details(req: CustomerDetailsRequest):
-    """Save customer profile before starting the symptom assessment."""
-    if not req.consent:
-        raise HTTPException(status_code=400, detail="Please provide consent before saving your details.")
-    with _SESSION_LOCK:
-        if req.session_id not in HISTORY or req.session_id not in conversation_manager.sessions:
-            raise HTTPException(status_code=410, detail="SESSION_EXPIRED")
-    try:
-        _save_customer_details(req.session_id, {
-            "name": req.name,
-            "age": req.age,
-            "contact": req.contact,
-            "city": req.city,
-        })
-    except Exception:
-        logger.exception("Unable to persist GutGPT customer details")
-        raise HTTPException(status_code=503, detail="We couldn't save your details. Please try again.")
-    logger.info("Saved customer profile for session=%s", req.session_id[:8])
-    return {"saved": True, "message": "Your details have been saved."}
 
 
 class ChatRequest(BaseModel):

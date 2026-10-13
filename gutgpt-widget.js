@@ -168,27 +168,6 @@
         gap: 10px;
       }
 
-      .customer-form-card {
-        width: 100%;
-        box-sizing: border-box;
-        background: #fff;
-        border: 1px solid #e7ddea;
-        border-radius: 14px;
-        padding: 14px;
-        color: #29232e;
-      }
-      .customer-form-card h3 { margin: 0 0 6px; font-size: 16px; }
-      .customer-form-card p { margin: 0 0 12px; font-size: 12px; line-height: 1.45; color: #625b68; }
-      .customer-form-card label { display: block; margin: 9px 0 4px; font-size: 12px; font-weight: 600; }
-      .customer-form-card input[type="text"], .customer-form-card input[type="number"], .customer-form-card input[type="email"], .customer-form-card input[type="tel"] {
-        box-sizing: border-box; width: 100%; min-height: 38px; border: 1px solid #d9d0df; border-radius: 8px; padding: 8px 10px; font: inherit; font-size: 13px; background: #fff; color: #29232e;
-      }
-      .customer-form-card .consent-row { display: flex; align-items: flex-start; gap: 8px; margin: 12px 0; font-size: 11px; line-height: 1.4; font-weight: 400; }
-      .customer-form-card .consent-row input { margin-top: 2px; }
-      .customer-form-card button { width: 100%; min-height: 40px; border: 0; border-radius: 9px; color: #fff; background: #6a3f96; font-weight: 600; cursor: pointer; }
-      .customer-form-card button:disabled { opacity: .6; cursor: wait; }
-      .customer-form-card .form-error { color: #a22c36; font-size: 12px; margin: 8px 0 0; }
-
       .msg {
         max-width: 88%;
         padding: 10px 12px;
@@ -368,7 +347,6 @@
   let sessionId = null;
   let busy = false;
   let ended = false;
-  let customerDetailsSaved = false;
 
   function escapeHtml(value) {
     const div = document.createElement("div");
@@ -488,71 +466,6 @@
     }
   }
 
-  function renderCustomerForm() {
-    const card = document.createElement("section");
-    card.className = "customer-form-card";
-    card.innerHTML = `
-      <h3>Let's get to know you</h3>
-      <p>Please share these details before we begin your gut-health assessment. Your details are saved to help manage this conversation.</p>
-      <form class="customer-details-form" autocomplete="on">
-        <label for="gutgpt-customer-name">Full name</label>
-        <input id="gutgpt-customer-name" name="name" type="text" maxlength="100" autocomplete="name" required placeholder="Your name">
-        <label for="gutgpt-customer-age">Age</label>
-        <input id="gutgpt-customer-age" name="age" type="number" min="1" max="120" required placeholder="Your age">
-        <label for="gutgpt-customer-contact">Phone number or email</label>
-        <input id="gutgpt-customer-contact" name="contact" type="text" maxlength="254" autocomplete="email" required placeholder="Phone number or email">
-        <label for="gutgpt-customer-city">City</label>
-        <input id="gutgpt-customer-city" name="city" type="text" maxlength="100" autocomplete="address-level2" required placeholder="Your city">
-        <label class="consent-row"><input name="consent" type="checkbox" required><span>I agree to share these details with Guttify for this assessment and related customer support. I understand I should not enter emergency information here.</span></label>
-        <button type="submit">Save details and continue</button>
-        <div class="form-error" role="alert" hidden></div>
-      </form>`;
-    messages.appendChild(card);
-    messages.scrollTop = messages.scrollHeight;
-    const customerForm = card.querySelector("form");
-    const submitButton = customerForm.querySelector("button");
-    const errorBox = customerForm.querySelector(".form-error");
-    customerForm.addEventListener("submit", async (event) => {
-      event.preventDefault();
-      if (busy || !sessionId || customerDetailsSaved) return;
-      const fd = new FormData(customerForm);
-      const details = {
-        session_id: sessionId,
-        name: String(fd.get("name") || "").trim(),
-        age: Number(fd.get("age")),
-        contact: String(fd.get("contact") || "").trim(),
-        city: String(fd.get("city") || "").trim(),
-        consent: fd.get("consent") === "on",
-      };
-      errorBox.hidden = true;
-      submitButton.disabled = true;
-      submitButton.textContent = "Saving…";
-      try {
-        await fetchJson("/api/customer-details", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(details),
-        });
-        customerDetailsSaved = true;
-        card.remove();
-        input.disabled = false;
-        sendButton.disabled = false;
-        addMessage(`Thanks, ${details.name}. Your details have been saved. Let's begin. What symptoms are you experiencing today?`, "bot");
-        input.placeholder = "Tell me what you're experiencing…";
-        input.focus();
-      } catch (error) {
-        if (error?.status === 410) {
-          errorBox.textContent = "Your session expired. Please close and reopen GutGPT to start again.";
-        } else {
-          errorBox.textContent = error?.serverMessage || "We couldn't save your details. Please check your connection and try again.";
-        }
-        errorBox.hidden = false;
-        submitButton.disabled = false;
-        submitButton.textContent = "Save details and continue";
-      }
-    });
-  }
-
   async function initSession() {
     // A page refresh must always start a completely new assessment.
     sessionId = null;
@@ -569,12 +482,10 @@
 
       sessionId = data.session_id;
 
-      customerDetailsSaved = false;
-      input.disabled = true;
-      sendButton.disabled = true;
-      input.placeholder = "Complete your details to continue…";
-      addMessage("Hi! I'm GutGPT, Guttify's gut-health assessment assistant.", "bot");
-      renderCustomerForm();
+      addMessage(
+        "Hi! I'm GutGPT, Guttify's gut-health assessment assistant. Tell me what you're experiencing.",
+        "bot"
+      );
       status.textContent = "";
     } catch (error) {
       console.error("GutGPT session initialization failed", error);
@@ -584,7 +495,7 @@
   }
 
   async function sendMessage(retryingExpiredSession = false) {
-    if (busy || ended || !sessionId || !customerDetailsSaved) return;
+    if (busy || ended || !sessionId) return;
     let retryMessage = null;
 
     const message = input.value.trim();

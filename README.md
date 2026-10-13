@@ -107,13 +107,6 @@ The final website deployment requires these backend environment variables:
 - `SESSION_TTL_SECONDS` — optional session expiry, default `3600`.
 - `MAX_SESSIONS` — optional in-memory session cap, default `10000`.
 - `PORT` — optional server port, default `8000`.
-- `DATABASE_URL` — **required for persistent production customer records**; use a managed PostgreSQL database URL. SQLite is used only when `DATABASE_URL` is not set and is intended for local development.
-
-### Customer registration and database
-
-Before the symptom assessment starts, the widget asks for the customer's name, age, phone number or email, and city. The customer must tick the consent checkbox before the details are saved. The backend validates the fields and saves them in the `gutgpt_customers` table, keyed by the GutGPT session ID. It stores registration details and consent timestamps, not the full symptom conversation.
-
-For Render, create or connect a managed PostgreSQL database and set `DATABASE_URL` in the backend service's environment. Ensure the database is backed up and access is restricted. Do not rely on the local SQLite fallback for production because files on an ephemeral deployment filesystem can be lost during redeploys. Customer contact information is personal data: provide an appropriate privacy notice, collect it only for a clear purpose, and define retention/deletion practices that meet your applicable privacy obligations.
 
 The production app fails startup if `GROQ_API_KEY` or `ALLOWED_ORIGINS` is missing.
 Language input is restricted to the supported Indian-language codes, and translation failures are returned as a controlled `503` rather than silently returning an English diagnosis.
