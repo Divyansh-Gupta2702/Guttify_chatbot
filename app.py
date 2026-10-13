@@ -34,6 +34,8 @@ BASE_DIR = Path(__file__).resolve().parent
 WIDGET_FILE = BASE_DIR / "gutgpt-widget.js"
 VERSION_FILE = BASE_DIR / "VERSION.txt"
 QUESTION_FLOW_SCHEMA_VERSION = "v18.1"
+MAX_MESSAGE_LENGTH = max(256, min(10000, int(os.getenv("MAX_MESSAGE_LENGTH", "4000"))))
+MAX_HISTORY_MESSAGES = 100
 FRONTEND_FILE = BASE_DIR / "index.html"
 
 app = FastAPI(title="GutGPT API", version="18.1.0")
@@ -121,6 +123,8 @@ def _cleanup_sessions(now: float | None = None):
 # should use a shared store such as Redis.
 SESSION_TTL_SECONDS = max(300, int(os.getenv("SESSION_TTL_SECONDS", "3600")))
 MAX_SESSIONS = max(100, int(os.getenv("MAX_SESSIONS", "10000")))
+MAX_MESSAGE_LENGTH = max(256, min(10000, int(os.getenv("MAX_MESSAGE_LENGTH", "4000"))))
+MAX_HISTORY_MESSAGES = 100
 HISTORY: dict[str, list[dict]] = {}
 HISTORY_LAST_ACCESS: dict[str, float] = {}
 _SESSION_LOCK = RLock()
@@ -132,7 +136,7 @@ class ChatRequest(BaseModel):
     session_id: str = Field(min_length=1, max_length=128)
     # Keep Pydantic above the production UX limit so we can return a friendly
     # application-level message instead of an opaque 422 validation error.
-    message: str = Field(min_length=1)
+    message: str = Field(min_length=1, max_length=MAX_MESSAGE_LENGTH)
 
 
 class ChatResponse(BaseModel):
@@ -267,6 +271,9 @@ def chat(req: ChatRequest):
     with _SESSION_LOCK:
         history.append({"role": "user", "content": message})
         history.append({"role": "assistant", "content": reply})
+        # Keep per-session memory bounded even for a continuously active client.
+        if len(history) > MAX_HISTORY_MESSAGES:
+            del history[:-MAX_HISTORY_MESSAGES]
         HISTORY_LAST_ACCESS[req.session_id] = time.monotonic()
     history_ms = (time.perf_counter() - history_start) * 1000
     logger.info("[PERF][%s] History append: %.2f ms", request_id, history_ms)

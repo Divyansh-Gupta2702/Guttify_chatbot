@@ -368,6 +368,95 @@ class ConversationManager:
         session.symptom_state = SymptomState(**data)
 
     @staticmethod
+    def _apply_volunteered_symptom_facts(session, text, facts=None):
+        """Apply explicit symptom mentions independently of the active question.
+
+        An active question owns its answer slot, but it must not discard other
+        symptoms volunteered in the same turn. This small deterministic layer
+        also handles explicit denials so stale state cannot survive a correction.
+        """
+        s = session.symptom_state
+        raw = str(text or "")
+        lower = raw.lower().replace("’", "'")
+        # Split contrastive clauses so a denial of one symptom does not negate
+        # a positive symptom after "but" / "however".
+        clauses = re.split(r"\b(?:but|however|although)\b|[,;]", lower)
+        definitions = {
+            "bloating": ("bloating", r"\b(?:bloat(?:ed|ing)?|belly feels swollen|stomach feels full of air)\b"),
+            "gas": ("gas", r"\b(?:gas|gassy|flatulence|passing gas|lots of gas|excess gas)\b"),
+            "diarrhea": ("diarrhea", r"\b(?:diarr(?:hea|hoea)|loose stools?|loose motions?|watery stools?)\b"),
+            "abdominal_pain": ("stomach pain", r"\b(?:abdominal pain|stomach pain|belly pain|stomach ache|stomachache|cramps?)\b"),
+        }
+        positive = []
+        negative = []
+        for field, (label, pattern) in definitions.items():
+            mentions = []
+            for clause in clauses:
+                if re.search(pattern, clause):
+                    # The denial must be in the same clause as this symptom.
+                    is_negative = bool(re.search(
+                        r"\b(?:no|not|never|without|don't|dont|do not|doesn't|does not|haven't|have not|hasn't|has not)\b",
+                        clause,
+                    ))
+                    # Common positive contrast after a negation is handled by
+                    # clause splitting above (e.g. "no bloating, but gas").
+                    mentions.append((is_negative, label))
+            if mentions:
+                # Last explicit mention wins within a clause/turn.
+                is_negative, label = mentions[-1]
+                (negative if is_negative else positive).append((field, label))
+
+        data = s.to_dict()
+        for field, label in negative:
+            if field == "abdominal_pain":
+                data["abdominal_pain"] = False
+            elif field == "diarrhea":
+                data["diarrhea"] = False
+                data["diarrhea_explicit"] = False
+            else:
+                data[field] = False
+            data["secondary_symptoms"] = [
+                x for x in (data.get("secondary_symptoms") or [])
+                if str(x).strip().lower() not in {field, label, "bloating" if field == "bloating" else label}
+            ]
+            if data.get("primary_symptom") in {field, label, "bloating" if field == "bloating" else label}:
+                data["primary_symptom"] = None
+
+        # Explicit positive symptoms fill canonical fields and become the
+        # primary only when no still-valid primary branch exists.
+        for field, label in positive:
+            if field == "abdominal_pain":
+                data["abdominal_pain"] = True
+            elif field == "diarrhea":
+                data["diarrhea"] = True
+                data["diarrhea_explicit"] = True
+            else:
+                data[field] = True
+            if not data.get("primary_symptom"):
+                data["primary_symptom"] = field if field != "abdominal_pain" else "stomach pain"
+            elif data.get("primary_symptom") not in {field, label}:
+                secondary = list(data.get("secondary_symptoms") or [])
+                if label not in secondary and field not in secondary:
+                    secondary.append(label)
+                data["secondary_symptoms"] = secondary
+
+        primary = data.get("primary_symptom")
+        data["secondary_symptoms"] = list(dict.fromkeys(
+            x for x in (data.get("secondary_symptoms") or [])
+            if x != primary and x not in {"bloating" if primary == "bloating" else None}
+        ))
+        # If a primary was explicitly denied, promote the first remaining
+        # positive canonical symptom instead of keeping a stale branch.
+        if not primary:
+            for field in ("gas", "diarrhea", "bloating", "abdominal_pain"):
+                if data.get(field) is True:
+                    data["primary_symptom"] = "stomach pain" if field == "abdominal_pain" else field
+                    break
+            primary = data.get("primary_symptom")
+            data["secondary_symptoms"] = [x for x in (data.get("secondary_symptoms") or []) if x != primary]
+        session.symptom_state = SymptomState(**data)
+
+    @staticmethod
     def _question_has_answer(session, field):
         """Single authoritative semantic question-completion check."""
         return question_has_answer(session.symptom_state, field)
@@ -1456,9 +1545,14 @@ class ConversationManager:
 
         # Keep the existing deterministic parser as a second layer.
         if pending_question:
-            # Active-question resolution is the sole state mutation path while
-            # a question owns the turn. Generic NLU cannot merge independently.
+            # Preserve explicitly volunteered symptoms without allowing them to
+            # answer or overwrite the active questionnaire field.
+            self._apply_volunteered_symptom_facts(session, user_message, nlu_facts)
+            # Active-question resolution remains the authority for the asked slot.
             resolution = self._apply_answer(session, user_message, nlu_facts)
+            # Reconcile explicit symptom mentions after legacy question parsers;
+            # they may otherwise reintroduce a generic positive from a negated phrase.
+            self._apply_volunteered_symptom_facts(session, user_message, nlu_facts)
             session.symptom_state.red_flags = derive_red_flags(session.symptom_state)
             logger.info(
                 "[QUESTION][CONTEXTUAL_FACTS] %s",
@@ -1598,6 +1692,7 @@ class ConversationManager:
         else:
             session.symptom_state = merge_state(session.symptom_state, user_message, [])
             self._apply_nlu_facts(session, nlu_facts)
+            self._apply_volunteered_symptom_facts(session, user_message, nlu_facts)
 
         session.symptom_state.red_flags = derive_red_flags(session.symptom_state)
 
