@@ -451,6 +451,7 @@
 
   async function initSession() {
     // A page refresh must always start a completely new assessment.
+    sessionId = null;
     // Do not restore an old session from localStorage: the backend session
     // contains assessment-completion state.
     status.textContent = "Connecting…";
@@ -476,8 +477,9 @@
     }
   }
 
-  async function sendMessage() {
+  async function sendMessage(retryingExpiredSession = false) {
     if (busy || ended || !sessionId) return;
+    let retryMessage = null;
 
     const message = input.value.trim();
     if (!message) return;
@@ -529,14 +531,26 @@
       } else if (error?.serverMessage) {
         showError(error.serverMessage);
       } else if (error?.status === 410) {
-        showError("This chat session expired. A new chat session will be started.");
-        await initSession();
+        if (!retryingExpiredSession) {
+          showError("This chat session expired. Starting a new session and resending your message.");
+          await initSession();
+          if (sessionId) retryMessage = message;
+        } else {
+          showError("The new chat session also expired. Please send your message again.");
+        }
       } else {
         showError("Something went wrong reaching GutGPT. Please try again.");
       }
     } finally {
       setBusy(false);
-      if (!ended) input.focus();
+      if (retryMessage && !ended) {
+        input.value = retryMessage;
+        // Retry at most once after creating a fresh session; a repeated 410
+        // is surfaced to the user rather than entering a retry loop.
+        void sendMessage(true);
+      } else if (!ended) {
+        input.focus();
+      }
     }
   }
 

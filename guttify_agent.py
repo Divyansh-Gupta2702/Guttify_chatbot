@@ -1122,7 +1122,13 @@ class ConversationManager:
                 if k in active_owned:
                     # The active question owns this slot. Generic extraction
                     # never wins over the contextual value (including None).
-                    merged_data[k] = data.get(k)
+                    # Preserve the pre-turn active slots when the resolver
+                    # is unresolved; `data` may already have been mutated by
+                    # legacy handlers earlier in this method. Resolved turns
+                    # retain the legacy handler's values until the validated
+                    # resolver values are re-applied below.
+                    merged_data[k] = (protected_active_values.get(k)
+                                      if resolution_is_unresolved else data.get(k))
                     continue
                 if explicit_field(k):
                     continue

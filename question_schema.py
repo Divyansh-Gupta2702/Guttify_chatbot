@@ -238,6 +238,60 @@ def resolve_against_active_question(
 
     n = normalize_answer_text(message)
     status = classify_answer_status(n)
+
+    # Bowel-pattern is a three-way choice (constipation, diarrhea, or normal),
+    # not a yes/no proposition. Resolve only explicit category answers or
+    # contextually clear denials of both alternatives. A bare "no" is
+    # deliberately ambiguous and must not be promoted to normal.
+    if question_id == "bowel_pattern":
+        const_neg = bool(re.search(
+            r"\b(?:no|not|never|without|don't|dont|do not|neither)\b.{0,45}\b(?:constipat(?:ion|ed)|hard\s+(?:stools?|poop))\b",
+            n,
+        ))
+        diarr_neg = bool(re.search(
+            r"\b(?:no|not|never|without|don't|dont|do not|neither)\b.{0,45}\b(?:diarrh(?:ea|oea)|loose\s+(?:stools?|motions?)|watery)\b",
+            n,
+        ))
+        explicit_normal = bool(re.search(
+            r"\b(?:normal|fine|regular)\s+(?:poops?|stools?|bowel movements?|bowels?)\b|"
+            r"\b(?:my|the)\s+(?:poops?|stools?|bowel movements?|bowels?)\s+(?:are|is)\s+(?:normal|fine|regular)\b|"
+            r"\beverything\s+is\s+(?:normal|fine|regular)\b",
+            n,
+        ))
+        neither_phrase = bool(re.search(
+            r"\b(?:neither|neither of (?:those|them)|i don't have either|i do not have either|"
+            r"no (?:constipation|diarrhea|diarrhoea|loose motions?) or (?:diarrhea|diarrhoea|loose motions?|constipation)|"
+            r"nothing like that)\b",
+            n,
+        ))
+        const_pos = bool(re.search(r"\b(?:constipat(?:ion|ed)|hard\s+(?:stools?|poop))\b", n)) and not const_neg
+        diarr_pos = bool(re.search(r"\b(?:diarrh(?:ea|oea)|loose\s+(?:stools?|motions?)|watery)\b", n)) and not diarr_neg
+        both = bool(re.search(r"\b(?:both|alternat(?:e|ing))\b", n)) and (const_pos or diarr_pos)
+        if explicit_normal or (const_neg and diarr_neg) or (neither_phrase and not (const_pos or diarr_pos)):
+            return {"status": "answered", "values": {
+                "constipation_explicit": False, "diarrhea_explicit": False,
+                "diarrhea": False, "bowel_pattern": "normal",
+            }, "confidence": 0.99, "source": "deterministic"}
+        if both:
+            return {"status": "answered", "values": {
+                "constipation_explicit": True, "diarrhea_explicit": True,
+                "diarrhea": True, "bowel_pattern": "mixed",
+            }, "confidence": 0.99, "source": "deterministic"}
+        if const_pos and diarr_pos:
+            return {"status": "answered", "values": {
+                "constipation_explicit": True, "diarrhea_explicit": True,
+                "diarrhea": True, "bowel_pattern": "mixed",
+            }, "confidence": 0.99, "source": "deterministic"}
+        if const_pos:
+            return {"status": "answered", "values": {
+                "constipation_explicit": True, "diarrhea_explicit": False,
+                "diarrhea": False, "bowel_pattern": "constipation",
+            }, "confidence": 0.99, "source": "deterministic"}
+        if diarr_pos:
+            return {"status": "answered", "values": {
+                "constipation_explicit": False, "diarrhea_explicit": True,
+                "diarrhea": True, "bowel_pattern": "diarrhea",
+            }, "confidence": 0.99, "source": "deterministic"}
     if question_id == "vomiting_fever" and re.fullmatch(r"(?:no\s*,?\s*neither|neither|none)", n):
         return {"status": "answered", "values": {"vomiting": False, "fever": False}, "confidence": 0.99, "source": "deterministic"}
     if n == "maybe":
