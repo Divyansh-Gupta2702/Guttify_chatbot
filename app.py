@@ -34,6 +34,8 @@ BASE_DIR = Path(__file__).resolve().parent
 WIDGET_FILE = BASE_DIR / "gutgpt-widget.js"
 VERSION_FILE = BASE_DIR / "VERSION.txt"
 QUESTION_FLOW_SCHEMA_VERSION = "v18.1"
+
+from support_footer import append_human_support_footer
 MAX_MESSAGE_LENGTH = max(256, min(10000, int(os.getenv("MAX_MESSAGE_LENGTH", "4000"))))
 MAX_HISTORY_MESSAGES = 100
 FRONTEND_FILE = BASE_DIR / "index.html"
@@ -259,6 +261,12 @@ def chat(req: ChatRequest):
 
     else:
         reply = "Sorry, something went wrong. Could you rephrase that?"
+
+    # Add contact details only when the assessment has actually produced a
+    # completed diagnosis/screening result. Do not append to intermediate
+    # questions, safety reviews, greetings, or later acknowledgements.
+    if status in ("DIAGNOSIS", "RECOMMENDATION_FOUND", "AMBIGUOUS"):
+        reply = append_human_support_footer(reply)
 
     response_build_ms = (time.perf_counter() - logic_start) * 1000
     logger.info(

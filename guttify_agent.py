@@ -63,19 +63,23 @@ PRODUCT_ELIGIBILITY = {
 # match can never silently turn into a recommendation. The completed clinical
 # pattern remains the safety gate; these routes only add products for other
 # symptoms that the user explicitly reported in the same assessment.
+# Product bundles supplied by the business (Liver lift + Poopie mapping).
+# These are product-eligibility rules, not diagnoses or claims that a product
+# treats a disease. Clinical screening and red-flag checks still run first.
 ADDITIONAL_SYMPTOM_PRODUCT_ELIGIBILITY = {
     "constipation": {"Digest Boost", "Guttify Poopie"},
     "hard stools": {"Digest Boost", "Guttify Poopie"},
-    "acidity": {"Acid Ease"},
-    "heartburn": {"Acid Ease"},
-    "acid reflux": {"Acid Ease"},
-    "indigestion": {"Acid Ease"},
+    "acidity": {"Acid Ease", "Liver Lift"},
+    "heartburn": {"Acid Ease", "Liver Lift"},
+    "acid reflux": {"Acid Ease", "Liver Lift"},
+    "indigestion": {"Acid Ease", "Digest Boost", "Liver Lift"},
+    "digestion concerns": {"Digest Boost", "Liver Lift"},
     "bloating": {"Digest Boost", "Acid Ease", "Guttify Poopie"},
     "gas": {"Digest Boost", "Acid Ease", "Guttify Poopie"},
-    "piles": {"Piles Pure", "Piloease Anal Care Spray"},
-    "haemorrhoids": {"Piles Pure", "Piloease Anal Care Spray"},
-    "hemorrhoids": {"Piles Pure", "Piloease Anal Care Spray"},
-    "anal fissures": {"Piloease Anal Care Spray"},
+    "piles": {"Piles Pure", "Piloease Anal Care Spray", "Guttify Poopie"},
+    "haemorrhoids": {"Piles Pure", "Piloease Anal Care Spray", "Guttify Poopie"},
+    "hemorrhoids": {"Piles Pure", "Piloease Anal Care Spray", "Guttify Poopie"},
+    "anal fissures": {"Piles Pure", "Piloease Anal Care Spray", "Guttify Poopie"},
 }
 
 # Product-concern branches are not medical diagnoses. They route explicit
@@ -1364,6 +1368,23 @@ class ConversationManager:
                 session.product_concern_question_asked = True
                 session.last_question = "product_concern"
                 return {"status": "ASK", "message": question, "recommendations": [], "safety": {"red_flag": False}}
+            # Non-clinical concern bundles (e.g. liver support / weight
+            # management) are intentionally returned together, as configured
+            # by the supplied business product map.
+            products = [next((p for p in ALL_PRODUCTS if p.get("product_name") == name), None)
+                         for name in unique]
+            products = [p for p in products if p is not None]
+            if products:
+                session.screening = {
+                    "likely_condition": "Product concern: " + ", ".join(unique),
+                    "confidence": "high", "evidence": [phrase for _, phrase in matches],
+                    "differentials": [], "action": "product_support",
+                    "product_allowed": True,
+                    "message": "These products match the concern in the Guttify product map; this is not a medical diagnosis.",
+                }
+                result = {"status": "RECOMMENDATION_FOUND", "message": "", "recommendations": products,
+                          "product": products[0], "screening": session.screening, "safety": {"red_flag": False}}
+                return self._remember_recommendation(session, result)
         return None
 
     @staticmethod
@@ -1733,7 +1754,9 @@ class ConversationManager:
             product_result = self._product_concern_result(session, user_message)
             if product_result:
                 return product_result
-        elif detect_product_concerns(user_message):
+        elif not pending_question and detect_product_concerns(user_message):
+            # An active clinical/questionnaire slot owns this turn; product
+            # aliases must never short-circuit the remaining assessment.
             # Product concerns can coexist with low-risk gut symptoms (for
             # example, "bloating and dull skin"), but a clinically relevant
             # symptom must not be bypassed by the product router.

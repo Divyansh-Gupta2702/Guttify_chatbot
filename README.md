@@ -112,3 +112,32 @@ The production app fails startup if `GROQ_API_KEY` or `ALLOWED_ORIGINS` is missi
 Language input is restricted to the supported Indian-language codes, and translation failures are returned as a controlled `503` rather than silently returning an English diagnosis.
 
 Session state is bounded by TTL and maximum-session limits. The production deployment should remain single-worker unless session state is moved to a shared store such as Redis.
+
+## Business product-routing map (updated)
+
+The supplied `Liver= Liver lift + Poopie.txt` mapping is reflected in the
+product concern router and clinical product eligibility rules:
+
+- Liver support: Liver Lift + Guttify Poopie
+- Weight management: Apple Active + Guttify Poopie + Liver Lift
+- Acidity: Acid Ease + Liver Lift
+- Constipation: Guttify Poopie + Digest Boost
+- Digestion concerns: Digest Boost + Liver Lift
+- Bleeding piles: Guttify Poopie + Piles Pure (only after the existing safety and clinical screening permits recommendations)
+- Fissure / anal swelling / burning concerns: Piles Pure + Piloease Anal Care Spray + Guttify Poopie (only after safety and clinical screening)
+- Initial piles symptoms: Piles Pure
+- Dark/patchy/uneven skin tone, hyperpigmentation, glow/youthfulness concerns: GloLux
+
+These are business-defined product-routing preferences, not medical diagnoses
+or proof that supplements treat a condition. Red-flag checks and the clinical
+questionnaire must not be bypassed, particularly for blood in stool/rectal
+bleeding. The source file also requests collecting name, age, contact details,
+and city, followed by asking whether the user wants a free gut-health expert
+consultation. That lead-capture/consent workflow is not implemented by this
+routing change; it should be added as a separate explicit opt-in flow before
+collecting or storing personal contact information.
+
+
+### Customer Support Contact After Assessment
+
+After a completed screening/diagnosis result (including a product recommendation), GutGPT appends a customer-support message with `guttify01@gmail.com` and `+91 9818693589`. The footer is not added to intermediate questions, greetings, safety-review messages, or subsequent acknowledgements.
