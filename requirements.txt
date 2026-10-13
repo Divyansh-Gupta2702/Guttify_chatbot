@@ -3,3 +3,4 @@ uvicorn[standard]
 pydantic
 langchain-core
 langchain-groq
+psycopg[binary]

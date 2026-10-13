@@ -5,3 +5,8 @@ __pycache__/
 *.pyc
 feedback_log.jsonl
 virtual
+
+# Local-only customer profile database (never commit customer data)
+customer_data.db
+*.sqlite
+*.sqlite3
