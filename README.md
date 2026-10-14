@@ -152,3 +152,21 @@ After a completed screening/diagnosis result (including a product recommendation
 - Registration retries for the same session are idempotent and do not create duplicate records.
 
 **Storage limitation:** JSON-file storage is intended for this requested initial version. On hosting platforms with an ephemeral filesystem (including typical Render deployments without a persistent disk), records can be lost on redeploy/restart. It is also not suitable for multiple backend workers sharing one file. Use a persistent disk or a database before relying on this for production customer records. Restrict access to the file and follow the applicable privacy/data-retention requirements.
+
+
+## Testing customer records on Render (admin-only)
+
+For temporary testing, set a strong random `GUTGPT_ADMIN_TOKEN` in the Render service's Environment settings, then redeploy. Do not commit the token to Git or put it in the Shopify widget.
+
+Authenticated endpoints:
+- `GET /api/admin/customers` — returns a JSON list and count.
+- `GET /api/admin/customers/download` — downloads `customer_data.json`.
+
+Send the token only in the HTTP `Authorization` header as `Bearer YOUR_TOKEN`. Do not append it to the URL. Example from a trusted terminal:
+
+```bash
+curl -H "Authorization: Bearer $GUTGPT_ADMIN_TOKEN" https://YOUR-SERVICE.onrender.com/api/admin/customers
+curl -L -H "Authorization: Bearer $GUTGPT_ADMIN_TOKEN" https://YOUR-SERVICE.onrender.com/api/admin/customers/download -o customer_data.json
+```
+
+These endpoints are disabled with HTTP 503 until `GUTGPT_ADMIN_TOKEN` is configured, and reject requests without a valid token. The JSON file is stored on the service filesystem; on Render Free that filesystem is ephemeral, so records can disappear after restarts/redeploys. Use dummy data for testing and never expose these endpoints without authentication.

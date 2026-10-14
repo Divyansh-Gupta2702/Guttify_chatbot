@@ -18,7 +18,7 @@ import json
 from datetime import datetime, timezone
 from threading import RLock
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Header, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
@@ -270,6 +270,46 @@ def register_customer(req: CustomerRegistrationRequest):
 
     logger.info("Customer registration saved session=%s customer_id=%s", req.session_id[:8], record["customer_id"])
     return {"status": "REGISTERED", "customer_id": record["customer_id"]}
+
+
+def _require_admin(authorization: str | None) -> None:
+    """Require a configured bearer token; never expose customer data publicly."""
+    configured_token = os.getenv("GUTGPT_ADMIN_TOKEN", "").strip()
+    if not configured_token:
+        raise HTTPException(
+            status_code=503,
+            detail="Admin access is not configured. Set GUTGPT_ADMIN_TOKEN in the service environment.",
+        )
+    supplied = authorization or ""
+    expected = f"Bearer {configured_token}"
+    # compare_digest avoids timing-sensitive token comparisons.
+    import hmac
+    if not hmac.compare_digest(supplied, expected):
+        raise HTTPException(status_code=401, detail="Invalid or missing admin token.")
+
+
+@app.get("/api/admin/customers")
+def admin_list_customers(authorization: str | None = Header(default=None)):
+    """Return customer records only to an authenticated admin."""
+    _require_admin(authorization)
+    with CUSTOMER_LOCK:
+        records = _read_customer_records()
+    return {"count": len(records), "customers": records}
+
+
+@app.get("/api/admin/customers/download")
+def admin_download_customers(authorization: str | None = Header(default=None)):
+    """Download the JSON records as an attachment after admin authentication."""
+    _require_admin(authorization)
+    with CUSTOMER_LOCK:
+        records = _read_customer_records()
+    payload = json.dumps(records, ensure_ascii=False, indent=2) + "\\n"
+    return Response(
+        content=payload,
+        media_type="application/json",
+        headers={"Content-Disposition": 'attachment; filename="customer_data.json"',
+                 "Cache-Control": "no-store"},
+    )
 
 
 @app.post("/api/chat", response_model=ChatResponse)
