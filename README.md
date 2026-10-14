@@ -158,6 +158,9 @@ After a completed screening/diagnosis result (including a product recommendation
 
 For temporary testing, set a strong random `GUTGPT_ADMIN_TOKEN` in the Render service's Environment settings, then redeploy. Do not commit the token to Git or put it in the Shopify widget.
 
+Browser dashboard:
+- Open `https://YOUR-SERVICE.onrender.com/admin` after deployment. Enter the `GUTGPT_ADMIN_TOKEN` value to view customer records in a table, refresh the list, or download the JSON file. The token is sent in an Authorization header and is not placed in the URL.
+
 Authenticated endpoints:
 - `GET /api/admin/customers` — returns a JSON list and count.
 - `GET /api/admin/customers/download` — downloads `customer_data.json`.
