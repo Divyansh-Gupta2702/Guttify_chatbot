@@ -204,6 +204,22 @@
         max-width: 90%;
       }
     }
+
+    [hidden] { display: none !important; }
+    .customer-intake { padding: 22px; overflow-y: auto; background: #fff; border-bottom: 1px solid #eee5f1; }
+    .intake-title { margin: 0 0 6px; font-size: 20px; color: #34243f; }
+    .intake-copy { margin: 0 0 18px; color: #655d6b; font-size: 13px; line-height: 1.5; }
+    .intake-form { display: grid; gap: 13px; }
+    .intake-form label { display: grid; gap: 6px; font-size: 13px; font-weight: 600; color: #342b3b; }
+    .intake-form input:not([type="checkbox"]) { width: 100%; min-height: 44px; border: 1px solid #ded5e4; border-radius: 9px; padding: 10px 12px; font: inherit; color: #241f2b; background: #fff; }
+    .intake-form input:focus { outline: 2px solid #a77af0; outline-offset: 1px; }
+    .intake-consent { display: flex !important; grid-template-columns: 18px 1fr; align-items: start; gap: 9px !important; font-weight: 400 !important; line-height: 1.45; }
+    .intake-consent input { margin: 3px 0 0; width: 16px; height: 16px; }
+    .intake-submit { min-height: 45px; border: 0; border-radius: 10px; color: #fff; font: 600 14px inherit; background: linear-gradient(135deg, #8134ed, #6020cf); cursor: pointer; }
+    .intake-submit:disabled { opacity: .6; cursor: wait; }
+    .intake-error { margin: 0; color: #a51d36; font-size: 13px; }
+    .intake-note { margin: 0; color: #746b7b; font-size: 11px; line-height: 1.4; }
+
   </style>
 </head>
 
@@ -219,11 +235,37 @@
       </div>
     </header>
 
-    <main id="messages" class="messages"></main>
+    <section id="customer-intake" class="customer-intake" aria-label="Customer registration">
+      <h2 class="intake-title">Before we begin</h2>
+      <p class="intake-copy">Please share a few details so GutGPT can start your gut-health assessment.</p>
+      <form id="intake-form" class="intake-form" autocomplete="on">
+        <label>Full name
+          <input name="name" type="text" maxlength="100" autocomplete="name" required placeholder="Your name">
+        </label>
+        <label>Age
+          <input name="age" type="number" min="1" max="120" inputmode="numeric" required placeholder="Your age">
+        </label>
+        <label>Contact number or email
+          <input name="contact" type="text" maxlength="150" autocomplete="tel" required placeholder="Phone number or email">
+        </label>
+        <label>City
+          <input name="city" type="text" maxlength="100" autocomplete="address-level2" required placeholder="Your city">
+        </label>
+        <label class="intake-consent">
+          <input name="consent" type="checkbox" required>
+          <span>I agree to have these details stored to support this assessment.</span>
+        </label>
+        <p id="intake-error" class="intake-error" role="alert" hidden></p>
+        <button id="intake-submit" class="intake-submit" type="submit">Save details and continue</button>
+        <p class="intake-note">Your details are used to support this assessment. Avoid entering information you do not want stored.</p>
+      </form>
+    </section>
+
+    <main id="messages" class="messages" aria-live="polite" hidden></main>
 
     <div id="status" class="status"></div>
 
-    <form id="form">
+    <form id="form" hidden>
       <input
         id="input"
         maxlength="4000"
@@ -243,8 +285,13 @@
       const input = document.getElementById("input");
       const send = document.getElementById("send");
       const form = document.getElementById("form");
+      const intake = document.getElementById("customer-intake");
+      const intakeForm = document.getElementById("intake-form");
+      const intakeSubmit = document.getElementById("intake-submit");
+      const intakeError = document.getElementById("intake-error");
 
       let sessionId = null;
+      let customerRegistered = false;
       let busy = false;
       let ended = false;
 
@@ -337,7 +384,7 @@
             throw new Error("Invalid session response");
           }
           sessionId = data.session_id;
-          initWelcome();
+          status.textContent = "";
         } catch (error) {
           console.error("Session initialization failed", error);
           add("I couldn't connect to GutGPT right now. Please refresh and try again.", "bot", "error");
@@ -353,7 +400,7 @@
       }
 
       async function sendMessage() {
-        if (busy || ended || !sessionId) {
+        if (busy || ended || !sessionId || !customerRegistered) {
           return;
         }
 
@@ -432,6 +479,53 @@
           }
         }
       }
+
+      intakeForm.addEventListener("submit", async (event) => {
+        event.preventDefault();
+        if (busy || customerRegistered || !sessionId) return;
+        const values = new FormData(intakeForm);
+        const customer = {
+          session_id: sessionId,
+          name: String(values.get("name") || "").trim(),
+          age: Number(values.get("age")),
+          contact: String(values.get("contact") || "").trim(),
+          city: String(values.get("city") || "").trim(),
+          consent: values.get("consent") === "on"
+        };
+        if (!customer.name || !Number.isInteger(customer.age) || customer.age < 1 || customer.age > 120 || customer.contact.length < 3 || !customer.city || !customer.consent) {
+          intakeError.textContent = "Please complete every field and agree to the storage notice.";
+          intakeError.hidden = false;
+          return;
+        }
+        busy = true;
+        intakeSubmit.disabled = true;
+        intakeSubmit.textContent = "Saving details…";
+        intakeError.hidden = true;
+        status.textContent = "Saving your details…";
+        try {
+          const data = await api("/api/customer", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(customer)
+          });
+          if (!data || data.status !== "REGISTERED") throw new Error("Registration could not be confirmed.");
+          customerRegistered = true;
+          intake.hidden = true;
+          messages.hidden = false;
+          form.hidden = false;
+          add("Hi " + customer.name.replace(/[<>]/g, "") + "! I'm GutGPT, Guttify's gut-health assessment assistant. Tell me what you're experiencing.");
+          status.textContent = "";
+          input.focus();
+        } catch (error) {
+          intakeError.textContent = error.message || "Unable to save your details. Please try again.";
+          intakeError.hidden = false;
+          status.textContent = "Registration not completed";
+        } finally {
+          busy = false;
+          intakeSubmit.disabled = false;
+          intakeSubmit.textContent = "Save details and continue";
+        }
+      });
 
       form.addEventListener("submit", (event) => {
         event.preventDefault();
