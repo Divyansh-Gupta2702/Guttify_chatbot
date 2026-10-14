@@ -36,6 +36,9 @@ def test_customer_registration_persists_json_and_is_idempotent(tmp_path, monkeyp
     assert records[0]["city"] == "New Delhi"
     assert records[0]["consent_to_store"] is True
     assert records[0]["created_at"]
+    # The registration age is also copied into the live diagnostic state, so
+    # the questionnaire must not ask the customer for age a second time.
+    assert gutgpt_app.conversation_manager.sessions[session_id].symptom_state.age == 29
     gutgpt_app.REGISTERED_CUSTOMER_SESSIONS.discard(session_id)
     gutgpt_app.HISTORY.pop(session_id, None)
     gutgpt_app.HISTORY_LAST_ACCESS.pop(session_id, None)

@@ -268,6 +268,14 @@ def register_customer(req: CustomerRegistrationRequest):
             record = existing
         REGISTERED_CUSTOMER_SESSIONS.add(req.session_id)
 
+    # Reuse the age already collected by the registration form throughout the
+    # diagnostic questionnaire. This makes the existing age question resolve
+    # as answered without bypassing any other assessment or safety questions.
+    with conversation_manager._lock:
+        session_state = conversation_manager.sessions.get(req.session_id)
+        if session_state is not None:
+            session_state.symptom_state.age = record.get("age")
+
     logger.info("Customer registration saved session=%s customer_id=%s", req.session_id[:8], record["customer_id"])
     return {"status": "REGISTERED", "customer_id": record["customer_id"]}
 
