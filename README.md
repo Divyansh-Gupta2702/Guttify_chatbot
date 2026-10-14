@@ -141,3 +141,14 @@ collecting or storing personal contact information.
 ### Customer Support Contact After Assessment
 
 After a completed screening/diagnosis result (including a product recommendation), GutGPT appends a customer-support message with `guttify01@gmail.com` and `+91 9818693589`. The footer is not added to intermediate questions, greetings, safety-review messages, or subsequent acknowledgements.
+
+
+## Customer registration and JSON storage (v18.3)
+
+- The Shopify widget asks for the customer's name, age, contact number or email, and city before enabling the assessment chat.
+- The customer must tick the consent checkbox before submission.
+- The backend saves each registration to `customer_data.json` in the application directory. The file is initialized as an empty JSON array and is excluded from Git by `.gitignore` because it contains personal information.
+- The `/api/chat` endpoint rejects messages for sessions that have not completed registration.
+- Registration retries for the same session are idempotent and do not create duplicate records.
+
+**Storage limitation:** JSON-file storage is intended for this requested initial version. On hosting platforms with an ephemeral filesystem (including typical Render deployments without a persistent disk), records can be lost on redeploy/restart. It is also not suitable for multiple backend workers sharing one file. Use a persistent disk or a database before relying on this for production customer records. Restrict access to the file and follow the applicable privacy/data-retention requirements.

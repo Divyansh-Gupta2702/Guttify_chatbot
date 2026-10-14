@@ -14,6 +14,8 @@ import uuid
 import time
 import logging
 import subprocess
+import json
+from datetime import datetime, timezone
 from threading import RLock
 
 from fastapi import FastAPI, HTTPException
@@ -39,6 +41,7 @@ from support_footer import append_human_support_footer
 MAX_MESSAGE_LENGTH = max(256, min(10000, int(os.getenv("MAX_MESSAGE_LENGTH", "4000"))))
 MAX_HISTORY_MESSAGES = 100
 FRONTEND_FILE = BASE_DIR / "index.html"
+CUSTOMER_DATA_FILE = BASE_DIR / "customer_data.json"
 
 app = FastAPI(title="GutGPT API", version="18.1.0")
 
@@ -110,6 +113,8 @@ def _cleanup_sessions(now: float | None = None):
             HISTORY.pop(sid, None)
             HISTORY_LAST_ACCESS.pop(sid, None)
             conversation_manager.remove(sid)
+            with CUSTOMER_LOCK:
+                REGISTERED_CUSTOMER_SESSIONS.discard(sid)
 
         if len(HISTORY_LAST_ACCESS) > MAX_SESSIONS:
             excess = len(HISTORY_LAST_ACCESS) - MAX_SESSIONS
@@ -118,6 +123,8 @@ def _cleanup_sessions(now: float | None = None):
                 HISTORY.pop(sid, None)
                 HISTORY_LAST_ACCESS.pop(sid, None)
                 conversation_manager.remove(sid)
+                with CUSTOMER_LOCK:
+                    REGISTERED_CUSTOMER_SESSIONS.discard(sid)
 
 # Session state is kept in-process for the single-worker deployment used by
 # the widget. Sessions are bounded by TTL and a hard maximum so abandoned
@@ -131,7 +138,41 @@ HISTORY: dict[str, list[dict]] = {}
 HISTORY_LAST_ACCESS: dict[str, float] = {}
 _SESSION_LOCK = RLock()
 conversation_manager = ConversationManager()
+CUSTOMER_LOCK = RLock()
+REGISTERED_CUSTOMER_SESSIONS: set[str] = set()
 
+
+def _read_customer_records() -> list[dict]:
+    """Read customer records, treating a missing file as an empty JSON list."""
+    if not CUSTOMER_DATA_FILE.exists():
+        return []
+    try:
+        with CUSTOMER_DATA_FILE.open("r", encoding="utf-8") as handle:
+            records = json.load(handle)
+        if not isinstance(records, list):
+            raise ValueError("customer_data.json must contain a JSON array")
+        return records
+    except (json.JSONDecodeError, OSError, ValueError) as exc:
+        logger.exception("Could not read customer data JSON")
+        raise HTTPException(status_code=500, detail="Customer records are temporarily unavailable.") from exc
+
+
+def _write_customer_records(records: list[dict]) -> None:
+    """Atomically persist records so interrupted writes do not corrupt the JSON file."""
+    temporary = CUSTOMER_DATA_FILE.with_suffix(".json.tmp")
+    with temporary.open("w", encoding="utf-8") as handle:
+        json.dump(records, handle, ensure_ascii=False, indent=2)
+        handle.write("\n")
+    os.replace(temporary, CUSTOMER_DATA_FILE)
+
+
+class CustomerRegistrationRequest(BaseModel):
+    session_id: str = Field(min_length=1, max_length=128)
+    name: str = Field(min_length=1, max_length=100)
+    age: int = Field(ge=1, le=120)
+    contact: str = Field(min_length=3, max_length=150)
+    city: str = Field(min_length=1, max_length=100)
+    consent: bool
 
 
 class ChatRequest(BaseModel):
@@ -188,6 +229,49 @@ def new_session():
     return {"session_id": session_id}
 
 
+@app.post("/api/customer")
+def register_customer(req: CustomerRegistrationRequest):
+    """Save customer details to a local JSON file before allowing assessment."""
+    if not req.consent:
+        raise HTTPException(status_code=400, detail="Please consent to storing these details to continue.")
+
+    name = " ".join(req.name.split())
+    contact = req.contact.strip()
+    city = " ".join(req.city.split())
+    if not name or not contact or not city:
+        raise HTTPException(status_code=400, detail="Please complete all customer details.")
+    if len(contact) < 3:
+        raise HTTPException(status_code=400, detail="Enter a valid phone number or email address.")
+
+    with _SESSION_LOCK:
+        if req.session_id not in HISTORY or req.session_id not in conversation_manager.sessions:
+            raise HTTPException(status_code=410, detail="SESSION_EXPIRED")
+
+    with CUSTOMER_LOCK:
+        records = _read_customer_records()
+        # Idempotent retry: do not create duplicate rows if the browser retries.
+        existing = next((item for item in records if item.get("session_id") == req.session_id), None)
+        if existing is None:
+            record = {
+                "customer_id": str(uuid.uuid4()),
+                "session_id": req.session_id,
+                "name": name,
+                "age": req.age,
+                "contact": contact,
+                "city": city,
+                "consent_to_store": True,
+                "created_at": datetime.now(timezone.utc).isoformat(),
+            }
+            records.append(record)
+            _write_customer_records(records)
+        else:
+            record = existing
+        REGISTERED_CUSTOMER_SESSIONS.add(req.session_id)
+
+    logger.info("Customer registration saved session=%s customer_id=%s", req.session_id[:8], record["customer_id"])
+    return {"status": "REGISTERED", "customer_id": record["customer_id"]}
+
+
 @app.post("/api/chat", response_model=ChatResponse)
 def chat(req: ChatRequest):
     """Process one user message through the existing GutGPT logic."""
@@ -210,6 +294,10 @@ def chat(req: ChatRequest):
         if req.session_id not in HISTORY or req.session_id not in conversation_manager.sessions:
             raise HTTPException(status_code=410, detail="SESSION_EXPIRED")
 
+
+    with CUSTOMER_LOCK:
+        if req.session_id not in REGISTERED_CUSTOMER_SESSIONS:
+            raise HTTPException(status_code=403, detail="CUSTOMER_REGISTRATION_REQUIRED")
 
     history_start = time.perf_counter()
     with _SESSION_LOCK:

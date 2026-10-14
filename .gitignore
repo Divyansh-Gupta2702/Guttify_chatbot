@@ -5,3 +5,7 @@ __pycache__/
 *.pyc
 feedback_log.jsonl
 virtual
+
+# Contains customer personal information; never commit real records.
+customer_data.json
+customer_data.json.tmp

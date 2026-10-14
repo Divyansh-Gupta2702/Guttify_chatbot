@@ -158,6 +158,24 @@
         border-radius: 8px;
         background: #fff;
       }
+      .customer-intake {
+        flex: 1;
+        overflow-y: auto;
+        padding: 18px 16px;
+        background: #fff;
+      }
+      .customer-intake[hidden], .messages[hidden], .composer[hidden] { display: none !important; }
+      .intake-title { margin: 0 0 6px; font-size: 17px; font-weight: 700; }
+      .intake-copy { margin: 0 0 14px; color: #655d6b; font-size: 12px; }
+      .intake-form { display: grid; gap: 11px; padding: 0; background: transparent; border-top: 0; }
+      .intake-form label { display: grid; gap: 5px; color: #342b3b; font-size: 12px; font-weight: 600; }
+      .intake-form input { width: 100%; min-height: 40px; border: 1px solid #ded5e4; border-radius: 9px; padding: 9px 10px; font: inherit; color: #241f2b; background: #fff; }
+      .intake-form input:focus { outline: 2px solid #a77af0; outline-offset: 1px; }
+      .consent-row { display: flex !important; grid-template-columns: 18px 1fr; align-items: start; gap: 8px !important; font-weight: 400 !important; line-height: 1.4; }
+      .consent-row input { width: 16px; min-height: 16px; margin: 2px 0 0; }
+      .intake-submit { min-height: 42px; border: 0; border-radius: 10px; color: #fff; font: 600 14px/1.2 inherit; background: linear-gradient(135deg, #8134ed, #6020cf); cursor: pointer; }
+      .intake-submit:disabled { opacity: .55; cursor: wait; }
+      .intake-error { margin: 0; color: #a51d36; font-size: 12px; }
       .messages {
         flex: 1;
         overflow-y: auto;
@@ -319,10 +337,23 @@
         </div>
       </header>
 
-      <main class="messages" aria-live="polite" aria-label="GutGPT conversation"></main>
+      <section class="customer-intake" aria-label="Customer details">
+        <h3 class="intake-title">Before we begin</h3>
+        <p class="intake-copy">Please share a few details so we can start your gut-health assessment. Your details will be stored in a JSON file for this version.</p>
+        <form class="intake-form" autocomplete="on">
+          <label>Full name<input name="name" type="text" maxlength="100" autocomplete="name" required placeholder="Your name" /></label>
+          <label>Age<input name="age" type="number" min="1" max="120" inputmode="numeric" required placeholder="Your age" /></label>
+          <label>Contact number or email<input name="contact" type="text" maxlength="150" autocomplete="tel" required placeholder="Phone number or email" /></label>
+          <label>City<input name="city" type="text" maxlength="100" autocomplete="address-level2" required placeholder="Your city" /></label>
+          <label class="consent-row"><input name="consent" type="checkbox" required /><span>I agree to have these details stored to support this assessment.</span></label>
+          <p class="intake-error" aria-live="polite" hidden></p>
+          <button class="intake-submit" type="submit">Save details and continue</button>
+        </form>
+      </section>
+      <main class="messages" aria-live="polite" aria-label="GutGPT conversation" hidden></main>
       <div class="status" aria-live="polite"></div>
 
-      <form autocomplete="off">
+      <form class="composer" autocomplete="off" hidden>
         <input
           type="text"
           maxlength="4000"
@@ -339,12 +370,17 @@
   const launcher = $(".launcher");
   const panel = $(".panel");
   const messages = $(".messages");
-  const form = $("form");
-  const input = $("input");
+  const intake = $(".customer-intake");
+  const intakeForm = $(".intake-form");
+  const intakeSubmit = $(".intake-submit");
+  const intakeError = $(".intake-error");
+  const form = $(".composer");
+  const input = $(".composer input");
   const sendButton = $(".send");
   const status = $(".status");
 
   let sessionId = null;
+  let customerRegistered = false;
   let busy = false;
   let ended = false;
 
@@ -482,20 +518,72 @@
 
       sessionId = data.session_id;
 
-      addMessage(
-        "Hi! I'm GutGPT, Guttify's gut-health assessment assistant. Tell me what you're experiencing.",
-        "bot"
-      );
+      customerRegistered = false;
+      intake.hidden = false;
+      messages.hidden = true;
+      form.hidden = true;
       status.textContent = "";
     } catch (error) {
       console.error("GutGPT session initialization failed", error);
       status.textContent = "";
-      showError("I couldn't connect to GutGPT right now. Please try again.");
+      intakeError.textContent = "I couldn't connect to GutGPT right now. Please refresh the page and try again.";
+      intakeError.hidden = false;
     }
   }
 
+  intakeForm.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    if (busy || !sessionId || customerRegistered) return;
+    const formData = new FormData(intakeForm);
+    const customer = {
+      session_id: sessionId,
+      name: String(formData.get("name") || "").trim(),
+      age: Number(formData.get("age")),
+      contact: String(formData.get("contact") || "").trim(),
+      city: String(formData.get("city") || "").trim(),
+      consent: formData.get("consent") === "on",
+    };
+    if (!customer.name || !Number.isInteger(customer.age) || customer.age < 1 || customer.age > 120 || !customer.contact || !customer.city || !customer.consent) {
+      intakeError.textContent = "Please complete every field and agree to the storage notice.";
+      intakeError.hidden = false;
+      return;
+    }
+    busy = true;
+    intakeSubmit.disabled = true;
+    intakeError.hidden = true;
+    status.textContent = "Saving your details…";
+    try {
+      const data = await fetchJson("/api/customer", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(customer),
+      });
+      if (data.status !== "REGISTERED") throw new Error("REGISTRATION_FAILED");
+      customerRegistered = true;
+      intake.hidden = true;
+      messages.hidden = false;
+      form.hidden = false;
+      addMessage("Hi " + customer.name.replace(/[<>]/g, "") + "! I'm GutGPT, Guttify's gut-health assessment assistant. Tell me what you're experiencing.", "bot");
+      input.focus();
+    } catch (error) {
+      console.error("GutGPT customer registration failed", error);
+      if (error?.status === 410) {
+        intakeError.textContent = "Your session expired. Please refresh the page and try again.";
+      } else if (error?.serverMessage === "CUSTOMER_REGISTRATION_REQUIRED") {
+        intakeError.textContent = "Please submit your customer details before continuing.";
+      } else {
+        intakeError.textContent = error?.serverMessage || "We couldn't save your details. Please check them and try again.";
+      }
+      intakeError.hidden = false;
+    } finally {
+      busy = false;
+      intakeSubmit.disabled = false;
+      status.textContent = "";
+    }
+  });
+
   async function sendMessage(retryingExpiredSession = false) {
-    if (busy || ended || !sessionId) return;
+    if (busy || ended || !sessionId || !customerRegistered) return;
     let retryMessage = null;
 
     const message = input.value.trim();
