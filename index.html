@@ -78,6 +78,16 @@
       background: #faf8fb;
     }
 
+    .bristol-stool-chart {
+      display: block;
+      width: 100%;
+      max-width: 760px;
+      height: auto;
+      margin: 8px 0 12px;
+      border-radius: 8px;
+      background: #fff;
+    }
+
     .msg {
       max-width: 82%;
       padding: 11px 14px;
@@ -297,13 +307,30 @@
 
       function add(text, who = "bot", extra = "") {
         const element = document.createElement("div");
-
         element.className = `msg ${who} ${extra}`;
-        element.textContent = text;
+
+        // The deterministic questionnaire inserts this marker immediately
+        // before the Bristol stool-type question. Render the supplied chart
+        // as an image in the browser frontend, without interpreting arbitrary
+        // backend text as HTML.
+        const chartMarker = "[[BRISTOL_STOOL_CHART]]";
+        if (who === "bot" && String(text).includes(chartMarker)) {
+          const parts = String(text).split(chartMarker, 2);
+          const image = document.createElement("img");
+          image.className = "bristol-stool-chart";
+          image.src = "/bristol-stool-chart.png";
+          image.alt = "Bristol Stool Chart showing stool types 1 through 7";
+          image.loading = "eager";
+          element.appendChild(image);
+          const explanation = document.createElement("div");
+          explanation.textContent = (parts[1] || "").replace(/^\n/, "");
+          element.appendChild(explanation);
+        } else {
+          element.textContent = text;
+        }
 
         messages.appendChild(element);
         messages.scrollTop = messages.scrollHeight;
-
         return element;
       }
 

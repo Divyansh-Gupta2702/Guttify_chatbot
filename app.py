@@ -196,6 +196,15 @@ def frontend():
     return FileResponse(FRONTEND_FILE, media_type="text/html")
 
 
+@app.get("/bristol-stool-chart.png")
+def bristol_stool_chart():
+    """Serve the Bristol chart used by the browser-based frontend."""
+    chart_file = BASE_DIR / "Bristol Stool Chart Infographic.png"
+    if not chart_file.exists():
+        raise HTTPException(status_code=404, detail="Bristol stool chart image is not installed.")
+    return FileResponse(chart_file, media_type="image/png", headers={"Cache-Control": "public, max-age=3600"})
+
+
 @app.get("/api/health", response_model=str)
 def health():
     """Simple backend health response."""
