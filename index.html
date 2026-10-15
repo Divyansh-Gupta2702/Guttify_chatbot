@@ -304,39 +304,48 @@
       let customerRegistered = false;
       let busy = false;
       let ended = false;
-      const CUSTOMER_STORAGE_KEY = "gutgpt_customer_id_v1";
+      const GUEST_TOKEN_STORAGE_KEY = "gutgpt_guest_token_v1";
+      const LEGACY_CUSTOMER_STORAGE_KEY = "gutgpt_customer_id_v1";
 
-      function getStoredCustomerId() {
-        try { return window.localStorage.getItem(CUSTOMER_STORAGE_KEY); }
-        catch { return null; }
+      function getStoredGuestToken() {
+        try { return window.localStorage.getItem(GUEST_TOKEN_STORAGE_KEY) || ""; }
+        catch { return ""; }
       }
 
-      function storeCustomerId(id) {
-        try { window.localStorage.setItem(CUSTOMER_STORAGE_KEY, id); }
-        catch { /* Storage can be disabled in privacy-restricted browsers. */ }
+      function storeGuestToken(token) {
+        if (typeof token !== "string" || !token) return false;
+        try {
+          window.localStorage.setItem(GUEST_TOKEN_STORAGE_KEY, token);
+          // The legacy customer ID is not an authentication credential.
+          window.localStorage.removeItem(LEGACY_CUSTOMER_STORAGE_KEY);
+          return window.localStorage.getItem(GUEST_TOKEN_STORAGE_KEY) === token;
+        } catch {
+          return false;
+        }
       }
 
       async function restoreRegisteredCustomer() {
-        const customerId = getStoredCustomerId();
-        if (!customerId || !sessionId) return false;
+        const guestToken = getStoredGuestToken();
+        if (!guestToken || !sessionId) return false;
         try {
           const data = await api("/api/customer/restore", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ session_id: sessionId, customer_id: customerId })
+            body: JSON.stringify({ session_id: sessionId, guest_token: guestToken })
           });
           if (!data || data.status !== "RESTORED") return false;
+          if (typeof data.guest_token === "string" && data.guest_token) storeGuestToken(data.guest_token);
           customerRegistered = true;
           intake.hidden = true;
           messages.hidden = false;
           form.hidden = false;
-          add("Welcome back " + String(data.name || "").replace(/[<>]/g, "") + "! You can start a new gut-health assessment.");
+          add("Welcome back " + String(data.customer?.name || data.name || "there").replace(/[<>]/g, "") + "! You can start a new gut-health assessment.");
           status.textContent = "";
           return true;
         } catch (error) {
-          // A missing/invalid saved profile should fall back to the registration form.
-          if (String(error.message || "").includes("CUSTOMER_PROFILE_NOT_FOUND") || String(error.message || "").includes("HTTP 404")) {
-            try { window.localStorage.removeItem(CUSTOMER_STORAGE_KEY); } catch {}
+          // Never use a customer ID as a substitute for an authentication token.
+          if (String(error.message || "").includes("GUEST_SESSION_INVALID") || String(error.message || "").includes("HTTP 401")) {
+            try { window.localStorage.removeItem(GUEST_TOKEN_STORAGE_KEY); } catch {}
           } else {
             console.warn("Could not restore saved customer profile", error);
           }
@@ -580,8 +589,12 @@
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify(customer)
           });
-          if (!data || data.status !== "REGISTERED" || !data.customer_id) throw new Error("Registration could not be confirmed.");
-          storeCustomerId(data.customer_id);
+          if (!data || data.status !== "REGISTERED" || typeof data.guest_token !== "string" || !data.guest_token) {
+            throw new Error("Registration succeeded without a guest-session token. Please contact support.");
+          }
+          if (!storeGuestToken(data.guest_token)) {
+            throw new Error("Your details were saved, but this browser could not save the secure session. Please enable site storage and refresh.");
+          }
           customerRegistered = true;
           intake.hidden = true;
           messages.hidden = false;
