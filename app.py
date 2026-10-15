@@ -98,12 +98,18 @@ def _decode_guest_jwt(token: str) -> dict:
     except HTTPException:
         raise
     except (InvalidTokenError, TypeError, ValueError) as exc:
+        # Log only the exception class, never the JWT or its claims.
+        logger.warning("Guest JWT validation failed reason=%s", type(exc).__name__)
         raise HTTPException(status_code=401, detail="GUEST_SESSION_INVALID. Please register again.") from exc
-    if claims.get("typ") != "guest_access" or not isinstance(claims.get("sub"), str) or not claims.get("sub"):
+    if claims.get("typ") != "guest_access":
+        logger.warning("Guest JWT validation failed reason=wrong_token_type")
+        raise HTTPException(status_code=401, detail="GUEST_SESSION_INVALID. Please register again.")
+    if not isinstance(claims.get("sub"), str) or not claims.get("sub"):
+        logger.warning("Guest JWT validation failed reason=missing_subject")
         raise HTTPException(status_code=401, detail="GUEST_SESSION_INVALID. Please register again.")
     return claims
 
-app = FastAPI(title="GutGPT API", version="18.3-jwt-guest-30d")
+app = FastAPI(title="GutGPT API", version="18.3-jwt-guest-30d-diag")
 
 # Shopify storefront origins are supplied as a comma-separated environment
 # variable, for example:
@@ -430,11 +436,15 @@ def restore_customer(req: CustomerRestoreRequest):
     try:
         claims = _decode_guest_jwt(req.guest_token)
     except HTTPException as token_error:
-        # Existing releases stored only a hash of an opaque token. Allow an
-        # unexpired legacy token once, then rotate it to JWT so customers are
-        # not forced to register again during this upgrade.
+        # A three-segment value is JWT-shaped. Do not hide a JWT validation
+        # failure by treating it as a legacy opaque credential.
         if token_error.status_code != 401:
             raise
+        if req.guest_token.count(".") == 2:
+            logger.warning("Guest restore rejected reason=jwt_validation_failed session=%s", req.session_id[:8])
+            raise
+        # Compatibility path for older releases that stored opaque tokens.
+        logger.info("Guest restore using legacy credential path session=%s", req.session_id[:8])
 
     with CUSTOMER_LOCK:
         records = _read_customer_records()
@@ -452,6 +462,8 @@ def restore_customer(req: CustomerRestoreRequest):
                            and hmac.compare_digest(item["guest_token_hash"], legacy_hash)), None)
 
         if record is None:
+            reason = "jwt_customer_record_mismatch" if claims is not None else "legacy_credential_not_found"
+            logger.warning("Guest restore rejected reason=%s session=%s", reason, req.session_id[:8])
             raise HTTPException(status_code=401, detail="GUEST_SESSION_INVALID. Please register again.")
         try:
             expires = datetime.fromisoformat(record.get("guest_token_expires_at", "").replace("Z", "+00:00"))
@@ -460,6 +472,7 @@ def restore_customer(req: CustomerRestoreRequest):
         except (ValueError, TypeError):
             expires = datetime.min.replace(tzinfo=timezone.utc)
         if expires <= now:
+            logger.warning("Guest restore rejected reason=customer_token_expired session=%s", req.session_id[:8])
             raise HTTPException(status_code=401, detail="GUEST_SESSION_EXPIRED. Please register again.")
 
         # Upgrade legacy opaque credentials on first successful restoration.
