@@ -1,1 +1,1 @@
-18.3-customer-json-registration
+18.3-jwt-guest-30d

@@ -103,7 +103,7 @@ def _decode_guest_jwt(token: str) -> dict:
         raise HTTPException(status_code=401, detail="GUEST_SESSION_INVALID. Please register again.")
     return claims
 
-app = FastAPI(title="GutGPT API", version="18.1.0")
+app = FastAPI(title="GutGPT API", version="18.3-jwt-guest-30d")
 
 # Shopify storefront origins are supplied as a comma-separated environment
 # variable, for example:
@@ -239,7 +239,7 @@ class CustomerRegistrationRequest(BaseModel):
 
 class CustomerRestoreRequest(BaseModel):
     session_id: str = Field(min_length=1, max_length=128)
-    guest_token: str = Field(min_length=32, max_length=2048)
+    guest_token: str = Field(default="", max_length=2048)
 
 
 class ChatRequest(BaseModel):
@@ -288,7 +288,7 @@ def widget():
     return FileResponse(
         WIDGET_FILE,
         media_type="application/javascript",
-        headers={"Cache-Control": "public, max-age=300"},
+        headers={"Cache-Control": "no-cache, must-revalidate"},
     )
 
 

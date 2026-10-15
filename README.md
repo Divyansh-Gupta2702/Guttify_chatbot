@@ -72,8 +72,11 @@ Do not use `allow_origins=["*"]` for the production storefront.
 
 ## Session behavior
 
-The widget stores only its generated session ID in browser `localStorage`.
-No API keys or LLM secrets are sent to the browser.
+The widget stores a signed JWT guest credential in browser `localStorage`. The
+JWT expires after 30 days and is validated server-side for signature, issuer,
+audience, expiry, token type, and revocation. No API keys or LLM secrets are
+sent to the browser. The credential is a bearer secret, so protect the widget
+against XSS and do not log or share it.
 
 The backend keeps the existing in-memory conversation state. Therefore use a
 single Uvicorn worker unless session state is moved to a shared store such as
@@ -103,6 +106,9 @@ The important runtime files are:
 The final website deployment requires these backend environment variables:
 
 - `GROQ_API_KEY` — required by the GutGPT backend where applicable.
+- `JWT_SECRET_KEY` — required; a unique random secret of at least 32 UTF-8 bytes.
+- `JWT_ISSUER` — defaults to `gutgpt-api`.
+- `JWT_AUDIENCE` — defaults to `gutgpt-guest-session`.
 - `ALLOWED_ORIGINS` — comma-separated exact Shopify storefront origins. Do not leave this empty in production.
 - `SESSION_TTL_SECONDS` — optional session expiry, default `3600`.
 - `MAX_SESSIONS` — optional in-memory session cap, default `10000`.
