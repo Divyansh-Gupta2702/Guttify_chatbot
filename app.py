@@ -175,6 +175,11 @@ class CustomerRegistrationRequest(BaseModel):
     consent: bool
 
 
+class CustomerRestoreRequest(BaseModel):
+    session_id: str = Field(min_length=1, max_length=128)
+    customer_id: str = Field(min_length=1, max_length=128)
+
+
 class ChatRequest(BaseModel):
     session_id: str = Field(min_length=1, max_length=128)
     # Keep Pydantic above the production UX limit so we can return a friendly
@@ -333,6 +338,38 @@ def admin_download_customers(authorization: str | None = Header(default=None)):
         headers={"Content-Disposition": 'attachment; filename="customer_data.json"',
                  "Cache-Control": "no-store"},
     )
+
+
+@app.post("/api/customer/restore")
+def restore_customer(req: CustomerRestoreRequest):
+    """Attach a previously registered customer profile to a fresh chat session."""
+    with _SESSION_LOCK:
+        if req.session_id not in HISTORY or req.session_id not in conversation_manager.sessions:
+            raise HTTPException(status_code=410, detail="SESSION_EXPIRED")
+
+    with CUSTOMER_LOCK:
+        records = _read_customer_records()
+        record = next((item for item in records if item.get("customer_id") == req.customer_id), None)
+        if record is None or not record.get("consent_to_store"):
+            raise HTTPException(status_code=404, detail="CUSTOMER_PROFILE_NOT_FOUND")
+        REGISTERED_CUSTOMER_SESSIONS.add(req.session_id)
+
+    # Reuse only the stored profile fields; the diagnostic session itself stays fresh.
+    with conversation_manager._lock:
+        session_state = conversation_manager.sessions.get(req.session_id)
+        if session_state is not None:
+            session_state.symptom_state.age = record.get("age")
+
+    with _SESSION_LOCK:
+        HISTORY_LAST_ACCESS[req.session_id] = time.monotonic()
+    logger.info("Returning customer profile restored session=%s customer_id=%s", req.session_id[:8], record["customer_id"])
+    return {
+        "status": "RESTORED",
+        "customer_id": record["customer_id"],
+        "name": record.get("name", ""),
+        "age": record.get("age"),
+        "city": record.get("city", ""),
+    }
 
 
 @app.post("/api/chat", response_model=ChatResponse)

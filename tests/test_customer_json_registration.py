@@ -66,3 +66,31 @@ def test_chat_is_blocked_until_customer_registration():
         gutgpt_app.HISTORY.pop(session_id, None)
         gutgpt_app.HISTORY_LAST_ACCESS.pop(session_id, None)
         gutgpt_app.conversation_manager.remove(session_id)
+
+
+def test_returning_customer_can_restore_profile_to_new_session(tmp_path, monkeypatch):
+    data_file = tmp_path / "customer_data.json"
+    monkeypatch.setattr(gutgpt_app, "CUSTOMER_DATA_FILE", data_file)
+    first_session = make_session()
+    payload = gutgpt_app.CustomerRegistrationRequest(
+        session_id=first_session, name="Returning Customer", age=34,
+        contact="customer@example.com", city="Gurugram", consent=True,
+    )
+    registered = gutgpt_app.register_customer(payload)
+
+    second_session = make_session()
+    restored = gutgpt_app.restore_customer(gutgpt_app.CustomerRestoreRequest(
+        session_id=second_session, customer_id=registered["customer_id"]
+    ))
+
+    assert restored["status"] == "RESTORED"
+    assert restored["name"] == "Returning Customer"
+    assert restored["age"] == 34
+    assert second_session in gutgpt_app.REGISTERED_CUSTOMER_SESSIONS
+    assert gutgpt_app.conversation_manager.sessions[second_session].symptom_state.age == 34
+
+    for sid in (first_session, second_session):
+        gutgpt_app.REGISTERED_CUSTOMER_SESSIONS.discard(sid)
+        gutgpt_app.HISTORY.pop(sid, None)
+        gutgpt_app.HISTORY_LAST_ACCESS.pop(sid, None)
+        gutgpt_app.conversation_manager.remove(sid)

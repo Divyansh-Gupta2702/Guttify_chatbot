@@ -304,6 +304,45 @@
       let customerRegistered = false;
       let busy = false;
       let ended = false;
+      const CUSTOMER_STORAGE_KEY = "gutgpt_customer_id_v1";
+
+      function getStoredCustomerId() {
+        try { return window.localStorage.getItem(CUSTOMER_STORAGE_KEY); }
+        catch { return null; }
+      }
+
+      function storeCustomerId(id) {
+        try { window.localStorage.setItem(CUSTOMER_STORAGE_KEY, id); }
+        catch { /* Storage can be disabled in privacy-restricted browsers. */ }
+      }
+
+      async function restoreRegisteredCustomer() {
+        const customerId = getStoredCustomerId();
+        if (!customerId || !sessionId) return false;
+        try {
+          const data = await api("/api/customer/restore", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ session_id: sessionId, customer_id: customerId })
+          });
+          if (!data || data.status !== "RESTORED") return false;
+          customerRegistered = true;
+          intake.hidden = true;
+          messages.hidden = false;
+          form.hidden = false;
+          add("Welcome back " + String(data.name || "").replace(/[<>]/g, "") + "! You can start a new gut-health assessment.");
+          status.textContent = "";
+          return true;
+        } catch (error) {
+          // A missing/invalid saved profile should fall back to the registration form.
+          if (String(error.message || "").includes("CUSTOMER_PROFILE_NOT_FOUND") || String(error.message || "").includes("HTTP 404")) {
+            try { window.localStorage.removeItem(CUSTOMER_STORAGE_KEY); } catch {}
+          } else {
+            console.warn("Could not restore saved customer profile", error);
+          }
+          return false;
+        }
+      }
 
       function add(text, who = "bot", extra = "") {
         const element = document.createElement("div");
@@ -412,6 +451,12 @@
           }
           sessionId = data.session_id;
           status.textContent = "";
+          const restored = await restoreRegisteredCustomer();
+          if (!restored) {
+            intake.hidden = false;
+            messages.hidden = true;
+            form.hidden = true;
+          }
         } catch (error) {
           console.error("Session initialization failed", error);
           add("I couldn't connect to GutGPT right now. Please refresh and try again.", "bot", "error");
@@ -535,7 +580,8 @@
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify(customer)
           });
-          if (!data || data.status !== "REGISTERED") throw new Error("Registration could not be confirmed.");
+          if (!data || data.status !== "REGISTERED" || !data.customer_id) throw new Error("Registration could not be confirmed.");
+          storeCustomerId(data.customer_id);
           customerRegistered = true;
           intake.hidden = true;
           messages.hidden = false;
