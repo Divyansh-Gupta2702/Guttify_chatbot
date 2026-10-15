@@ -381,6 +381,7 @@
 
   let sessionId = null;
   let customerRegistered = false;
+  const GUEST_TOKEN_STORAGE_KEY = "gutgpt_guest_token_v1";
   let busy = false;
   let ended = false;
 
@@ -503,25 +504,48 @@
   }
 
   async function initSession() {
-    // A page refresh must always start a completely new assessment.
+    // Always create fresh diagnostic state, then restore only the customer
+    // profile using its opaque credential. Never restore prior answers.
     sessionId = null;
-    // Do not restore an old session from localStorage: the backend session
-    // contains assessment-completion state.
     status.textContent = "Connecting…";
-
     try {
       const data = await fetchJson("/api/session", { method: "POST" });
-
-      if (typeof data.session_id !== "string" || !data.session_id) {
-        throw new Error("INVALID_SESSION");
-      }
-
+      if (typeof data.session_id !== "string" || !data.session_id) throw new Error("INVALID_SESSION");
       sessionId = data.session_id;
-
       customerRegistered = false;
       intake.hidden = false;
       messages.hidden = true;
       form.hidden = true;
+
+      let guestToken = "";
+      try { guestToken = window.localStorage.getItem(GUEST_TOKEN_STORAGE_KEY) || ""; } catch (_) {}
+      if (guestToken) {
+        try {
+          const restored = await fetchJson("/api/customer/restore", {
+            method: "POST", headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ session_id: sessionId, guest_token: guestToken }),
+          });
+          if (restored.status === "RESTORED") {
+            // A legacy opaque credential is upgraded to a signed JWT by the
+            // backend during restoration. Replace it immediately in storage.
+            if (typeof restored.guest_token === "string" && restored.guest_token) {
+              try { window.localStorage.setItem(GUEST_TOKEN_STORAGE_KEY, restored.guest_token); } catch (_) {}
+            }
+            customerRegistered = true;
+            intake.hidden = true;
+            messages.hidden = false;
+            form.hidden = false;
+            addMessage("Welcome back, " + String(restored.customer?.name || "there").replace(/[<>]/g, "") + "! Your profile is restored. You can start a new assessment; previous answers have not been carried over.", "bot");
+          }
+        } catch (restoreError) {
+          // Only invalidate a credential that the server explicitly rejects.
+          if (restoreError?.status === 401) {
+            try { window.localStorage.removeItem(GUEST_TOKEN_STORAGE_KEY); } catch (_) {}
+          } else {
+            throw restoreError;
+          }
+        }
+      }
       status.textContent = "";
     } catch (error) {
       console.error("GutGPT session initialization failed", error);
@@ -560,6 +584,9 @@
       });
       if (data.status !== "REGISTERED") throw new Error("REGISTRATION_FAILED");
       customerRegistered = true;
+      if (typeof data.guest_token === "string" && data.guest_token) {
+        try { window.localStorage.setItem(GUEST_TOKEN_STORAGE_KEY, data.guest_token); } catch (_) {}
+      }
       intake.hidden = true;
       messages.hidden = false;
       form.hidden = false;

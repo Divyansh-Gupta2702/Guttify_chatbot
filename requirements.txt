@@ -3,3 +3,4 @@ uvicorn[standard]
 pydantic
 langchain-core
 langchain-groq
+PyJWT>=2.8,<3.0

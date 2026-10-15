@@ -16,7 +16,12 @@ import logging
 import subprocess
 import json
 import re
-from datetime import datetime, timezone
+import secrets
+import hashlib
+import hmac
+import jwt
+from jwt import InvalidTokenError
+from datetime import datetime, timezone, timedelta
 from threading import RLock
 
 from fastapi import FastAPI, HTTPException, Header, Response
@@ -43,6 +48,60 @@ MAX_MESSAGE_LENGTH = max(256, min(10000, int(os.getenv("MAX_MESSAGE_LENGTH", "40
 MAX_HISTORY_MESSAGES = 100
 FRONTEND_FILE = BASE_DIR / "index.html"
 CUSTOMER_DATA_FILE = BASE_DIR / "customer_data.json"
+GUEST_TOKEN_TTL_SECONDS = 30 * 24 * 60 * 60
+JWT_ALGORITHM = "HS256"
+JWT_ISSUER = os.getenv("JWT_ISSUER", "gutgpt-api")
+JWT_AUDIENCE = os.getenv("JWT_AUDIENCE", "gutgpt-guest-session")
+
+
+def _jwt_signing_key() -> str:
+    """Return the configured JWT signing key; never use an insecure fallback."""
+    key = os.getenv("JWT_SECRET_KEY", "")
+    if len(key.encode("utf-8")) < 32:
+        raise HTTPException(
+            status_code=503,
+            detail="Guest sessions are temporarily unavailable. Server authentication is not configured.",
+        )
+    return key
+
+
+def _issue_guest_jwt(customer_id: str) -> tuple[str, str, str]:
+    """Return signed JWT, JTI hash, and ISO expiry timestamp."""
+    now = datetime.now(timezone.utc)
+    expires = now + timedelta(seconds=GUEST_TOKEN_TTL_SECONDS)
+    jti = secrets.token_urlsafe(32)
+    claims = {
+        "sub": customer_id,
+        "typ": "guest_access",
+        "iss": JWT_ISSUER,
+        "aud": JWT_AUDIENCE,
+        "iat": int(now.timestamp()),
+        "nbf": int(now.timestamp()),
+        "exp": int(expires.timestamp()),
+        "jti": jti,
+    }
+    token = jwt.encode(claims, _jwt_signing_key(), algorithm=JWT_ALGORITHM)
+    return token, hashlib.sha256(jti.encode("utf-8")).hexdigest(), expires.isoformat()
+
+
+def _decode_guest_jwt(token: str) -> dict:
+    """Verify signature and all required guest-session JWT claims."""
+    try:
+        claims = jwt.decode(
+            token,
+            _jwt_signing_key(),
+            algorithms=[JWT_ALGORITHM],
+            issuer=JWT_ISSUER,
+            audience=JWT_AUDIENCE,
+            options={"require": ["exp", "iat", "nbf", "iss", "aud", "sub", "jti", "typ"]},
+        )
+    except HTTPException:
+        raise
+    except (InvalidTokenError, TypeError, ValueError) as exc:
+        raise HTTPException(status_code=401, detail="GUEST_SESSION_INVALID. Please register again.") from exc
+    if claims.get("typ") != "guest_access" or not isinstance(claims.get("sub"), str) or not claims.get("sub"):
+        raise HTTPException(status_code=401, detail="GUEST_SESSION_INVALID. Please register again.")
+    return claims
 
 app = FastAPI(title="GutGPT API", version="18.1.0")
 
@@ -75,6 +134,8 @@ def validate_production_configuration():
         missing.append("GROQ_API_KEY")
     if not allowed_origins:
         missing.append("ALLOWED_ORIGINS")
+    if len(os.getenv("JWT_SECRET_KEY", "").encode("utf-8")) < 32:
+        missing.append("JWT_SECRET_KEY (at least 32 UTF-8 bytes)")
     if missing:
         raise RuntimeError(
             "Missing required production environment variable(s): "
@@ -178,7 +239,7 @@ class CustomerRegistrationRequest(BaseModel):
 
 class CustomerRestoreRequest(BaseModel):
     session_id: str = Field(min_length=1, max_length=128)
-    customer_id: str = Field(min_length=1, max_length=128)
+    guest_token: str = Field(min_length=32, max_length=2048)
 
 
 class ChatRequest(BaseModel):
@@ -271,7 +332,8 @@ def register_customer(req: CustomerRegistrationRequest):
 
     with CUSTOMER_LOCK:
         records = _read_customer_records()
-        # Idempotent retry: do not create duplicate rows if the browser retries.
+        # Idempotent profile creation for registration retries. A retry rotates
+        # the guest credential and invalidates any previously issued token.
         existing = next((item for item in records if item.get("session_id") == req.session_id), None)
         if existing is None:
             record = {
@@ -285,9 +347,17 @@ def register_customer(req: CustomerRegistrationRequest):
                 "created_at": datetime.now(timezone.utc).isoformat(),
             }
             records.append(record)
-            _write_customer_records(records)
         else:
             record = existing
+            record.update({"name": name, "age": req.age, "contact": contact, "city": city,
+                           "consent_to_store": True})
+        # A retried registration rotates the JWT and revokes the previous JTI.
+        guest_token, token_jti_hash, token_expires_at = _issue_guest_jwt(record["customer_id"])
+        record.pop("guest_token_hash", None)  # retire legacy opaque credential hash
+        record["guest_token_jti_hash"] = token_jti_hash
+        record["guest_token_expires_at"] = token_expires_at
+        record["updated_at"] = datetime.now(timezone.utc).isoformat()
+        _write_customer_records(records)
         REGISTERED_CUSTOMER_SESSIONS.add(req.session_id)
 
     # Reuse the age already collected by the registration form throughout the
@@ -299,7 +369,7 @@ def register_customer(req: CustomerRegistrationRequest):
             session_state.symptom_state.age = record.get("age")
 
     logger.info("Customer registration saved session=%s", req.session_id[:8])
-    return {"status": "REGISTERED", "customer_id": record["customer_id"]}
+    return {"status": "REGISTERED", "customer_id": record["customer_id"], "guest_token": guest_token, "token_expires_at": token_expires_at}
 
 
 def _require_admin(authorization: str | None) -> None:
@@ -350,16 +420,74 @@ def admin_download_customers(authorization: str | None = Header(default=None)):
 
 @app.post("/api/customer/restore")
 def restore_customer(req: CustomerRestoreRequest):
-    """Legacy recovery route intentionally disabled.
+    """Restore a profile using a signed 30-day JWT, with one-time legacy upgrade."""
+    with _SESSION_LOCK:
+        if req.session_id not in HISTORY or req.session_id not in conversation_manager.sessions:
+            raise HTTPException(status_code=410, detail="SESSION_EXPIRED")
 
-    The previous implementation accepted a browser-supplied customer_id as
-    proof of identity, creating an IDOR vulnerability. Secure token-based
-    recovery must be deployed before this route can safely restore a profile.
-    """
-    raise HTTPException(
-        status_code=501,
-        detail="SECURE_CUSTOMER_RECOVERY_NOT_CONFIGURED. Please register again; customer IDs alone cannot restore a profile.",
-    )
+    now = datetime.now(timezone.utc)
+    claims = None
+    try:
+        claims = _decode_guest_jwt(req.guest_token)
+    except HTTPException as token_error:
+        # Existing releases stored only a hash of an opaque token. Allow an
+        # unexpired legacy token once, then rotate it to JWT so customers are
+        # not forced to register again during this upgrade.
+        if token_error.status_code != 401:
+            raise
+
+    with CUSTOMER_LOCK:
+        records = _read_customer_records()
+        record = None
+        if claims is not None:
+            supplied_jti_hash = hashlib.sha256(claims["jti"].encode("utf-8")).hexdigest()
+            record = next((item for item in records
+                           if item.get("customer_id") == claims.get("sub")
+                           and item.get("guest_token_jti_hash")
+                           and hmac.compare_digest(item["guest_token_jti_hash"], supplied_jti_hash)), None)
+        else:
+            legacy_hash = hashlib.sha256(req.guest_token.encode("utf-8")).hexdigest()
+            record = next((item for item in records
+                           if item.get("guest_token_hash")
+                           and hmac.compare_digest(item["guest_token_hash"], legacy_hash)), None)
+
+        if record is None:
+            raise HTTPException(status_code=401, detail="GUEST_SESSION_INVALID. Please register again.")
+        try:
+            expires = datetime.fromisoformat(record.get("guest_token_expires_at", "").replace("Z", "+00:00"))
+            if expires.tzinfo is None:
+                expires = expires.replace(tzinfo=timezone.utc)
+        except (ValueError, TypeError):
+            expires = datetime.min.replace(tzinfo=timezone.utc)
+        if expires <= now:
+            raise HTTPException(status_code=401, detail="GUEST_SESSION_EXPIRED. Please register again.")
+
+        # Upgrade legacy opaque credentials on first successful restoration.
+        rotated_token = None
+        if claims is None:
+            rotated_token, new_jti_hash, new_expiry = _issue_guest_jwt(record["customer_id"])
+            record.pop("guest_token_hash", None)
+            record["guest_token_jti_hash"] = new_jti_hash
+            record["guest_token_expires_at"] = new_expiry
+            record["updated_at"] = now.isoformat()
+            _write_customer_records(records)
+
+        REGISTERED_CUSTOMER_SESSIONS.add(req.session_id)
+        with conversation_manager._lock:
+            state = conversation_manager.sessions.get(req.session_id)
+            if state is not None:
+                state.symptom_state.age = record.get("age")
+        HISTORY_LAST_ACCESS[req.session_id] = time.monotonic()
+        logger.info("Guest profile restored session=%s", req.session_id[:8])
+        result = {
+            "status": "RESTORED",
+            "customer": {"name": record.get("name", "Customer"), "age": record.get("age"), "city": record.get("city", "")},
+            "customer_id": record["customer_id"],
+        }
+        if rotated_token:
+            result["guest_token"] = rotated_token
+            result["token_expires_at"] = record["guest_token_expires_at"]
+        return result
 
 
 @app.post("/api/chat", response_model=ChatResponse)

@@ -1,9 +1,18 @@
 import json
 
 import pytest
+import jwt
+from datetime import datetime, timezone
 from fastapi import HTTPException
 
 import app as gutgpt_app
+
+
+@pytest.fixture(autouse=True)
+def configured_test_jwt_secret(monkeypatch):
+    monkeypatch.setenv("JWT_SECRET_KEY", "test-only-secret-that-is-at-least-32-bytes-long")
+    monkeypatch.setenv("JWT_ISSUER", "gutgpt-api")
+    monkeypatch.setenv("JWT_AUDIENCE", "gutgpt-guest-session")
 
 
 def make_session():
@@ -68,24 +77,60 @@ def test_chat_is_blocked_until_customer_registration():
         gutgpt_app.conversation_manager.remove(session_id)
 
 
-def test_returning_customer_restore_is_disabled_until_secure_auth_exists():
-    """Do not regress to the prior insecure customer-ID-only restore behavior."""
-    with pytest.raises(HTTPException) as error:
-        gutgpt_app.restore_customer(gutgpt_app.CustomerRestoreRequest(
-            session_id="fresh-session", customer_id="known-customer-id"
+def test_returning_customer_restores_with_guest_token_and_fresh_diagnostic_state(tmp_path, monkeypatch):
+    data_file = tmp_path / "customer_data.json"
+    monkeypatch.setattr(gutgpt_app, "CUSTOMER_DATA_FILE", data_file)
+    first_session = make_session()
+    try:
+        registered = gutgpt_app.register_customer(gutgpt_app.CustomerRegistrationRequest(
+            session_id=first_session, name="Returning Customer", age=34,
+            contact="returning@example.com", city="Delhi", consent=True,
         ))
-    assert error.value.status_code == 501
+        assert registered["guest_token"]
+        records = json.loads(data_file.read_text(encoding="utf-8"))
+        assert "guest_token_jti_hash" in records[0]
+        assert "guest_token_hash" not in records[0]
+        assert registered["guest_token"] not in records[0].values()
+        claims = jwt.decode(registered["guest_token"], "test-only-secret-that-is-at-least-32-bytes-long", algorithms=["HS256"], issuer="gutgpt-api", audience="gutgpt-guest-session")
+        assert claims["typ"] == "guest_access"
+        assert claims["sub"] == registered["customer_id"]
+        assert claims["exp"] - claims["iat"] == 30 * 24 * 60 * 60
 
-
-
-def test_customer_restore_rejects_customer_id_as_identity():
-    """Customer IDs are identifiers, not credentials; legacy recovery must fail closed."""
-    with pytest.raises(HTTPException) as error:
-        gutgpt_app.restore_customer(gutgpt_app.CustomerRestoreRequest(
-            session_id="any-session", customer_id="known-customer-id"
+        # A page refresh/new diagnosis creates a new, empty diagnostic session.
+        fresh_session = make_session()
+        restored = gutgpt_app.restore_customer(gutgpt_app.CustomerRestoreRequest(
+            session_id=fresh_session, guest_token=registered["guest_token"]
         ))
-    assert error.value.status_code == 501
-    assert "SECURE_CUSTOMER_RECOVERY_NOT_CONFIGURED" in error.value.detail
+        assert restored["status"] == "RESTORED"
+        assert restored["customer"]["name"] == "Returning Customer"
+        assert fresh_session in gutgpt_app.REGISTERED_CUSTOMER_SESSIONS
+        assert gutgpt_app.conversation_manager.sessions[fresh_session].symptom_state.age == 34
+        assert gutgpt_app.HISTORY[fresh_session] == []
+        gutgpt_app.REGISTERED_CUSTOMER_SESSIONS.discard(fresh_session)
+        gutgpt_app.HISTORY.pop(fresh_session, None)
+        gutgpt_app.HISTORY_LAST_ACCESS.pop(fresh_session, None)
+        gutgpt_app.conversation_manager.remove(fresh_session)
+    finally:
+        gutgpt_app.REGISTERED_CUSTOMER_SESSIONS.discard(first_session)
+        gutgpt_app.HISTORY.pop(first_session, None)
+        gutgpt_app.HISTORY_LAST_ACCESS.pop(first_session, None)
+        gutgpt_app.conversation_manager.remove(first_session)
+
+
+def test_customer_restore_rejects_invalid_guest_token(tmp_path, monkeypatch):
+    monkeypatch.setattr(gutgpt_app, "CUSTOMER_DATA_FILE", tmp_path / "customer_data.json")
+    sid = make_session()
+    try:
+        with pytest.raises(HTTPException) as error:
+            gutgpt_app.restore_customer(gutgpt_app.CustomerRestoreRequest(
+                session_id=sid, guest_token="x" * 48
+            ))
+        assert error.value.status_code == 401
+    finally:
+        gutgpt_app.REGISTERED_CUSTOMER_SESSIONS.discard(sid)
+        gutgpt_app.HISTORY.pop(sid, None)
+        gutgpt_app.HISTORY_LAST_ACCESS.pop(sid, None)
+        gutgpt_app.conversation_manager.remove(sid)
 
 
 def test_registration_rejects_invalid_contact_format(tmp_path, monkeypatch):
@@ -104,3 +149,63 @@ def test_registration_rejects_invalid_contact_format(tmp_path, monkeypatch):
         gutgpt_app.HISTORY.pop(sid, None)
         gutgpt_app.HISTORY_LAST_ACCESS.pop(sid, None)
         gutgpt_app.conversation_manager.remove(sid)
+
+
+def test_guest_jwt_tampering_and_wrong_audience_are_rejected(tmp_path, monkeypatch):
+    monkeypatch.setattr(gutgpt_app, "CUSTOMER_DATA_FILE", tmp_path / "customer_data.json")
+    sid = make_session()
+    try:
+        registered = gutgpt_app.register_customer(gutgpt_app.CustomerRegistrationRequest(
+            session_id=sid, name="JWT Customer", age=31,
+            contact="jwt@example.com", city="Delhi", consent=True,
+        ))
+        token = registered["guest_token"]
+        tampered = token[:-1] + ("a" if token[-1] != "a" else "b")
+        with pytest.raises(HTTPException) as error:
+            gutgpt_app.restore_customer(gutgpt_app.CustomerRestoreRequest(session_id=make_session(), guest_token=tampered))
+        assert error.value.status_code == 401
+
+        now = int(datetime.now(timezone.utc).timestamp())
+        wrong_audience_token = jwt.encode({
+            "sub": registered["customer_id"], "typ": "guest_access",
+            "iss": "gutgpt-api", "aud": "wrong-audience",
+            "iat": now, "nbf": now,
+            "exp": now + 30 * 24 * 60 * 60, "jti": "different-jti",
+        }, "test-only-secret-that-is-at-least-32-bytes-long", algorithm="HS256")
+        with pytest.raises(HTTPException) as error:
+            gutgpt_app.restore_customer(gutgpt_app.CustomerRestoreRequest(session_id=make_session(), guest_token=wrong_audience_token))
+        assert error.value.status_code == 401
+    finally:
+        gutgpt_app.REGISTERED_CUSTOMER_SESSIONS.discard(sid)
+        gutgpt_app.HISTORY.pop(sid, None)
+        gutgpt_app.HISTORY_LAST_ACCESS.pop(sid, None)
+        gutgpt_app.conversation_manager.remove(sid)
+
+
+def test_registration_rotation_revokes_previous_jwt(tmp_path, monkeypatch):
+    monkeypatch.setattr(gutgpt_app, "CUSTOMER_DATA_FILE", tmp_path / "customer_data.json")
+    sid = make_session()
+    try:
+        req = gutgpt_app.CustomerRegistrationRequest(
+            session_id=sid, name="JWT Customer", age=31,
+            contact="jwt@example.com", city="Delhi", consent=True,
+        )
+        first = gutgpt_app.register_customer(req)
+        second = gutgpt_app.register_customer(req)
+        fresh_session = make_session()
+        with pytest.raises(HTTPException) as error:
+            gutgpt_app.restore_customer(gutgpt_app.CustomerRestoreRequest(
+                session_id=fresh_session, guest_token=first["guest_token"]
+            ))
+        assert error.value.status_code == 401
+        restored = gutgpt_app.restore_customer(gutgpt_app.CustomerRestoreRequest(
+            session_id=fresh_session, guest_token=second["guest_token"]
+        ))
+        assert restored["status"] == "RESTORED"
+    finally:
+        for cleanup_sid in list(gutgpt_app.HISTORY):
+            if cleanup_sid == sid or cleanup_sid not in gutgpt_app.REGISTERED_CUSTOMER_SESSIONS:
+                gutgpt_app.REGISTERED_CUSTOMER_SESSIONS.discard(cleanup_sid)
+                gutgpt_app.HISTORY.pop(cleanup_sid, None)
+                gutgpt_app.HISTORY_LAST_ACCESS.pop(cleanup_sid, None)
+                gutgpt_app.conversation_manager.remove(cleanup_sid)
