@@ -339,7 +339,7 @@
 
       <section class="customer-intake" aria-label="Customer details">
         <h3 class="intake-title">Before we begin</h3>
-        <p class="intake-copy">Please share a few details so we can start your gut-health assessment. Your details will be stored in a JSON file for this version.</p>
+        <p class="intake-copy">No website account or password is needed. We store the details you submit to support this assessment. Do not enter information you do not want stored. Your consent is required before continuing.</p>
         <form class="intake-form" autocomplete="on">
           <label>Full name<input name="name" type="text" maxlength="100" autocomplete="name" required placeholder="Your name" /></label>
           <label>Age<input name="age" type="number" min="1" max="120" inputmode="numeric" required placeholder="Your age" /></label>

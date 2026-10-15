@@ -15,6 +15,7 @@ import time
 import logging
 import subprocess
 import json
+import re
 from datetime import datetime, timezone
 from threading import RLock
 
@@ -254,7 +255,14 @@ def register_customer(req: CustomerRegistrationRequest):
     city = " ".join(req.city.split())
     if not name or not contact or not city:
         raise HTTPException(status_code=400, detail="Please complete all customer details.")
-    if len(contact) < 3:
+    # Accept international phone numbers and email addresses; do not assume a
+    # single country's numbering plan. Reject control characters and obvious junk.
+    if any(ord(ch) < 32 or ord(ch) == 127 for ch in contact):
+        raise HTTPException(status_code=400, detail="Enter a valid phone number or email address.")
+    is_email = bool(re.fullmatch(r"[^\s@]+@[^\s@]+\.[^\s@]+", contact))
+    phone_digits = sum(ch.isdigit() for ch in contact)
+    is_phone = phone_digits >= 7 and bool(re.fullmatch(r"[+()\d .-]+", contact))
+    if not (is_email or is_phone):
         raise HTTPException(status_code=400, detail="Enter a valid phone number or email address.")
 
     with _SESSION_LOCK:
@@ -290,7 +298,7 @@ def register_customer(req: CustomerRegistrationRequest):
         if session_state is not None:
             session_state.symptom_state.age = record.get("age")
 
-    logger.info("Customer registration saved session=%s customer_id=%s", req.session_id[:8], record["customer_id"])
+    logger.info("Customer registration saved session=%s", req.session_id[:8])
     return {"status": "REGISTERED", "customer_id": record["customer_id"]}
 
 
@@ -342,34 +350,16 @@ def admin_download_customers(authorization: str | None = Header(default=None)):
 
 @app.post("/api/customer/restore")
 def restore_customer(req: CustomerRestoreRequest):
-    """Attach a previously registered customer profile to a fresh chat session."""
-    with _SESSION_LOCK:
-        if req.session_id not in HISTORY or req.session_id not in conversation_manager.sessions:
-            raise HTTPException(status_code=410, detail="SESSION_EXPIRED")
+    """Legacy recovery route intentionally disabled.
 
-    with CUSTOMER_LOCK:
-        records = _read_customer_records()
-        record = next((item for item in records if item.get("customer_id") == req.customer_id), None)
-        if record is None or not record.get("consent_to_store"):
-            raise HTTPException(status_code=404, detail="CUSTOMER_PROFILE_NOT_FOUND")
-        REGISTERED_CUSTOMER_SESSIONS.add(req.session_id)
-
-    # Reuse only the stored profile fields; the diagnostic session itself stays fresh.
-    with conversation_manager._lock:
-        session_state = conversation_manager.sessions.get(req.session_id)
-        if session_state is not None:
-            session_state.symptom_state.age = record.get("age")
-
-    with _SESSION_LOCK:
-        HISTORY_LAST_ACCESS[req.session_id] = time.monotonic()
-    logger.info("Returning customer profile restored session=%s customer_id=%s", req.session_id[:8], record["customer_id"])
-    return {
-        "status": "RESTORED",
-        "customer_id": record["customer_id"],
-        "name": record.get("name", ""),
-        "age": record.get("age"),
-        "city": record.get("city", ""),
-    }
+    The previous implementation accepted a browser-supplied customer_id as
+    proof of identity, creating an IDOR vulnerability. Secure token-based
+    recovery must be deployed before this route can safely restore a profile.
+    """
+    raise HTTPException(
+        status_code=501,
+        detail="SECURE_CUSTOMER_RECOVERY_NOT_CONFIGURED. Please register again; customer IDs alone cannot restore a profile.",
+    )
 
 
 @app.post("/api/chat", response_model=ChatResponse)
