@@ -255,11 +255,11 @@
         <label>Age
           <input name="age" type="number" min="1" max="120" inputmode="numeric" required placeholder="Your age">
         </label>
-        <label>Contact number or email
-          <input name="contact" type="text" maxlength="150" autocomplete="tel" required placeholder="Phone number or email">
+        <label>Contact number
+          <input name="contact" type="tel" inputmode="tel" maxlength="30" autocomplete="tel" required placeholder="Your contact number">
         </label>
-        <label>City
-          <input name="city" type="text" maxlength="100" autocomplete="address-level2" required placeholder="Your city">
+        <label>Location
+          <input name="city" type="text" maxlength="100" autocomplete="address-level2" required placeholder="Your location">
         </label>
         <label class="intake-consent">
           <input name="consent" type="checkbox" required>
@@ -573,7 +573,7 @@
           city: String(values.get("city") || "").trim(),
           consent: values.get("consent") === "on"
         };
-        if (!customer.name || !Number.isInteger(customer.age) || customer.age < 1 || customer.age > 120 || customer.contact.length < 3 || !customer.city || !customer.consent) {
+        if (!customer.name || !Number.isInteger(customer.age) || customer.age < 1 || customer.age > 120 || !/^[+()\d .-]{7,30}$/.test(customer.contact) || (customer.contact.match(/\d/g) || []).length < 7 || !customer.city || !customer.consent) {
           intakeError.textContent = "Please complete every field and agree to the storage notice.";
           intakeError.hidden = false;
           return;

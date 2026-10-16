@@ -322,15 +322,13 @@ def register_customer(req: CustomerRegistrationRequest):
     city = " ".join(req.city.split())
     if not name or not contact or not city:
         raise HTTPException(status_code=400, detail="Please complete all customer details.")
-    # Accept international phone numbers and email addresses; do not assume a
-    # single country's numbering plan. Reject control characters and obvious junk.
+    # Accept phone numbers only; email addresses are not valid contact values.
     if any(ord(ch) < 32 or ord(ch) == 127 for ch in contact):
-        raise HTTPException(status_code=400, detail="Enter a valid phone number or email address.")
-    is_email = bool(re.fullmatch(r"[^\s@]+@[^\s@]+\.[^\s@]+", contact))
+        raise HTTPException(status_code=400, detail="Enter a valid contact number.")
     phone_digits = sum(ch.isdigit() for ch in contact)
-    is_phone = phone_digits >= 7 and bool(re.fullmatch(r"[+()\d .-]+", contact))
-    if not (is_email or is_phone):
-        raise HTTPException(status_code=400, detail="Enter a valid phone number or email address.")
+    is_phone = phone_digits >= 7 and bool(re.fullmatch(r"[+()\\d .-]{7,30}", contact))
+    if not is_phone:
+        raise HTTPException(status_code=400, detail="Enter a valid contact number.")
 
     with _SESSION_LOCK:
         if req.session_id not in HISTORY or req.session_id not in conversation_manager.sessions:
