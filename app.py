@@ -326,7 +326,7 @@ def register_customer(req: CustomerRegistrationRequest):
     if any(ord(ch) < 32 or ord(ch) == 127 for ch in contact):
         raise HTTPException(status_code=400, detail="Enter a valid contact number.")
     phone_digits = sum(ch.isdigit() for ch in contact)
-    is_phone = phone_digits >= 7 and bool(re.fullmatch(r"[+()\\d .-]{7,30}", contact))
+    is_phone = phone_digits >= 7 and bool(re.fullmatch(r"[+()\d .-]{7,30}", contact))
     if not is_phone:
         raise HTTPException(status_code=400, detail="Enter a valid contact number.")
 
