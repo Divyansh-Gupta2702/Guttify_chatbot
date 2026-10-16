@@ -15,6 +15,7 @@ import time
 import logging
 import subprocess
 import json
+import sqlite3
 import re
 import secrets
 import hashlib
@@ -37,6 +38,7 @@ if not logger.handlers:
     )
 
 from guttify_agent import ConversationManager
+from symptom_summary import build_symptom_summary
 from guttify_chatbot import _deterministic_product_reply, _deterministic_screening_reply
 BASE_DIR = Path(__file__).resolve().parent
 WIDGET_FILE = BASE_DIR / "gutgpt-widget.js"
@@ -48,6 +50,8 @@ MAX_MESSAGE_LENGTH = max(256, min(10000, int(os.getenv("MAX_MESSAGE_LENGTH", "40
 MAX_HISTORY_MESSAGES = 100
 FRONTEND_FILE = BASE_DIR / "index.html"
 CUSTOMER_DATA_FILE = BASE_DIR / "customer_data.json"
+# Set ASSESSMENT_DB_PATH to a persistent disk path in production (for example, /var/data/gutgpt_assessments.sqlite3).
+ASSESSMENT_DB_FILE = Path(os.getenv("ASSESSMENT_DB_PATH", str(BASE_DIR / "gutgpt_assessments.sqlite3")))
 GUEST_TOKEN_TTL_SECONDS = 30 * 24 * 60 * 60
 JWT_ALGORITHM = "HS256"
 JWT_ISSUER = os.getenv("JWT_ISSUER", "gutgpt-api")
@@ -208,6 +212,99 @@ _SESSION_LOCK = RLock()
 conversation_manager = ConversationManager()
 CUSTOMER_LOCK = RLock()
 REGISTERED_CUSTOMER_SESSIONS: set[str] = set()
+
+
+def _assessment_db_connect():
+    """Open the SQLite database used to persist completed assessments."""
+    ASSESSMENT_DB_FILE.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(str(ASSESSMENT_DB_FILE), timeout=10)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys = ON")
+    return conn
+
+
+def _init_assessment_db() -> None:
+    """Create the assessment history table if it does not exist."""
+    with _assessment_db_connect() as conn:
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS customer_assessments (
+                assessment_id TEXT PRIMARY KEY,
+                customer_id TEXT NOT NULL,
+                session_id TEXT NOT NULL UNIQUE,
+                assessment_status TEXT NOT NULL,
+                diagnosis TEXT NOT NULL,
+                diagnosis_message TEXT NOT NULL,
+                symptom_summary TEXT NOT NULL,
+                symptom_state_json TEXT NOT NULL,
+                screening_json TEXT NOT NULL,
+                recommendations_json TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            )
+        """)
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_assessments_customer_created ON customer_assessments(customer_id, created_at DESC)")
+
+
+def _persist_completed_assessment(session_id: str, result: dict) -> None:
+    """Persist one completed deterministic assessment against its customer ID."""
+    with CUSTOMER_LOCK:
+        records = _read_customer_records()
+        customer = next((r for r in records if r.get("session_id") == session_id), None)
+    if not customer or not customer.get("customer_id"):
+        logger.error("Assessment persistence skipped: customer record missing session=%s", session_id[:8])
+        return
+
+    with conversation_manager._lock:
+        session = conversation_manager.sessions.get(session_id)
+        if session is None:
+            logger.error("Assessment persistence skipped: conversation missing session=%s", session_id[:8])
+            return
+        state = session.symptom_state
+        state_data = state.to_dict()
+        screening = result.get("screening") or getattr(session, "screening", None) or {}
+        summary = build_symptom_summary(state)
+
+    diagnosis = (
+        screening.get("likely_condition")
+        or screening.get("pattern")
+        or screening.get("action")
+        or result.get("status", "Assessment completed")
+    )
+    now = datetime.now(timezone.utc).isoformat()
+    _init_assessment_db()
+    with _assessment_db_connect() as conn:
+        conn.execute("""
+            INSERT INTO customer_assessments (
+                assessment_id, customer_id, session_id, assessment_status, diagnosis,
+                diagnosis_message, symptom_summary, symptom_state_json, screening_json,
+                recommendations_json, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(session_id) DO UPDATE SET
+                assessment_status=excluded.assessment_status,
+                diagnosis=excluded.diagnosis,
+                diagnosis_message=excluded.diagnosis_message,
+                symptom_summary=excluded.symptom_summary,
+                symptom_state_json=excluded.symptom_state_json,
+                screening_json=excluded.screening_json,
+                recommendations_json=excluded.recommendations_json,
+                created_at=excluded.created_at
+        """, (
+            str(uuid.uuid4()), customer["customer_id"], session_id, result.get("status", "COMPLETED"),
+            str(diagnosis), str(screening.get("message") or result.get("message") or ""), summary,
+            json.dumps(state_data, ensure_ascii=False, default=str),
+            json.dumps(screening, ensure_ascii=False, default=str),
+            json.dumps(result.get("recommendations") or [], ensure_ascii=False, default=str), now,
+        ))
+    logger.info("Completed assessment persisted customer_id=%s session=%s", customer["customer_id"], session_id[:8])
+
+
+def _assessment_row_to_dict(row):
+    item = dict(row)
+    for field in ("symptom_state_json", "screening_json", "recommendations_json"):
+        try:
+            item[field.removesuffix("_json")] = json.loads(item.pop(field))
+        except (ValueError, TypeError):
+            item[field.removesuffix("_json")] = {}
+    return item
 
 
 def _read_customer_records() -> list[dict]:
@@ -422,6 +519,24 @@ def admin_download_customers(authorization: str | None = Header(default=None)):
     )
 
 
+@app.get("/api/admin/assessments")
+def admin_list_assessments(customer_id: str | None = None, authorization: str | None = Header(default=None)):
+    """Return completed assessment history to an authenticated admin."""
+    _require_admin(authorization)
+    _init_assessment_db()
+    with _assessment_db_connect() as conn:
+        if customer_id:
+            rows = conn.execute(
+                "SELECT * FROM customer_assessments WHERE customer_id = ? ORDER BY created_at DESC",
+                (customer_id,),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT * FROM customer_assessments ORDER BY created_at DESC LIMIT 1000"
+            ).fetchall()
+    return {"count": len(rows), "assessments": [_assessment_row_to_dict(row) for row in rows]}
+
+
 @app.post("/api/customer/restore")
 def restore_customer(req: CustomerRestoreRequest):
     """Restore a profile using a signed 30-day JWT, with one-time legacy upgrade."""
@@ -585,6 +700,12 @@ def chat(req: ChatRequest):
     # questions, safety reviews, greetings, or later acknowledgements.
     if status in ("DIAGNOSIS", "RECOMMENDATION_FOUND", "AMBIGUOUS"):
         reply = append_human_support_footer(reply)
+        try:
+            _persist_completed_assessment(req.session_id, result)
+        except Exception:
+            # Persistence failure must be visible in logs but must not change
+            # the deterministic assessment response already produced.
+            logger.exception("Completed assessment persistence failed session=%s", req.session_id[:8])
 
     response_build_ms = (time.perf_counter() - logic_start) * 1000
     logger.info(

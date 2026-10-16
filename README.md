@@ -194,3 +194,15 @@ Required Render environment variables:
 `PyJWT` is installed through `requirements.txt`. Startup fails closed if `JWT_SECRET_KEY` is absent or shorter than 32 bytes. Changing the secret invalidates existing JWT sessions, so rotate it only with a planned re-registration/recovery path. The browser currently stores the credential in `localStorage`; this is compatible with the cross-origin widget but is exposed to successful same-origin script injection. Protect the widget against XSS and consider a carefully configured HttpOnly cookie/CSRF design in a future hardening pass.
 
 For a smooth upgrade, the restore endpoint supports an unexpired legacy opaque token already stored by the prior release exactly once, then returns and persists a new JWT. The widget replaces the legacy token with the JWT. Legacy tokens that have expired or whose JSON records were lost cannot be upgraded and require registration again. The JWT expires 30 days after issue; this is not a sliding expiration.
+
+## Completed assessment storage (Phase 1 extension)
+
+When the existing deterministic flow returns a completed `DIAGNOSIS`, `RECOMMENDATION_FOUND`, or `AMBIGUOUS` result, GutGPT stores the customer's ID, symptom summary, structured symptom state (including Bristol stool type when collected), screening/diagnosis details, recommendations, status, and timestamp in a SQLite database. Intermediate questions and summary-review turns are not stored as completed assessments. Each assessment is linked to `customer_id`; each chat session has at most one row, and a retry updates that session's row rather than duplicating it.
+
+- Local default database: `gutgpt_assessments.sqlite3` in the application directory.
+- Optional path: set `ASSESSMENT_DB_PATH` to an absolute path.
+- Render: the default filesystem may be ephemeral. Attach a persistent disk and set `ASSESSMENT_DB_PATH` to a path on that disk (for example `/var/data/gutgpt_assessments.sqlite3`) before relying on this data for long-term records. For multi-instance or higher-scale production, use managed PostgreSQL instead of SQLite.
+- Authenticated admin endpoint: `GET /api/admin/assessments` returns recent assessments; add `?customer_id=<id>` to filter to one customer. It requires `Authorization: Bearer <GUTGPT_ADMIN_TOKEN>`.
+- Assessment records contain sensitive health-related information. Restrict admin access, keep the token secret, and define an appropriate retention/deletion policy.
+
+Run the targeted test with `python -m pytest tests/test_assessment_persistence.py -v`.
