@@ -1,16 +1,9 @@
-# Temporary JSON storage
+# GutGPT temporary JSON storage
 
-This build stores customer registration details and the final assessment fields together in `customer_data.json`. Each customer row includes `likely_assessment` (the likely assessment value from the completed screening), `final_symptom_summary` (the final summary of symptoms). It does not create a separate assessment table or `assessment_data.json` file. It does not use PostgreSQL or SQLite for these records, even if an old `DATABASE_URL` environment variable remains configured.
+Customer registration details remain in one customer profile in `customer_data.json`. Each completed diagnosis is appended to that profile's `assessments` array with an assessment ID, session ID, assessment value, and completion timestamp. The top-level `likely_assessment` field remains as a compatibility/latest-result field for the admin dashboard's **Assessment** column. Registration city is displayed as **Location**. Contact numbers accept digits only (7–15 digits).
 
-## Admin panel
+A returning customer should restore their profile with their guest token; the active session is linked to the same customer ID so new diagnoses are appended to their history rather than replacing previous diagnoses or creating a second profile. Existing records without an `assessments` array are upgraded when a new assessment is saved.
 
-1. Set a strong `GUTGPT_ADMIN_TOKEN` in the Render service environment.
-2. Deploy the application and open `/admin`.
-3. Sign in using the admin token. The single customer table displays registration details plus the two assessment columns.
-4. Use **Download customer JSON** to export all customer records and assessment summary fields.
+The JSON file is temporary on Render's free filesystem and can be lost on restart or redeployment. Use dummy data for testing and protect the admin token.
 
-Only completed assessment results update the two assessment fields. Intermediate questions do not overwrite the stored assessment summary. The assessment fields are updated on the matching customer record by session ID. Existing customer JSON records remain readable; older records simply display blank values for the new fields until an assessment completes.
-
-## Temporary storage warning
-
-On Render's free service filesystem, JSON files can be lost when the instance restarts, redeploys, or is replaced. This is suitable for temporary testing only, not durable storage for real customer data. Keep the admin token secret and use dummy data while testing.
+All customer-facing stored timestamps (including diagnosis `completed_at`, profile `created_at`, and `updated_at`) use India Standard Time (`Asia/Kolkata`, UTC+05:30) and include the timezone offset. JWT expiry calculations remain UTC-based internally.

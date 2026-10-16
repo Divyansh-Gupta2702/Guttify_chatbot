@@ -1,7 +1,6 @@
 import json
 
 import app as gutgpt_app
-
 import pytest
 
 @pytest.fixture(autouse=True)
@@ -12,7 +11,7 @@ def configured_test_jwt_secret(monkeypatch):
     )
     monkeypatch.setenv("JWT_ISSUER", "gutgpt-api")
     monkeypatch.setenv("JWT_AUDIENCE", "gutgpt-guest-session")
-    
+
 def test_completed_assessment_is_saved_on_customer_record(tmp_path, monkeypatch):
     data_file = tmp_path / "customer_data.json"
     monkeypatch.setattr(gutgpt_app, "CUSTOMER_DATA_FILE", data_file)
@@ -22,7 +21,7 @@ def test_completed_assessment_is_saved_on_customer_record(tmp_path, monkeypatch)
             session_id=sid,
             name="Assessment Test",
             age=29,
-            contact="+919876543210",
+            contact="919876543210",
             city="Delhi",
             consent=True,
         ))
@@ -52,7 +51,7 @@ def test_completed_assessment_is_saved_on_customer_record(tmp_path, monkeypatch)
         assert record["customer_id"] == registered["customer_id"]
         assert record["session_id"] == sid
         assert record["likely_assessment"] == "Functional constipation pattern"
-        assert "bloating" in record["final_symptom_summary"].lower()
+        assert "final_symptom_summary" not in record
         assert "symptom_state" not in record
         assert "recommendations" not in record
         assert not (tmp_path / "assessment_data.json").exists()

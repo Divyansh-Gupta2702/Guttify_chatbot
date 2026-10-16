@@ -346,7 +346,7 @@
         <form class="intake-form" autocomplete="on">
           <label>Full name<input name="name" type="text" maxlength="100" autocomplete="name" required placeholder="Your name" /></label>
           <label>Age<input name="age" type="number" min="1" max="120" inputmode="numeric" required placeholder="Your age" /></label>
-          <label>Contact number<input name="contact" type="tel" inputmode="tel" maxlength="30" autocomplete="tel" required placeholder="Your contact number" /></label>
+          <label>Contact number<input name="contact" type="text" inputmode="numeric" pattern="[0-9]{7,15}" minlength="7" maxlength="15" autocomplete="tel" required placeholder="Digits only (7–15 digits)" /></label>
           <label>Location<input name="city" type="text" maxlength="100" autocomplete="address-level2" required placeholder="Your location" /></label>
           <label class="consent-row"><input name="consent" type="checkbox" required /><span>I agree to have these details stored to support this assessment.</span></label>
           <p class="intake-error" aria-live="polite" hidden></p>
@@ -558,6 +558,9 @@
     }
   }
 
+  const contactInput = intakeForm.querySelector('input[name="contact"]');
+  contactInput.addEventListener("input", () => { contactInput.value = contactInput.value.replace(/[^0-9]/g, "").slice(0, 15); });
+
   intakeForm.addEventListener("submit", async (event) => {
     event.preventDefault();
     if (busy || !sessionId || customerRegistered) return;
@@ -570,7 +573,7 @@
       city: String(formData.get("city") || "").trim(),
       consent: formData.get("consent") === "on",
     };
-    if (!customer.name || !Number.isInteger(customer.age) || customer.age < 1 || customer.age > 120 || !/^[+()\d .-]{7,30}$/.test(customer.contact) || (customer.contact.match(/\d/g) || []).length < 7 || !customer.city || !customer.consent) {
+    if (!customer.name || !Number.isInteger(customer.age) || customer.age < 1 || customer.age > 120 || !/^[0-9]{7,15}$/.test(customer.contact) || !customer.city || !customer.consent) {
       intakeError.textContent = "Please complete every field and agree to the storage notice.";
       intakeError.hidden = false;
       return;

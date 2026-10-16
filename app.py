@@ -22,6 +22,9 @@ import hmac
 import jwt
 from jwt import InvalidTokenError
 from datetime import datetime, timezone, timedelta
+from zoneinfo import ZoneInfo
+
+INDIA_TZ = ZoneInfo("Asia/Kolkata")
 from threading import RLock
 
 from fastapi import FastAPI, HTTPException, Header, Response
@@ -209,6 +212,8 @@ _SESSION_LOCK = RLock()
 conversation_manager = ConversationManager()
 CUSTOMER_LOCK = RLock()
 REGISTERED_CUSTOMER_SESSIONS: set[str] = set()
+# Maps each active diagnostic session to its persistent customer profile.
+SESSION_CUSTOMER_IDS: dict[str, str] = {}
 
 
 def _read_json_records(path: Path, label: str) -> list[dict]:
@@ -237,8 +242,11 @@ def _write_json_records(path: Path, records: list[dict]) -> None:
 
 
 def _read_customer_records() -> list[dict]:
-    """Customer records are stored temporarily in customer_data.json."""
-    return _read_json_records(CUSTOMER_DATA_FILE, "Customer")
+    """Read customer records and discard the retired symptom-summary field."""
+    records = _read_json_records(CUSTOMER_DATA_FILE, "Customer")
+    for record in records:
+        record.pop("final_symptom_summary", None)
+    return records
 
 
 def _write_customer_records(records: list[dict]) -> None:
@@ -246,27 +254,40 @@ def _write_customer_records(records: list[dict]) -> None:
 
 
 def _persist_completed_assessment(session_id: str, result: dict) -> None:
-    """Store only the likely assessment and final symptom summary on the customer row."""
+    """Store only the likely assessment value on the matching customer row."""
     with conversation_manager._lock:
         session = conversation_manager.sessions.get(session_id)
         if session is None:
             logger.error("Assessment persistence skipped: conversation missing session=%s", session_id[:8])
             return
         screening = result.get("screening") or getattr(session, "screening", None) or {}
-        summary = build_symptom_summary(session.symptom_state)
 
-    likely_assessment = (screening.get("likely_condition") or screening.get("pattern") or
-                         screening.get("action") or result.get("status", "Assessment completed"))
+    likely_assessment = screening.get("likely_condition") or screening.get("pattern") or "Insufficient information"
     with CUSTOMER_LOCK:
         records = _read_customer_records()
-        customer = next((r for r in records if r.get("session_id") == session_id), None)
+        customer_id = SESSION_CUSTOMER_IDS.get(session_id)
+        customer = next((r for r in records if r.get("customer_id") == customer_id), None) if customer_id else None
+        # Compatibility for sessions created before the session-to-customer map existed.
+        if customer is None:
+            customer = next((r for r in records if r.get("session_id") == session_id), None)
         if not customer or not customer.get("customer_id"):
             logger.error("Assessment persistence skipped: customer record missing session=%s", session_id[:8])
             return
+        now = datetime.now(INDIA_TZ).isoformat()
+        history = customer.setdefault("assessments", [])
+        if not isinstance(history, list):
+            history = customer["assessments"] = []
+        history.append({
+            "assessment_id": str(uuid.uuid4()),
+            "session_id": session_id,
+            "assessment": str(likely_assessment),
+            "completed_at": now,
+        })
+        # Keep the dashboard's Assessment column useful by showing the latest result.
         customer["likely_assessment"] = str(likely_assessment)
-        customer["final_symptom_summary"] = str(summary or "")
+        customer.pop("final_symptom_summary", None)
         _write_customer_records(records)
-    logger.info("Assessment summary saved on customer JSON customer_id=%s session=%s",
+    logger.info("Assessment history saved on customer JSON customer_id=%s session=%s",
                 customer["customer_id"], session_id[:8])
 
 
@@ -274,7 +295,7 @@ class CustomerRegistrationRequest(BaseModel):
     session_id: str = Field(min_length=1, max_length=128)
     name: str = Field(min_length=1, max_length=100)
     age: int = Field(ge=1, le=120)
-    contact: str = Field(min_length=3, max_length=150)
+    contact: str = Field(min_length=7, max_length=15)
     city: str = Field(min_length=1, max_length=100)
     consent: bool
 
@@ -358,13 +379,9 @@ def register_customer(req: CustomerRegistrationRequest):
     city = " ".join(req.city.split())
     if not name or not contact or not city:
         raise HTTPException(status_code=400, detail="Please complete all customer details.")
-    # Accept phone numbers only; email addresses are not valid contact values.
-    if any(ord(ch) < 32 or ord(ch) == 127 for ch in contact):
-        raise HTTPException(status_code=400, detail="Enter a valid contact number.")
-    phone_digits = sum(ch.isdigit() for ch in contact)
-    is_phone = phone_digits >= 7 and bool(re.fullmatch(r"[+()\d .-]{7,30}", contact))
-    if not is_phone:
-        raise HTTPException(status_code=400, detail="Enter a valid contact number.")
+    # Registration contact is digits only; reject spaces, plus signs, and punctuation.
+    if not re.fullmatch(r"[0-9]{7,15}", contact):
+        raise HTTPException(status_code=400, detail="Enter a contact number using digits only (7–15 digits).")
 
     with _SESSION_LOCK:
         if req.session_id not in HISTORY or req.session_id not in conversation_manager.sessions:
@@ -384,7 +401,7 @@ def register_customer(req: CustomerRegistrationRequest):
                 "contact": contact,
                 "city": city,
                 "consent_to_store": True,
-                "created_at": datetime.now(timezone.utc).isoformat(),
+                "created_at": datetime.now(INDIA_TZ).isoformat(),
             }
             records.append(record)
         else:
@@ -396,9 +413,10 @@ def register_customer(req: CustomerRegistrationRequest):
         record.pop("guest_token_hash", None)  # retire legacy opaque credential hash
         record["guest_token_jti_hash"] = token_jti_hash
         record["guest_token_expires_at"] = token_expires_at
-        record["updated_at"] = datetime.now(timezone.utc).isoformat()
+        record["updated_at"] = datetime.now(INDIA_TZ).isoformat()
         _write_customer_records(records)
         REGISTERED_CUSTOMER_SESSIONS.add(req.session_id)
+        SESSION_CUSTOMER_IDS[req.session_id] = record["customer_id"]
 
     # Reuse the age already collected by the registration form throughout the
     # diagnostic questionnaire. This makes the existing age question resolve
@@ -437,13 +455,13 @@ def admin_dashboard():
 :root{color-scheme:light dark}body{font:16px system-ui,sans-serif;max-width:1400px;margin:32px auto;padding:0 16px}h1{margin-bottom:4px}.muted{opacity:.75}form,.toolbar{display:flex;gap:10px;flex-wrap:wrap;margin:18px 0}input,button{font:inherit;padding:10px;border-radius:8px;border:1px solid #888}input{min-width:250px;flex:1}button{cursor:pointer}table{width:100%;border-collapse:collapse;margin-top:16px}th,td{text-align:left;padding:10px;border-bottom:1px solid #8886;overflow-wrap:anywhere;vertical-align:top;min-width:120px}th{position:sticky;top:0;background:Canvas}.status{margin:12px 0}.hidden{display:none}.tablewrap{overflow:auto;margin-bottom:28px}@media(max-width:600px){body{margin-top:18px}th,td{padding:7px;font-size:14px}}
 </style></head><body><h1>GutGPT Admin</h1><p class="muted">Sign in with GUTGPT_ADMIN_TOKEN configured in Render. Customer and assessment information is sensitive.</p>
 <form id="login"><label for="token">Admin token</label><input id="token" type="password" autocomplete="current-password" required placeholder="Enter admin token"><button type="submit">Sign in</button></form>
-<div id="panel" class="hidden"><h2>Customers and assessments</h2><p id="summary" class="status"></p><div class="toolbar"><button id="refresh">Refresh records</button><button id="download">Download customer JSON</button><button id="logout">Sign out</button></div><div class="tablewrap"><table><thead><tr><th>Name</th><th>Age</th><th>Contact</th><th>City</th><th>Likely assessment</th><th>Final symptom summary</th><th>Registered at (UTC)</th><th>Session ID</th></tr></thead><tbody id="rows"></tbody></table></div></div>
+<div id="panel" class="hidden"><h2>Customers</h2><p id="summary" class="status"></p><div class="toolbar"><button id="refresh">Refresh records</button><button id="download">Download customer JSON</button><button id="logout">Sign out</button></div><div class="tablewrap"><table><thead><tr><th>Name</th><th>Age</th><th>Contact</th><th>Location</th><th>Assessment</th><th>Registered at (UTC)</th><th>Session ID</th></tr></thead><tbody id="rows"></tbody></table></div></div>
 <p id="status" class="status" role="status" aria-live="polite"></p>
 <script>
 (()=>{let token='';const $=id=>document.getElementById(id);const status=m=>{$('status').textContent=m};
 async function api(path){const r=await fetch(path,{headers:{Authorization:'Bearer '+token},cache:'no-store'});if(!r.ok){let msg='Request failed ('+r.status+')';try{const j=await r.json();if(j.detail)msg=j.detail}catch{}throw Error(msg)}return r}
 function cell(tr,value){const td=document.createElement('td');td.textContent=value==null?'':String(value);tr.appendChild(td)}
-async function load(){status('Loading customer JSON…');try{const r=await api('/api/admin/customers');const data=await r.json();$('rows').replaceChildren();for(const c of data.customers||[]){const tr=document.createElement('tr');cell(tr,c.name);cell(tr,c.age);cell(tr,c.contact);cell(tr,c.city);cell(tr,c.likely_assessment);cell(tr,c.final_symptom_summary);cell(tr,c.created_at);cell(tr,c.session_id);$('rows').appendChild(tr)}$('summary').textContent=(data.count??(data.customers||[]).length)+' customer record(s)';$('panel').classList.remove('hidden');status('Records loaded.')}catch(e){$('panel').classList.add('hidden');status(e.message);if(/token|unauthorized|admin access/i.test(e.message))$('token').focus()}}
+async function load(){status('Loading customer JSON…');try{const r=await api('/api/admin/customers');const data=await r.json();$('rows').replaceChildren();for(const c of data.customers||[]){const tr=document.createElement('tr');cell(tr,c.name);cell(tr,c.age);cell(tr,c.contact);cell(tr,c.location ?? c.city);cell(tr,c.likely_assessment);cell(tr,c.created_at);cell(tr,c.session_id);$('rows').appendChild(tr)}$('summary').textContent=(data.count??(data.customers||[]).length)+' customer record(s)';$('panel').classList.remove('hidden');status('Records loaded.')}catch(e){$('panel').classList.add('hidden');status(e.message);if(/token|unauthorized|admin access/i.test(e.message))$('token').focus()}}
 async function download(){try{const r=await api('/api/admin/customers/download');const blob=await r.blob();const url=URL.createObjectURL(blob);const a=document.createElement('a');a.href=url;a.download='customer_data.json';document.body.appendChild(a);a.click();a.remove();URL.revokeObjectURL(url);status('Customer JSON download started.')}catch(e){status(e.message)}}
 $('login').addEventListener('submit',async e=>{e.preventDefault();token=$('token').value.trim();if(!token){status('Enter the admin token.');return}await load()});$('refresh').addEventListener('click',load);$('download').addEventListener('click',download);$('logout').addEventListener('click',()=>{token='';$('token').value='';$('rows').replaceChildren();$('panel').classList.add('hidden');status('Signed out.');$('token').focus()});
 })();</script></body></html>""")
@@ -537,6 +555,7 @@ def restore_customer(req: CustomerRestoreRequest):
             _write_customer_records(records)
 
         REGISTERED_CUSTOMER_SESSIONS.add(req.session_id)
+        SESSION_CUSTOMER_IDS[req.session_id] = record["customer_id"]
         with conversation_manager._lock:
             state = conversation_manager.sessions.get(req.session_id)
             if state is not None:

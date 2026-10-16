@@ -197,12 +197,12 @@ For a smooth upgrade, the restore endpoint supports an unexpired legacy opaque t
 
 ## Assessment summary fields (temporary JSON mode)
 
-When the deterministic flow completes an assessment, GutGPT updates two fields on the matching customer record in `customer_data.json`: `likely_assessment` (the likely assessment value from screening) and `final_symptom_summary` (the final summary of symptoms). It also records `assessment_updated_at`. There is no separate assessment table or `assessment_data.json` file. Intermediate questions do not overwrite these fields.
+When the deterministic flow completes an assessment, GutGPT updates only `likely_assessment` on the matching customer record in `customer_data.json`. The admin dashboard labels this column **Assessment**. No symptom-summary field or separate assessment file/table is used. Intermediate questions do not overwrite the assessment value.
 
 - Default file: `customer_data.json` beside `app.py`; optionally set `CUSTOMER_DATA_FILE` to another path.
 - Admin dashboard: open `/admin`, enter `GUTGPT_ADMIN_TOKEN`, and view customer registration details and the two assessment fields in one table.
 - Authenticated endpoints: `GET /api/admin/customers` and `GET /api/admin/customers/download`.
-- Customer JSON download includes both assessment summary fields.
+- Customer JSON download includes the single likely assessment value. The dashboard labels `city` as Location.
 - The file contains personal and health-related information. Restrict access, do not commit real data, and follow applicable privacy and retention requirements.
 
 **Temporary-storage warning:** This version intentionally uses JSON files and ignores `DATABASE_URL`. On Render Free, local files may disappear after restarts, redeploys, or instance replacement, and separate instances do not share files. Use dummy data for testing only. For reliable production storage, move to a persistent disk or managed database.

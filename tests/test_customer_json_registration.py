@@ -27,7 +27,7 @@ def test_customer_registration_persists_json_and_is_idempotent(tmp_path, monkeyp
         session_id=session_id,
         name="  Test   Customer ",
         age=29,
-        contact="+919876543210",
+        contact="919876543210",
         city=" New Delhi ",
         consent=True,
     )
@@ -41,7 +41,7 @@ def test_customer_registration_persists_json_and_is_idempotent(tmp_path, monkeyp
     assert len(records) == 1
     assert records[0]["name"] == "Test Customer"
     assert records[0]["age"] == 29
-    assert records[0]["contact"] == "+919876543210"
+    assert records[0]["contact"] == "919876543210"
     assert records[0]["city"] == "New Delhi"
     assert records[0]["consent_to_store"] is True
     assert records[0]["created_at"]
@@ -58,7 +58,7 @@ def test_registration_requires_storage_consent():
     with pytest.raises(HTTPException) as error:
         gutgpt_app.register_customer(gutgpt_app.CustomerRegistrationRequest(
             session_id="not-used", name="Test", age=29,
-            contact="+919876543210", city="Delhi", consent=False,
+            contact="919876543210", city="Delhi", consent=False,
         ))
     assert error.value.status_code == 400
 
@@ -84,7 +84,7 @@ def test_returning_customer_restores_with_guest_token_and_fresh_diagnostic_state
     try:
         registered = gutgpt_app.register_customer(gutgpt_app.CustomerRegistrationRequest(
             session_id=first_session, name="Returning Customer", age=34,
-            contact="+919876543211", city="Delhi", consent=True,
+            contact="919876543211", city="Delhi", consent=True,
         ))
         assert registered["guest_token"]
         records = json.loads(data_file.read_text(encoding="utf-8"))
@@ -157,7 +157,7 @@ def test_guest_jwt_tampering_and_wrong_audience_are_rejected(tmp_path, monkeypat
     try:
         registered = gutgpt_app.register_customer(gutgpt_app.CustomerRegistrationRequest(
             session_id=sid, name="JWT Customer", age=31,
-            contact="+919876543212", city="Delhi", consent=True,
+            contact="919876543212", city="Delhi", consent=True,
         ))
         token = registered["guest_token"]
         tampered = token[:-1] + ("a" if token[-1] != "a" else "b")
@@ -188,7 +188,7 @@ def test_registration_rotation_revokes_previous_jwt(tmp_path, monkeypatch):
     try:
         req = gutgpt_app.CustomerRegistrationRequest(
             session_id=sid, name="JWT Customer", age=31,
-            contact="+919876543212", city="Delhi", consent=True,
+            contact="919876543212", city="Delhi", consent=True,
         )
         first = gutgpt_app.register_customer(req)
         second = gutgpt_app.register_customer(req)
