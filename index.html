@@ -88,6 +88,23 @@
       background: #fff;
     }
 
+    .bristol-options {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      margin: 4px 0 12px;
+    }
+    .bristol-options button {
+      border: 1px solid #8b65a7;
+      border-radius: 8px;
+      background: #f7f0fc;
+      color: #42245b;
+      padding: 7px 10px;
+      font: inherit;
+      cursor: pointer;
+    }
+    .bristol-options button:disabled { opacity: .5; cursor: not-allowed; }
+
     .msg {
       max-width: 82%;
       padding: 11px 14px;
@@ -370,6 +387,22 @@
           image.alt = "Bristol Stool Chart showing stool types 1 through 7";
           image.loading = "eager";
           element.appendChild(image);
+          const options = document.createElement("div");
+          options.className = "bristol-options";
+          options.setAttribute("aria-label", "Choose your Bristol stool type");
+          for (let type = 1; type <= 7; type += 1) {
+            const button = document.createElement("button");
+            button.type = "button";
+            button.textContent = `Type ${type}`;
+            button.setAttribute("aria-label", `Select Bristol stool type ${type}`);
+            button.addEventListener("click", () => {
+              if (busy || ended) return;
+              input.value = `Bristol type ${type}`;
+              void sendMessage();
+            });
+            options.appendChild(button);
+          }
+          element.appendChild(options);
           const explanation = document.createElement("div");
           explanation.textContent = (parts[1] || "").replace(/^\n/, "");
           element.appendChild(explanation);

@@ -18,7 +18,11 @@ def test_explicit_piles_reaches_piles_pure_without_bleeding():
     assert result["status"] == "ASK"
     for message in ["2 months", "no weight loss", "23", "no bleeding", "no sharp pain", "no lump", "no hard stools and no straining"]:
         result = cm.handle_message(sid, message)
+    if result["status"] == "SUMMARY_REVIEW":
+        result = cm.handle_message(sid, "yes")
     assert result["status"] in ("RECOMMENDATION_FOUND", "AMBIGUOUS")
+    if result["status"] == "SUMMARY_REVIEW":
+        result = cm.handle_message(sid, "yes")
     names = {p["product_name"] for p in result["recommendations"]}
     assert "Piles Pure" in names
     assert cm.sessions[sid].diagnosis_complete
@@ -32,6 +36,8 @@ def test_explicit_hemorrhoids_reaches_piles_pure():
     result = cm.handle_message(sid, "I have hemorrhoids")
     for message in ["1 month", "no weight loss", "30", "no bleeding", "no sharp pain", "no lump", "no hard stools and no straining"]:
         result = cm.handle_message(sid, message)
+    if result and result.get("status") == "SUMMARY_REVIEW":
+        result = cm.handle_message(sid, "yes")
     names = {p["product_name"] for p in result["recommendations"]}
     assert "Piles Pure" in names
     assert cm.sessions[sid].diagnosis_complete
@@ -43,6 +49,8 @@ def test_piles_with_bright_red_blood_and_lump_reaches_piles_pure():
     result = None
     for message in ["I have piles and bright red blood", "2 weeks", "23", "on tissue", "no sharp pain", "yes lump", "no hard stools and no straining"]:
         result = cm.handle_message(sid, message)
+    if result["status"] == "SUMMARY_REVIEW":
+        result = cm.handle_message(sid, "yes")
     assert result["screening"]["pattern"] == "Possible hemorrhoid pattern"
     names = {p["product_name"] for p in result["recommendations"]}
     assert "Piles Pure" in names
@@ -54,6 +62,8 @@ def test_fissure_pattern_still_routes_to_piloease():
     result = None
     for message in ["I have anal fissure", "2 weeks", "23", "bright red blood", "on tissue", "sharp tearing pain during stool", "no lump", "no hard stools and no straining"]:
         result = cm.handle_message(sid, message)
+    if result["status"] == "SUMMARY_REVIEW":
+        result = cm.handle_message(sid, "yes")
     assert result["screening"]["pattern"] == "Possible anal fissure pattern"
     names = {p["product_name"] for p in result["recommendations"]}
     assert "Piloease Anal Care Spray" in names

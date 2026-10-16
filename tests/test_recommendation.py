@@ -280,6 +280,8 @@ def test_ambiguous_products_are_not_collapsed_to_first_product():
     result = None
     for message in answers:
         result = cm.handle_message(sid, message)
+    if result and result.get("status") == "SUMMARY_REVIEW":
+        result = cm.handle_message(sid, "yes")
     assert result["status"] in ("AMBIGUOUS", "RECOMMENDATION_FOUND")
     names = {p["product_name"] for p in result.get("recommendations", [])}
     assert "Digest Boost" in names or "Guttify Poopie" in names

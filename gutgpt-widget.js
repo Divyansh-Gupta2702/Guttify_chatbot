@@ -158,6 +158,9 @@
         border-radius: 8px;
         background: #fff;
       }
+      .bristol-options { display:flex; flex-wrap:wrap; gap:6px; margin:4px 0 12px; }
+      .bristol-options button { border:1px solid #8b65a7; border-radius:8px; background:#f7f0fc; color:#42245b; padding:7px 10px; font:inherit; cursor:pointer; }
+      .bristol-options button:disabled { opacity:.5; cursor:not-allowed; }
       .customer-intake {
         flex: 1;
         overflow-y: auto;
@@ -399,7 +402,7 @@
     // source is an embedded static image, not user-controlled HTML.
     html = html.replace(
       "[[BRISTOL_STOOL_CHART]]",
-      `<img class="bristol-stool-chart" src="${BRISTOL_STOOL_CHART_DATA_URI}" alt="Bristol Stool Chart showing stool types 1 through 7" loading="eager">`
+      `<img class="bristol-stool-chart" src="${BRISTOL_STOOL_CHART_DATA_URI}" alt="Bristol Stool Chart showing stool types 1 through 7" loading="eager"><div class="bristol-options" aria-label="Choose your Bristol stool type">${[1,2,3,4,5,6,7].map(type => `<button type="button" data-bristol-type="${type}" aria-label="Select Bristol stool type ${type}">Type ${type}</button>`).join("")}</div>`
     );
     html = html.replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>");
     html = html.replace(/\n/g, "<br>");
@@ -699,6 +702,15 @@
 
   form.addEventListener("submit", (event) => {
     event.preventDefault();
+    void sendMessage();
+  });
+
+  messages.addEventListener("click", (event) => {
+    const button = event.target && event.target.closest ? event.target.closest("[data-bristol-type]") : null;
+    if (!button || !messages.contains(button) || busy || ended) return;
+    const type = Number(button.getAttribute("data-bristol-type"));
+    if (!Number.isInteger(type) || type < 1 || type > 7) return;
+    input.value = `Bristol type ${type}`;
     void sendMessage();
   });
 

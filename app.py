@@ -549,6 +549,7 @@ def chat(req: ChatRequest):
         "IRRELEVANT",
         "SAFETY_REVIEW",
         "SCREENING_REVIEW",
+        "SUMMARY_REVIEW",
         "ASK",
         "NO_MATCH",
         "GREETING",

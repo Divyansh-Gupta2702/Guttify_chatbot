@@ -88,6 +88,8 @@ class TestV8ClinicalContextBridging(unittest.TestCase):
         result = None
         for answer in answers:
             result = cm.handle_message(sid, answer)
+        if result and result.get("status") == "SUMMARY_REVIEW":
+            result = cm.handle_message(sid, "yes")
         self.assertEqual(result["status"], "RECOMMENDATION_FOUND")
         self.assertEqual(result["screening"]["pattern"], "Possible anal fissure pattern")
         self.assertIn("Piloease Anal Care Spray", [x["product_name"] for x in result["recommendations"]])
@@ -135,6 +137,8 @@ class TestV8AllActiveProductEntryPoints(unittest.TestCase):
         result = cm.handle_message(sid, "Yes")
         result = cm.handle_message(sid, "no lump")
         result = cm.handle_message(sid, "no hard stools and no straining")
+        if result.get("status") == "SUMMARY_REVIEW":
+            result = cm.handle_message(sid, "yes")
         state = cm.sessions[sid].symptom_state
 
         self.assertNotEqual(result["status"], "SAFETY_REVIEW")

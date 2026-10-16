@@ -13,6 +13,8 @@ def run(messages):
     result = None
     for message in messages:
         result = bot.handle_message(sid, message)
+    if result and result.get("status") == "SUMMARY_REVIEW":
+        result = bot.handle_message(sid, "yes")
     return bot, result
 
 

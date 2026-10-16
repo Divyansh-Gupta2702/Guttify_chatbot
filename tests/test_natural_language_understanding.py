@@ -79,6 +79,8 @@ def test_negated_stool_facts_are_not_created_by_nlu():
     ]:
         result = cm.handle_message(sid, message)
 
+    if result and result.get("status") == "SUMMARY_REVIEW":
+        result = cm.handle_message(sid, "yes")
     state = visible_state(cm, sid)
     assert state["sharp_pain_during_stool"] is False
     assert state["straining"] is False

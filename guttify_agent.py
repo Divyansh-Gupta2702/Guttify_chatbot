@@ -25,6 +25,7 @@ from intent_parser import (
 )
 from symptom_questionnaire import next_question
 from clinical_rule_engine import evaluate as evaluate_screening, _duration_days
+from symptom_summary import build_symptom_summary, BRISTOL_LABELS
 from safety_checker import check_safety, detect_red_flags, derive_red_flags, is_pregnancy_or_lactation
 from recommendation_engine import evaluate as evaluate_product, find_named_product, has_domain_overlap, IRRELEVANT_MESSAGE, products as ALL_PRODUCTS
 from nlu_extractor import extract_natural_facts
@@ -177,6 +178,10 @@ class SessionState:
     clarification_question: str | None = None
     clarification_response: str | None = None
     clarification_count: int = 0
+    # Summary review is a confirmation gate before a non-urgent final assessment.
+    awaiting_summary_confirmation: bool = False
+    summary_correction_mode: bool = False
+    summary_reviewed: bool = False
 
 
 class ConversationManager:
@@ -1401,6 +1406,74 @@ class ConversationManager:
         })
 
     @staticmethod
+    def _is_summary_confirmation(text):
+        return normalize(text) in {"yes", "yes correct", "correct", "looks correct", "that's correct", "that is correct", "confirm", "confirmed", "continue"}
+
+    @staticmethod
+    def _is_summary_rejection(text):
+        return normalize(text) in {"no", "nope", "not correct", "incorrect", "that's wrong", "that is wrong", "needs correction", "change it"}
+
+    def _apply_summary_correction(self, session, text):
+        """Apply a clearly recognized customer correction, without diagnosing."""
+        state = session.symptom_state
+        before = state.to_dict()
+        stool_form = extract_stool_form(text)
+        duration = extract_duration(text)
+        age = extract_age(text)
+        severity = extract_severity(text)
+
+        if stool_form in range(1, 8):
+            state.stool_form = stool_form
+            state.answered_unknown_fields = [
+                field for field in (state.answered_unknown_fields or []) if field != "stool_form"
+            ]
+            state.asked_fields = list(dict.fromkeys((state.asked_fields or []) + ["stool_form"]))
+            state.red_flags = derive_red_flags(state)
+            return True
+        elif duration and str(duration).lower() != "unknown":
+            state.duration = duration
+            return True
+        elif age is not None:
+            state.age = age
+            return True
+        elif severity not in (None, "unknown"):
+            state.severity = severity
+            return True
+        else:
+            # Use the existing deterministic NLU and explicit-negation
+            # reconciliation for symptom corrections. Do not let this helper
+            # make a diagnosis or select products.
+            facts = extract_natural_facts(text, None, state)
+            self._apply_volunteered_symptom_facts(session, text, facts)
+            after_facts = session.symptom_state.to_dict()
+            if after_facts == before:
+                return False
+
+        session.symptom_state.red_flags = derive_red_flags(session.symptom_state)
+        return session.symptom_state.to_dict() != before
+
+    def _summary_review_result(self, session):
+        session.awaiting_summary_confirmation = True
+        session.summary_correction_mode = False
+        return {
+            "status": "SUMMARY_REVIEW",
+            "message": build_symptom_summary(session.symptom_state),
+            "recommendations": [],
+            "screening": None,
+        }
+
+    def _add_bristol_evidence(self, screening, state):
+        """Add the selected Bristol type as transparent supporting evidence."""
+        stool_form = getattr(state, "stool_form", None)
+        if not isinstance(stool_form, int) or stool_form not in BRISTOL_LABELS:
+            return screening
+        line = f"Bristol Stool Chart type {stool_form}: {BRISTOL_LABELS[stool_form]}"
+        evidence = screening.setdefault("evidence", [])
+        if line not in evidence:
+            evidence.append(line)
+        return screening
+
+    @staticmethod
     def _remember_recommendation(session, result):
         """Record a recommendation only after all active questions are resolved."""
         if session.last_question and not question_has_answer(session.symptom_state, session.last_question):
@@ -1459,6 +1532,79 @@ class ConversationManager:
                 "message": "Because pregnancy or breastfeeding was mentioned, I won't recommend a Guttify product without appropriate professional guidance.",
             }
             return {"status": "SAFETY_REVIEW", "message": caution["message"], "recommendations": [], "safety": caution, "screening": session.screening}
+
+        # A summary review pauses only non-urgent completion. Safety above always
+        # has priority and may interrupt this gate.
+        if session.awaiting_summary_confirmation:
+            if self._is_summary_confirmation(user_message):
+                session.awaiting_summary_confirmation = False
+                session.summary_correction_mode = False
+                session.summary_reviewed = True
+                session.last_question = None
+                # Do not feed a bare confirmation like "yes" into generic NLU:
+                # without an active question, it could be misread as positive
+                # evidence for unrelated safety fields.
+                user_message = "summary confirmed"
+                logger.info("[SUMMARY][CONFIRMED] session=%s", str(sid)[:8])
+            elif self._is_summary_rejection(user_message):
+                session.awaiting_summary_confirmation = False
+                session.summary_correction_mode = True
+                return {
+                    "status": "ASK",
+                    "message": "What would you like to correct? You can update your symptom, duration, age, severity, or Bristol Stool Chart type (1–7). I will review the summary again before completing the assessment.",
+                    "recommendations": [],
+                }
+            else:
+                # Treat any non-confirmation as a proposed correction, but only
+                # accept it if the deterministic correction parser recognizes it.
+                if self._apply_summary_correction(session, user_message):
+                    session.summary_reviewed = False
+                    logger.info("[SUMMARY][CORRECTION_APPLIED] session=%s", str(sid)[:8])
+                    if session.symptom_state.red_flags:
+                        safety_result = {
+                            "safe_to_recommend": False,
+                            "requires_doctor": True,
+                            "red_flag": True,
+                            "reasons": session.symptom_state.red_flags,
+                            "message": "Your correction includes a warning sign that needs medical evaluation. I won't recommend a product for these symptoms.",
+                        }
+                        screening = {
+                            "pattern": "Red-flag presentation",
+                            "likely_condition": "Red-flag presentation",
+                            "confidence": "high",
+                            "evidence": list(session.symptom_state.red_flags),
+                            "differentials": [],
+                            "action": "urgent_medical_evaluation",
+                            "product_allowed": False,
+                            "message": safety_result["message"],
+                        }
+                        session.screening = screening
+                        session.diagnosis_complete = True
+                        return {"status": "SAFETY_REVIEW", "message": safety_result["message"], "recommendations": [], "safety": safety_result, "screening": screening}
+                    return self._summary_review_result(session)
+                return {
+                    "status": "ASK",
+                    "message": "I couldn't identify the correction clearly, so I haven't changed your answers. Please specify a Bristol type from 1 to 7, a duration such as '3 weeks', an age, a severity, or the symptom you want to correct.",
+                    "recommendations": [],
+                }
+
+        if session.summary_correction_mode:
+            if self._apply_summary_correction(session, user_message):
+                session.summary_correction_mode = False
+                session.summary_reviewed = False
+                logger.info("[SUMMARY][CORRECTION_APPLIED] session=%s", str(sid)[:8])
+                if session.symptom_state.red_flags:
+                    screening = evaluate_screening(session.symptom_state)
+                    session.screening = screening
+                    session.diagnosis_complete = True
+                    return {"status": "SAFETY_REVIEW", "message": screening["message"], "recommendations": [], "screening": screening,
+                            "safety": {"safe_to_recommend": False, "requires_doctor": True, "red_flag": True, "reasons": session.symptom_state.red_flags, "message": screening["message"]}}
+                return self._summary_review_result(session)
+            return {
+                "status": "ASK",
+                "message": "I couldn't identify that correction clearly, and I haven't changed your answers. Please give a specific correction, such as 'Bristol type 4' or 'duration 3 weeks'.",
+                "recommendations": [],
+            }
 
         if session.ended:
             return {"status": "SESSION_ENDED", "message": SESSION_ENDED_MESSAGE, "recommendations": []}
@@ -1820,6 +1966,10 @@ class ConversationManager:
                 return {"status": "ASK", "message": question_text, "recommendations": [], "safety": safety}
 
         if self._can_assess(session, screening):
+            screening = self._add_bristol_evidence(screening, session.symptom_state)
+            session.screening = screening
+            if screening.get("action") != "urgent_medical_evaluation" and not session.summary_reviewed:
+                return self._summary_review_result(session)
             # Reaching an assessable clinical pattern is the end of the
             # diagnostic pipeline for this session. This MUST be set before
             # product evaluation as well as for diagnosis-only outcomes;
@@ -1871,11 +2021,15 @@ class ConversationManager:
 
         # Hard stop: never loop forever. Produce the best available assessment.
         screening = evaluate_screening(session.symptom_state)
+        screening = self._add_bristol_evidence(screening, session.symptom_state)
         if screening.get("pattern") == "Insufficiently characterized gut symptom pattern":
             screening = dict(screening)
             screening["pattern"] = "Preliminary gut-symptom assessment"
             screening["likely_condition"] = "Preliminary gut-symptom assessment"
             screening["message"] = "The available answers point to a gut-symptom pattern, but they do not support a more specific preliminary assessment yet."
+        if screening.get("action") != "urgent_medical_evaluation" and not session.summary_reviewed:
+            session.screening = screening
+            return self._summary_review_result(session)
         if screening.get("product_allowed") and screening.get("pattern") in PRODUCT_ELIGIBILITY:
             allowed = _approved_names_for_screening(screening, session.symptom_state)
             result = evaluate_product(session.symptom_state, user_message, allowed_names=allowed, match_context=screening.get("pattern"))
