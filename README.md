@@ -195,16 +195,15 @@ Required Render environment variables:
 
 For a smooth upgrade, the restore endpoint supports an unexpired legacy opaque token already stored by the prior release exactly once, then returns and persists a new JWT. The widget replaces the legacy token with the JWT. Legacy tokens that have expired or whose JSON records were lost cannot be upgraded and require registration again. The JWT expires 30 days after issue; this is not a sliding expiration.
 
-## Completed assessment storage (temporary JSON mode)
+## Assessment summary fields (temporary JSON mode)
 
-When the existing deterministic flow returns a completed assessment, GutGPT stores a record in `assessment_data.json`. It includes the customer ID and basic customer references, symptom summary/state (including Bristol stool type when collected), screening/diagnosis details, recommendations, status, and timestamp. Intermediate questions are not stored as completed assessments. Each session has at most one record; completing the same session again updates its record rather than duplicating it.
+When the deterministic flow completes an assessment, GutGPT updates two fields on the matching customer record in `customer_data.json`: `likely_assessment` (the likely assessment value from screening) and `final_symptom_summary` (the final summary of symptoms). It also records `assessment_updated_at`. There is no separate assessment table or `assessment_data.json` file. Intermediate questions do not overwrite these fields.
 
-- Default file: `assessment_data.json` beside `app.py`.
-- Optional path: set `ASSESSMENT_DATA_FILE` to a different file path. Customer data can be redirected with `CUSTOMER_DATA_FILE`.
-- Admin dashboard: open `/admin`, enter the `GUTGPT_ADMIN_TOKEN`, and use the Completed assessments table to view records.
-- Authenticated endpoints: `GET /api/admin/assessments` (optionally `?customer_id=<id>`) and `GET /api/admin/assessments/download`.
-- The dashboard also has separate download buttons for `customer_data.json` and `assessment_data.json`.
-- Both files contain personal and health-related information. Restrict access, do not commit real data, and follow applicable privacy and retention requirements.
+- Default file: `customer_data.json` beside `app.py`; optionally set `CUSTOMER_DATA_FILE` to another path.
+- Admin dashboard: open `/admin`, enter `GUTGPT_ADMIN_TOKEN`, and view customer registration details and the two assessment fields in one table.
+- Authenticated endpoints: `GET /api/admin/customers` and `GET /api/admin/customers/download`.
+- Customer JSON download includes both assessment summary fields.
+- The file contains personal and health-related information. Restrict access, do not commit real data, and follow applicable privacy and retention requirements.
 
 **Temporary-storage warning:** This version intentionally uses JSON files and ignores `DATABASE_URL`. On Render Free, local files may disappear after restarts, redeploys, or instance replacement, and separate instances do not share files. Use dummy data for testing only. For reliable production storage, move to a persistent disk or managed database.
 

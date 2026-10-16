@@ -49,7 +49,6 @@ MAX_MESSAGE_LENGTH = max(256, min(10000, int(os.getenv("MAX_MESSAGE_LENGTH", "40
 MAX_HISTORY_MESSAGES = 100
 FRONTEND_FILE = BASE_DIR / "index.html"
 CUSTOMER_DATA_FILE = Path(os.getenv("CUSTOMER_DATA_FILE", str(BASE_DIR / "customer_data.json")))
-ASSESSMENT_DATA_FILE = Path(os.getenv("ASSESSMENT_DATA_FILE", str(BASE_DIR / "assessment_data.json")))
 GUEST_TOKEN_TTL_SECONDS = 30 * 24 * 60 * 60
 JWT_ALGORITHM = "HS256"
 JWT_ISSUER = os.getenv("JWT_ISSUER", "gutgpt-api")
@@ -246,63 +245,29 @@ def _write_customer_records(records: list[dict]) -> None:
     _write_json_records(CUSTOMER_DATA_FILE, records)
 
 
-def _read_assessment_records() -> list[dict]:
-    """Completed assessment records are stored temporarily in assessment_data.json."""
-    return _read_json_records(ASSESSMENT_DATA_FILE, "Assessment")
-
-
-def _write_assessment_records(records: list[dict]) -> None:
-    _write_json_records(ASSESSMENT_DATA_FILE, records)
-
-
 def _persist_completed_assessment(session_id: str, result: dict) -> None:
-    """Persist/update the completed assessment in a JSON file linked to its customer."""
-    with CUSTOMER_LOCK:
-        records = _read_customer_records()
-        customer = next((r for r in records if r.get("session_id") == session_id), None)
-    if not customer or not customer.get("customer_id"):
-        logger.error("Assessment persistence skipped: customer record missing session=%s", session_id[:8])
-        return
-
+    """Store only the likely assessment and final symptom summary on the customer row."""
     with conversation_manager._lock:
         session = conversation_manager.sessions.get(session_id)
         if session is None:
             logger.error("Assessment persistence skipped: conversation missing session=%s", session_id[:8])
             return
-        state_data = session.symptom_state.to_dict()
         screening = result.get("screening") or getattr(session, "screening", None) or {}
         summary = build_symptom_summary(session.symptom_state)
 
-    diagnosis = (screening.get("likely_condition") or screening.get("pattern") or
-                 screening.get("action") or result.get("status", "Assessment completed"))
-    record = {
-        "assessment_id": str(uuid.uuid4()),
-        "customer_id": customer["customer_id"],
-        "customer_name": customer.get("name", ""),
-        "customer_contact": customer.get("contact", ""),
-        "customer_city": customer.get("city", ""),
-        "session_id": session_id,
-        "assessment_status": result.get("status", "COMPLETED"),
-        "diagnosis": str(diagnosis),
-        "diagnosis_message": str(screening.get("message") or result.get("message") or ""),
-        "symptom_summary": summary,
-        "symptom_state": state_data,
-        "screening": screening,
-        "recommendations": result.get("recommendations") or [],
-        "created_at": datetime.now(timezone.utc).isoformat(),
-    }
+    likely_assessment = (screening.get("likely_condition") or screening.get("pattern") or
+                         screening.get("action") or result.get("status", "Assessment completed"))
     with CUSTOMER_LOCK:
-        assessments = _read_assessment_records()
-        # Keep one current completed assessment per session, matching prior DB behavior.
-        existing_index = next((i for i, item in enumerate(assessments)
-                               if item.get("session_id") == session_id), None)
-        if existing_index is None:
-            assessments.append(record)
-        else:
-            record["assessment_id"] = assessments[existing_index].get("assessment_id", record["assessment_id"])
-            assessments[existing_index] = record
-        _write_assessment_records(assessments)
-    logger.info("Completed assessment persisted to JSON customer_id=%s session=%s", customer["customer_id"], session_id[:8])
+        records = _read_customer_records()
+        customer = next((r for r in records if r.get("session_id") == session_id), None)
+        if not customer or not customer.get("customer_id"):
+            logger.error("Assessment persistence skipped: customer record missing session=%s", session_id[:8])
+            return
+        customer["likely_assessment"] = str(likely_assessment)
+        customer["final_symptom_summary"] = str(summary or "")
+        _write_customer_records(records)
+    logger.info("Assessment summary saved on customer JSON customer_id=%s session=%s",
+                customer["customer_id"], session_id[:8])
 
 
 class CustomerRegistrationRequest(BaseModel):
@@ -465,25 +430,22 @@ def _require_admin(authorization: str | None) -> None:
 
 @app.get("/admin", response_class=HTMLResponse, include_in_schema=False)
 def admin_dashboard():
-    """Serve an authenticated dashboard for temporary JSON customer and assessment records."""
+    """Serve the authenticated customer dashboard, including assessment summary columns."""
     return HTMLResponse(content="""<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>GutGPT Admin</title><style>
-:root{color-scheme:light dark}body{font:16px system-ui,sans-serif;max-width:1200px;margin:32px auto;padding:0 16px}h1{margin-bottom:4px}.muted{opacity:.75}form,.toolbar{display:flex;gap:10px;flex-wrap:wrap;margin:18px 0}input,button{font:inherit;padding:10px;border-radius:8px;border:1px solid #888}input{min-width:250px;flex:1}button{cursor:pointer}table{width:100%;border-collapse:collapse;margin-top:16px}th,td{text-align:left;padding:10px;border-bottom:1px solid #8886;overflow-wrap:anywhere;vertical-align:top}th{position:sticky;top:0;background:Canvas}.status{margin:12px 0}.hidden{display:none}.tablewrap{overflow:auto;margin-bottom:28px}@media(max-width:600px){body{margin-top:18px}th,td{padding:7px;font-size:14px}}
+:root{color-scheme:light dark}body{font:16px system-ui,sans-serif;max-width:1400px;margin:32px auto;padding:0 16px}h1{margin-bottom:4px}.muted{opacity:.75}form,.toolbar{display:flex;gap:10px;flex-wrap:wrap;margin:18px 0}input,button{font:inherit;padding:10px;border-radius:8px;border:1px solid #888}input{min-width:250px;flex:1}button{cursor:pointer}table{width:100%;border-collapse:collapse;margin-top:16px}th,td{text-align:left;padding:10px;border-bottom:1px solid #8886;overflow-wrap:anywhere;vertical-align:top;min-width:120px}th{position:sticky;top:0;background:Canvas}.status{margin:12px 0}.hidden{display:none}.tablewrap{overflow:auto;margin-bottom:28px}@media(max-width:600px){body{margin-top:18px}th,td{padding:7px;font-size:14px}}
 </style></head><body><h1>GutGPT Admin</h1><p class="muted">Sign in with GUTGPT_ADMIN_TOKEN configured in Render. Customer and assessment information is sensitive.</p>
 <form id="login"><label for="token">Admin token</label><input id="token" type="password" autocomplete="current-password" required placeholder="Enter admin token"><button type="submit">Sign in</button></form>
-<div id="panel" class="hidden"><h2>Customers</h2><p id="summary" class="status"></p><div class="toolbar"><button id="refresh">Refresh all records</button><button id="download">Download customer JSON</button><button id="logout">Sign out</button></div><div class="tablewrap"><table><thead><tr><th>Name</th><th>Age</th><th>Contact</th><th>City</th><th>Created at (UTC)</th><th>Session ID</th></tr></thead><tbody id="rows"></tbody></table></div>
-<h2>Completed assessments</h2><p id="assessmentSummary" class="status"></p><div class="toolbar"><button id="refreshAssessments">Refresh assessments</button><button id="downloadAssessments">Download assessment JSON</button></div><div class="tablewrap"><table><thead><tr><th>Customer</th><th>Diagnosis / pattern</th><th>Status</th><th>Symptoms</th><th>Recommendations</th><th>Created at (UTC)</th><th>Session ID</th></tr></thead><tbody id="assessmentRows"></tbody></table></div></div>
+<div id="panel" class="hidden"><h2>Customers and assessments</h2><p id="summary" class="status"></p><div class="toolbar"><button id="refresh">Refresh records</button><button id="download">Download customer JSON</button><button id="logout">Sign out</button></div><div class="tablewrap"><table><thead><tr><th>Name</th><th>Age</th><th>Contact</th><th>City</th><th>Likely assessment</th><th>Final symptom summary</th><th>Registered at (UTC)</th><th>Session ID</th></tr></thead><tbody id="rows"></tbody></table></div></div>
 <p id="status" class="status" role="status" aria-live="polite"></p>
 <script>
 (()=>{let token='';const $=id=>document.getElementById(id);const status=m=>{$('status').textContent=m};
 async function api(path){const r=await fetch(path,{headers:{Authorization:'Bearer '+token},cache:'no-store'});if(!r.ok){let msg='Request failed ('+r.status+')';try{const j=await r.json();if(j.detail)msg=j.detail}catch{}throw Error(msg)}return r}
 function cell(tr,value){const td=document.createElement('td');td.textContent=value==null?'':String(value);tr.appendChild(td)}
-async function loadCustomers(){const r=await api('/api/admin/customers');const data=await r.json();$('rows').replaceChildren();for(const c of data.customers||[]){const tr=document.createElement('tr');cell(tr,c.name);cell(tr,c.age);cell(tr,c.contact);cell(tr,c.city);cell(tr,c.created_at);cell(tr,c.session_id);$('rows').appendChild(tr)}$('summary').textContent=(data.count??(data.customers||[]).length)+' customer record(s)'}
-async function loadAssessments(){const r=await api('/api/admin/assessments');const data=await r.json();$('assessmentRows').replaceChildren();for(const a of data.assessments||[]){const tr=document.createElement('tr');cell(tr,a.customer_name);cell(tr,a.diagnosis);cell(tr,a.assessment_status);cell(tr,a.symptom_summary);cell(tr,JSON.stringify(a.recommendations||[]));cell(tr,a.created_at);cell(tr,a.session_id);$('assessmentRows').appendChild(tr)}$('assessmentSummary').textContent=(data.count??(data.assessments||[]).length)+' assessment record(s)'}
-async function load(){status('Loading JSON records…');try{await loadCustomers();await loadAssessments();$('panel').classList.remove('hidden');status('Records loaded.')}catch(e){$('panel').classList.add('hidden');status(e.message);if(/token|unauthorized|admin access/i.test(e.message))$('token').focus()}}
-async function download(path,name){const r=await api(path);const blob=await r.blob();const url=URL.createObjectURL(blob);const a=document.createElement('a');a.href=url;a.download=name;document.body.appendChild(a);a.click();a.remove();URL.revokeObjectURL(url)}
-$('login').addEventListener('submit',async e=>{e.preventDefault();token=$('token').value.trim();if(!token){status('Enter the admin token.');return}await load()});$('refresh').addEventListener('click',load);$('refreshAssessments').addEventListener('click',async()=>{try{await loadAssessments();status('Assessments refreshed.')}catch(e){status(e.message)}});$('download').addEventListener('click',async()=>{try{await download('/api/admin/customers/download','customer_data.json');status('Customer JSON download started.')}catch(e){status(e.message)}});$('downloadAssessments').addEventListener('click',async()=>{try{await download('/api/admin/assessments/download','assessment_data.json');status('Assessment JSON download started.')}catch(e){status(e.message)}});$('logout').addEventListener('click',()=>{token='';$('token').value='';$('rows').replaceChildren();$('assessmentRows').replaceChildren();$('panel').classList.add('hidden');status('Signed out.');$('token').focus()});
+async function load(){status('Loading customer JSON…');try{const r=await api('/api/admin/customers');const data=await r.json();$('rows').replaceChildren();for(const c of data.customers||[]){const tr=document.createElement('tr');cell(tr,c.name);cell(tr,c.age);cell(tr,c.contact);cell(tr,c.city);cell(tr,c.likely_assessment);cell(tr,c.final_symptom_summary);cell(tr,c.created_at);cell(tr,c.session_id);$('rows').appendChild(tr)}$('summary').textContent=(data.count??(data.customers||[]).length)+' customer record(s)';$('panel').classList.remove('hidden');status('Records loaded.')}catch(e){$('panel').classList.add('hidden');status(e.message);if(/token|unauthorized|admin access/i.test(e.message))$('token').focus()}}
+async function download(){try{const r=await api('/api/admin/customers/download');const blob=await r.blob();const url=URL.createObjectURL(blob);const a=document.createElement('a');a.href=url;a.download='customer_data.json';document.body.appendChild(a);a.click();a.remove();URL.revokeObjectURL(url);status('Customer JSON download started.')}catch(e){status(e.message)}}
+$('login').addEventListener('submit',async e=>{e.preventDefault();token=$('token').value.trim();if(!token){status('Enter the admin token.');return}await load()});$('refresh').addEventListener('click',load);$('download').addEventListener('click',download);$('logout').addEventListener('click',()=>{token='';$('token').value='';$('rows').replaceChildren();$('panel').classList.add('hidden');status('Signed out.');$('token').focus()});
 })();</script></body></html>""")
 
 
@@ -511,28 +473,6 @@ def admin_download_customers(authorization: str | None = Header(default=None)):
     )
 
 
-@app.get("/api/admin/assessments")
-def admin_list_assessments(customer_id: str | None = None, authorization: str | None = Header(default=None)):
-    """Return completed assessment history from JSON only to an authenticated admin."""
-    _require_admin(authorization)
-    with CUSTOMER_LOCK:
-        assessments = _read_assessment_records()
-    if customer_id:
-        assessments = [item for item in assessments if item.get("customer_id") == customer_id]
-    assessments.sort(key=lambda item: item.get("created_at", ""), reverse=True)
-    return {"count": len(assessments), "assessments": assessments[:1000]}
-
-
-@app.get("/api/admin/assessments/download")
-def admin_download_assessments(authorization: str | None = Header(default=None)):
-    """Download completed assessment JSON after admin authentication."""
-    _require_admin(authorization)
-    with CUSTOMER_LOCK:
-        assessments = _read_assessment_records()
-    payload = json.dumps(assessments, ensure_ascii=False, indent=2, default=str) + "\n"
-    return Response(content=payload, media_type="application/json",
-                    headers={"Content-Disposition": 'attachment; filename="assessment_data.json"',
-                             "Cache-Control": "no-store"})
 
 
 @app.post("/api/customer/restore")

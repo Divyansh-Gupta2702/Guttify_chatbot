@@ -2,10 +2,20 @@ import json
 
 import app as gutgpt_app
 
+import pytest
 
-def test_completed_assessment_is_stored_with_customer_id(tmp_path, monkeypatch):
-    monkeypatch.setattr(gutgpt_app, "CUSTOMER_DATA_FILE", tmp_path / "customers.json")
-    monkeypatch.setattr(gutgpt_app, "ASSESSMENT_DATA_FILE", tmp_path / "assessment_data.json")
+@pytest.fixture(autouse=True)
+def configured_test_jwt_secret(monkeypatch):
+    monkeypatch.setenv(
+        "JWT_SECRET_KEY",
+        "test-only-secret-that-is-at-least-32-bytes-long",
+    )
+    monkeypatch.setenv("JWT_ISSUER", "gutgpt-api")
+    monkeypatch.setenv("JWT_AUDIENCE", "gutgpt-guest-session")
+    
+def test_completed_assessment_is_saved_on_customer_record(tmp_path, monkeypatch):
+    data_file = tmp_path / "customer_data.json"
+    monkeypatch.setattr(gutgpt_app, "CUSTOMER_DATA_FILE", data_file)
     sid = gutgpt_app.new_session()["session_id"]
     try:
         registered = gutgpt_app.register_customer(gutgpt_app.CustomerRegistrationRequest(
@@ -36,15 +46,16 @@ def test_completed_assessment_is_stored_with_customer_id(tmp_path, monkeypatch):
         }
         gutgpt_app._persist_completed_assessment(sid, result)
 
-        rows = json.loads((tmp_path / "assessment_data.json").read_text(encoding="utf-8"))
+        rows = json.loads(data_file.read_text(encoding="utf-8"))
         assert len(rows) == 1
         record = rows[0]
         assert record["customer_id"] == registered["customer_id"]
         assert record["session_id"] == sid
-        assert record["diagnosis"] == "Functional constipation pattern"
-        assert "bloating" in record["symptom_summary"].lower()
-        assert record["symptom_state"]["stool_form"] == 2
-        assert record["screening"]["pattern"] == "Functional constipation pattern"
+        assert record["likely_assessment"] == "Functional constipation pattern"
+        assert "bloating" in record["final_symptom_summary"].lower()
+        assert "symptom_state" not in record
+        assert "recommendations" not in record
+        assert not (tmp_path / "assessment_data.json").exists()
     finally:
         gutgpt_app.REGISTERED_CUSTOMER_SESSIONS.discard(sid)
         gutgpt_app.HISTORY.pop(sid, None)
