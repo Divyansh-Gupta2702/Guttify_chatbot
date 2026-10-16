@@ -1,12 +1,11 @@
 import json
-import sqlite3
 
 import app as gutgpt_app
 
 
 def test_completed_assessment_is_stored_with_customer_id(tmp_path, monkeypatch):
     monkeypatch.setattr(gutgpt_app, "CUSTOMER_DATA_FILE", tmp_path / "customers.json")
-    monkeypatch.setattr(gutgpt_app, "ASSESSMENT_DB_FILE", tmp_path / "assessments.sqlite3")
+    monkeypatch.setattr(gutgpt_app, "ASSESSMENT_DATA_FILE", tmp_path / "assessment_data.json")
     sid = gutgpt_app.new_session()["session_id"]
     try:
         registered = gutgpt_app.register_customer(gutgpt_app.CustomerRegistrationRequest(
@@ -37,17 +36,15 @@ def test_completed_assessment_is_stored_with_customer_id(tmp_path, monkeypatch):
         }
         gutgpt_app._persist_completed_assessment(sid, result)
 
-        with sqlite3.connect(tmp_path / "assessments.sqlite3") as conn:
-            conn.row_factory = sqlite3.Row
-            rows = conn.execute("SELECT * FROM customer_assessments").fetchall()
+        rows = json.loads((tmp_path / "assessment_data.json").read_text(encoding="utf-8"))
         assert len(rows) == 1
-        record = dict(rows[0])
+        record = rows[0]
         assert record["customer_id"] == registered["customer_id"]
         assert record["session_id"] == sid
         assert record["diagnosis"] == "Functional constipation pattern"
         assert "bloating" in record["symptom_summary"].lower()
-        assert json.loads(record["symptom_state_json"])["stool_form"] == 2
-        assert json.loads(record["screening_json"])["pattern"] == "Functional constipation pattern"
+        assert record["symptom_state"]["stool_form"] == 2
+        assert record["screening"]["pattern"] == "Functional constipation pattern"
     finally:
         gutgpt_app.REGISTERED_CUSTOMER_SESSIONS.discard(sid)
         gutgpt_app.HISTORY.pop(sid, None)

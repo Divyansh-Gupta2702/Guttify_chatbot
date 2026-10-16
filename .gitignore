@@ -9,3 +9,7 @@ virtual
 # Contains customer personal information; never commit real records.
 customer_data.json
 customer_data.json.tmp
+
+# Contains sensitive customer and health assessment data; never commit real records.
+assessment_data.json
+assessment_data.json.tmp

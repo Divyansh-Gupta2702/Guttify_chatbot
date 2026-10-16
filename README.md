@@ -195,18 +195,17 @@ Required Render environment variables:
 
 For a smooth upgrade, the restore endpoint supports an unexpired legacy opaque token already stored by the prior release exactly once, then returns and persists a new JWT. The widget replaces the legacy token with the JWT. Legacy tokens that have expired or whose JSON records were lost cannot be upgraded and require registration again. The JWT expires 30 days after issue; this is not a sliding expiration.
 
-## Completed assessment storage (Phase 1 extension)
+## Completed assessment storage (temporary JSON mode)
 
-When the existing deterministic flow returns a completed `DIAGNOSIS`, `RECOMMENDATION_FOUND`, or `AMBIGUOUS` result, GutGPT stores the customer's ID, symptom summary, structured symptom state (including Bristol stool type when collected), screening/diagnosis details, recommendations, status, and timestamp in a SQLite database. Intermediate questions and summary-review turns are not stored as completed assessments. Each assessment is linked to `customer_id`; each chat session has at most one row, and a retry updates that session's row rather than duplicating it.
+When the existing deterministic flow returns a completed assessment, GutGPT stores a record in `assessment_data.json`. It includes the customer ID and basic customer references, symptom summary/state (including Bristol stool type when collected), screening/diagnosis details, recommendations, status, and timestamp. Intermediate questions are not stored as completed assessments. Each session has at most one record; completing the same session again updates its record rather than duplicating it.
 
-- Local default database: `gutgpt_assessments.sqlite3` in the application directory.
-- Optional path: set `ASSESSMENT_DB_PATH` to an absolute path.
-- Render: the default filesystem may be ephemeral. Attach a persistent disk and set `ASSESSMENT_DB_PATH` to a path on that disk (for example `/var/data/gutgpt_assessments.sqlite3`) before relying on this data for long-term records. For multi-instance or higher-scale production, use managed PostgreSQL instead of SQLite.
-- Authenticated admin endpoint: `GET /api/admin/assessments` returns recent assessments; add `?customer_id=<id>` to filter to one customer. It requires `Authorization: Bearer <GUTGPT_ADMIN_TOKEN>`.
-- Assessment records contain sensitive health-related information. Restrict admin access, keep the token secret, and define an appropriate retention/deletion policy.
+- Default file: `assessment_data.json` beside `app.py`.
+- Optional path: set `ASSESSMENT_DATA_FILE` to a different file path. Customer data can be redirected with `CUSTOMER_DATA_FILE`.
+- Admin dashboard: open `/admin`, enter the `GUTGPT_ADMIN_TOKEN`, and use the Completed assessments table to view records.
+- Authenticated endpoints: `GET /api/admin/assessments` (optionally `?customer_id=<id>`) and `GET /api/admin/assessments/download`.
+- The dashboard also has separate download buttons for `customer_data.json` and `assessment_data.json`.
+- Both files contain personal and health-related information. Restrict access, do not commit real data, and follow applicable privacy and retention requirements.
 
-Run the targeted test with `python -m pytest tests/test_assessment_persistence.py -v`.
+**Temporary-storage warning:** This version intentionally uses JSON files and ignores `DATABASE_URL`. On Render Free, local files may disappear after restarts, redeploys, or instance replacement, and separate instances do not share files. Use dummy data for testing only. For reliable production storage, move to a persistent disk or managed database.
 
-## PostgreSQL persistence (Render)
-
-For durable customer registration and completed assessment storage, set `DATABASE_URL` to the Render PostgreSQL **Internal Database URL** in the web service environment. The service creates its customer and assessment tables automatically and installs the PostgreSQL driver from `requirements.txt`. See `POSTGRES_PERSISTENCE_SETUP.md` for deployment steps, migration behavior, and verification notes. Without `DATABASE_URL`, local development continues to use the existing JSON/SQLite stores.
+See `JSON_TEMPORARY_STORAGE.md` for deployment setup and limitations. The diagnosis engine, NLU, question flow, safety checks, and recommendation rules have not been changed.

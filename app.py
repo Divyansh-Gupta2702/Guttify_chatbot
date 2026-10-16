@@ -15,7 +15,6 @@ import time
 import logging
 import subprocess
 import json
-import sqlite3
 import re
 import secrets
 import hashlib
@@ -49,11 +48,8 @@ from support_footer import append_human_support_footer
 MAX_MESSAGE_LENGTH = max(256, min(10000, int(os.getenv("MAX_MESSAGE_LENGTH", "4000"))))
 MAX_HISTORY_MESSAGES = 100
 FRONTEND_FILE = BASE_DIR / "index.html"
-CUSTOMER_DATA_FILE = BASE_DIR / "customer_data.json"
-# Set ASSESSMENT_DB_PATH to a persistent disk path in production (for example, /var/data/gutgpt_assessments.sqlite3).
-ASSESSMENT_DB_FILE = Path(os.getenv("ASSESSMENT_DB_PATH", str(BASE_DIR / "gutgpt_assessments.sqlite3")))
-DATABASE_URL = os.getenv("DATABASE_URL", "").strip()
-USE_POSTGRES = bool(DATABASE_URL)
+CUSTOMER_DATA_FILE = Path(os.getenv("CUSTOMER_DATA_FILE", str(BASE_DIR / "customer_data.json")))
+ASSESSMENT_DATA_FILE = Path(os.getenv("ASSESSMENT_DATA_FILE", str(BASE_DIR / "assessment_data.json")))
 GUEST_TOKEN_TTL_SECONDS = 30 * 24 * 60 * 60
 JWT_ALGORITHM = "HS256"
 JWT_ISSUER = os.getenv("JWT_ISSUER", "gutgpt-api")
@@ -216,113 +212,51 @@ CUSTOMER_LOCK = RLock()
 REGISTERED_CUSTOMER_SESSIONS: set[str] = set()
 
 
-def _postgres_connect():
-    """Open PostgreSQL using the Render DATABASE_URL, if configured."""
-    if not DATABASE_URL:
-        raise RuntimeError("DATABASE_URL is not configured")
-    try:
-        import psycopg
-        from psycopg.rows import dict_row
-    except ImportError as exc:
-        raise RuntimeError("PostgreSQL is configured but psycopg is not installed") from exc
-    dsn = DATABASE_URL
-    if dsn.startswith("postgres://"):
-        dsn = "postgresql://" + dsn[len("postgres://"):]
-    # Render external URLs require TLS; preserve an explicit sslmode if supplied.
-    if "sslmode=" not in dsn and os.getenv("PGSSLMODE"):
-        pass
-    return psycopg.connect(dsn, row_factory=dict_row, connect_timeout=10)
-
-
-def _assessment_db_connect():
-    """Open the active assessment store: PostgreSQL on Render, SQLite locally."""
-    if USE_POSTGRES:
-        return _postgres_connect()
-    ASSESSMENT_DB_FILE.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(str(ASSESSMENT_DB_FILE), timeout=10)
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA foreign_keys = ON")
-    return conn
-
-
-def _init_assessment_db() -> None:
-    """Create assessment and customer tables in the configured database."""
-    with _assessment_db_connect() as conn:
-        if USE_POSTGRES:
-            conn.execute("""
-                CREATE TABLE IF NOT EXISTS customer_assessments (
-                    assessment_id TEXT PRIMARY KEY,
-                    customer_id TEXT NOT NULL,
-                    session_id TEXT NOT NULL UNIQUE,
-                    assessment_status TEXT NOT NULL,
-                    diagnosis TEXT NOT NULL,
-                    diagnosis_message TEXT NOT NULL,
-                    symptom_summary TEXT NOT NULL,
-                    symptom_state_json TEXT NOT NULL,
-                    screening_json TEXT NOT NULL,
-                    recommendations_json TEXT NOT NULL,
-                    created_at TEXT NOT NULL
-                )
-            """)
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_assessments_customer_created ON customer_assessments(customer_id, created_at DESC)")
-            conn.execute("""
-                CREATE TABLE IF NOT EXISTS gutgpt_customers (
-                    session_id TEXT PRIMARY KEY,
-                    customer_id TEXT NOT NULL UNIQUE,
-                    data JSONB NOT NULL,
-                    created_at TEXT NOT NULL
-                )
-            """)
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_gutgpt_customers_customer_id ON gutgpt_customers(customer_id)")
-        else:
-            conn.execute("""
-                CREATE TABLE IF NOT EXISTS customer_assessments (
-                    assessment_id TEXT PRIMARY KEY,
-                    customer_id TEXT NOT NULL,
-                    session_id TEXT NOT NULL UNIQUE,
-                    assessment_status TEXT NOT NULL,
-                    diagnosis TEXT NOT NULL,
-                    diagnosis_message TEXT NOT NULL,
-                    symptom_summary TEXT NOT NULL,
-                    symptom_state_json TEXT NOT NULL,
-                    screening_json TEXT NOT NULL,
-                    recommendations_json TEXT NOT NULL,
-                    created_at TEXT NOT NULL
-                )
-            """)
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_assessments_customer_created ON customer_assessments(customer_id, created_at DESC)")
-
-
-def _read_legacy_customer_json() -> list[dict]:
-    """Read the legacy JSON file only for local mode or one-time PostgreSQL migration."""
-    if not CUSTOMER_DATA_FILE.exists():
+def _read_json_records(path: Path, label: str) -> list[dict]:
+    """Read a JSON-array store; a missing file means no records yet."""
+    if not path.exists():
         return []
     try:
-        with CUSTOMER_DATA_FILE.open("r", encoding="utf-8") as handle:
+        with path.open("r", encoding="utf-8") as handle:
             records = json.load(handle)
-        if not isinstance(records, list):
-            raise ValueError("customer_data.json must contain a JSON array")
+        if not isinstance(records, list) or any(not isinstance(item, dict) for item in records):
+            raise ValueError(f"{path.name} must contain a JSON array of objects")
         return records
     except (json.JSONDecodeError, OSError, ValueError) as exc:
-        logger.exception("Could not read customer data JSON")
-        raise HTTPException(status_code=500, detail="Customer records are temporarily unavailable.") from exc
+        logger.exception("Could not read %s JSON", label)
+        raise HTTPException(status_code=500, detail=f"{label} records are temporarily unavailable.") from exc
 
 
-def _migrate_legacy_customers_if_empty() -> None:
-    """Import existing customer_data.json records once, only into an empty PG table."""
-    if not USE_POSTGRES or not CUSTOMER_DATA_FILE.exists():
-        return
-    with _assessment_db_connect() as conn:
-        count = conn.execute("SELECT COUNT(*) AS count FROM gutgpt_customers").fetchone()["count"]
-    if count:
-        return
-    records = _read_legacy_customer_json()
-    if records:
-        _write_customer_records(records)
-        logger.info("Imported %d legacy customer records into PostgreSQL", len(records))
+def _write_json_records(path: Path, records: list[dict]) -> None:
+    """Atomically replace a JSON-array store to avoid partially-written files."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_suffix(path.suffix + ".tmp")
+    with temporary.open("w", encoding="utf-8") as handle:
+        json.dump(records, handle, ensure_ascii=False, indent=2, default=str)
+        handle.write("\n")
+    os.replace(temporary, path)
+
+
+def _read_customer_records() -> list[dict]:
+    """Customer records are stored temporarily in customer_data.json."""
+    return _read_json_records(CUSTOMER_DATA_FILE, "Customer")
+
+
+def _write_customer_records(records: list[dict]) -> None:
+    _write_json_records(CUSTOMER_DATA_FILE, records)
+
+
+def _read_assessment_records() -> list[dict]:
+    """Completed assessment records are stored temporarily in assessment_data.json."""
+    return _read_json_records(ASSESSMENT_DATA_FILE, "Assessment")
+
+
+def _write_assessment_records(records: list[dict]) -> None:
+    _write_json_records(ASSESSMENT_DATA_FILE, records)
+
 
 def _persist_completed_assessment(session_id: str, result: dict) -> None:
-    """Persist one completed deterministic assessment against its customer ID."""
+    """Persist/update the completed assessment in a JSON file linked to its customer."""
     with CUSTOMER_LOCK:
         records = _read_customer_records()
         customer = next((r for r in records if r.get("session_id") == session_id), None)
@@ -335,95 +269,40 @@ def _persist_completed_assessment(session_id: str, result: dict) -> None:
         if session is None:
             logger.error("Assessment persistence skipped: conversation missing session=%s", session_id[:8])
             return
-        state = session.symptom_state
-        state_data = state.to_dict()
+        state_data = session.symptom_state.to_dict()
         screening = result.get("screening") or getattr(session, "screening", None) or {}
-        summary = build_symptom_summary(state)
+        summary = build_symptom_summary(session.symptom_state)
 
-    diagnosis = (
-        screening.get("likely_condition")
-        or screening.get("pattern")
-        or screening.get("action")
-        or result.get("status", "Assessment completed")
-    )
-    now = datetime.now(timezone.utc).isoformat()
-    _init_assessment_db()
-    with _assessment_db_connect() as conn:
-        placeholders = "%s" if USE_POSTGRES else "?"
-        values_sql = ", ".join([placeholders] * 11)
-        conn.execute(f"""
-            INSERT INTO customer_assessments (
-                assessment_id, customer_id, session_id, assessment_status, diagnosis,
-                diagnosis_message, symptom_summary, symptom_state_json, screening_json,
-                recommendations_json, created_at
-            ) VALUES ({values_sql})
-            ON CONFLICT(session_id) DO UPDATE SET
-                assessment_status=excluded.assessment_status,
-                diagnosis=excluded.diagnosis,
-                diagnosis_message=excluded.diagnosis_message,
-                symptom_summary=excluded.symptom_summary,
-                symptom_state_json=excluded.symptom_state_json,
-                screening_json=excluded.screening_json,
-                recommendations_json=excluded.recommendations_json,
-                created_at=excluded.created_at
-        """, (
-            str(uuid.uuid4()), customer["customer_id"], session_id, result.get("status", "COMPLETED"),
-            str(diagnosis), str(screening.get("message") or result.get("message") or ""), summary,
-            json.dumps(state_data, ensure_ascii=False, default=str),
-            json.dumps(screening, ensure_ascii=False, default=str),
-            json.dumps(result.get("recommendations") or [], ensure_ascii=False, default=str), now,
-        ))
-    logger.info("Completed assessment persisted customer_id=%s session=%s", customer["customer_id"], session_id[:8])
-
-
-def _assessment_row_to_dict(row):
-    item = dict(row)
-    for field in ("symptom_state_json", "screening_json", "recommendations_json"):
-        try:
-            item[field.removesuffix("_json")] = json.loads(item.pop(field))
-        except (ValueError, TypeError):
-            item[field.removesuffix("_json")] = {}
-    return item
-
-
-def _read_customer_records() -> list[dict]:
-    """Read customer records from PostgreSQL when configured, otherwise legacy JSON."""
-    if USE_POSTGRES:
-        _init_assessment_db()
-        _migrate_legacy_customers_if_empty()
-        with _assessment_db_connect() as conn:
-            rows = conn.execute("SELECT data FROM gutgpt_customers ORDER BY created_at ASC").fetchall()
-        return [dict(row["data"]) if not isinstance(row["data"], dict) else row["data"] for row in rows]
-    return _read_legacy_customer_json()
-
-
-def _write_customer_records(records: list[dict]) -> None:
-    """Persist customer records in PostgreSQL or atomically update local JSON."""
-    if USE_POSTGRES:
-        _init_assessment_db()
-        try:
-            from psycopg.types.json import Jsonb
-        except ImportError as exc:
-            raise RuntimeError("PostgreSQL is configured but psycopg is not installed") from exc
-        with _assessment_db_connect() as conn:
-            for record in records:
-                if not record.get("session_id") or not record.get("customer_id"):
-                    continue
-                conn.execute("""
-                    INSERT INTO gutgpt_customers (session_id, customer_id, data, created_at)
-                    VALUES (%s, %s, %s, %s)
-                    ON CONFLICT(session_id) DO UPDATE SET
-                        customer_id=excluded.customer_id,
-                        data=excluded.data
-                """, (record["session_id"], record["customer_id"], Jsonb(record),
-                      str(record.get("created_at") or record.get("updated_at") or datetime.now(timezone.utc).isoformat())))
-        return
-    CUSTOMER_DATA_FILE.parent.mkdir(parents=True, exist_ok=True)
-    temporary = CUSTOMER_DATA_FILE.with_suffix(".json.tmp")
-    with temporary.open("w", encoding="utf-8") as handle:
-        json.dump(records, handle, ensure_ascii=False, indent=2)
-        handle.write("\n")
-    os.replace(temporary, CUSTOMER_DATA_FILE)
+    diagnosis = (screening.get("likely_condition") or screening.get("pattern") or
+                 screening.get("action") or result.get("status", "Assessment completed"))
+    record = {
+        "assessment_id": str(uuid.uuid4()),
+        "customer_id": customer["customer_id"],
+        "customer_name": customer.get("name", ""),
+        "customer_contact": customer.get("contact", ""),
+        "customer_city": customer.get("city", ""),
+        "session_id": session_id,
+        "assessment_status": result.get("status", "COMPLETED"),
+        "diagnosis": str(diagnosis),
+        "diagnosis_message": str(screening.get("message") or result.get("message") or ""),
+        "symptom_summary": summary,
+        "symptom_state": state_data,
+        "screening": screening,
+        "recommendations": result.get("recommendations") or [],
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+    with CUSTOMER_LOCK:
+        assessments = _read_assessment_records()
+        # Keep one current completed assessment per session, matching prior DB behavior.
+        existing_index = next((i for i, item in enumerate(assessments)
+                               if item.get("session_id") == session_id), None)
+        if existing_index is None:
+            assessments.append(record)
+        else:
+            record["assessment_id"] = assessments[existing_index].get("assessment_id", record["assessment_id"])
+            assessments[existing_index] = record
+        _write_assessment_records(assessments)
+    logger.info("Completed assessment persisted to JSON customer_id=%s session=%s", customer["customer_id"], session_id[:8])
 
 
 class CustomerRegistrationRequest(BaseModel):
@@ -586,8 +465,26 @@ def _require_admin(authorization: str | None) -> None:
 
 @app.get("/admin", response_class=HTMLResponse, include_in_schema=False)
 def admin_dashboard():
-    """Serve a same-origin admin dashboard; token is entered by the admin."""
-    return HTMLResponse(content='<!doctype html>\n<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">\n<title>GutGPT Customer Admin</title><style>\n:root{color-scheme:light dark}body{font:16px system-ui,sans-serif;max-width:1100px;margin:32px auto;padding:0 16px}h1{margin-bottom:4px}.muted{opacity:.75}form,.toolbar{display:flex;gap:10px;flex-wrap:wrap;margin:18px 0}input,button{font:inherit;padding:10px;border-radius:8px;border:1px solid #888}input{min-width:250px;flex:1}button{cursor:pointer}table{width:100%;border-collapse:collapse;margin-top:16px}th,td{text-align:left;padding:10px;border-bottom:1px solid #8886;overflow-wrap:anywhere}th{position:sticky;top:0;background:Canvas}.status{margin:12px 0}.hidden{display:none}.tablewrap{overflow:auto}@media(max-width:600px){body{margin-top:18px}th,td{padding:7px;font-size:14px}}\n</style></head><body><h1>GutGPT Customer Admin</h1><p class="muted">Sign in with the GUTGPT_ADMIN_TOKEN configured in Render. Customer information is sensitive; do not share this page or downloaded files.</p>\n<form id="login"><label for="token">Admin token</label><input id="token" type="password" autocomplete="current-password" required placeholder="Enter admin token"><button type="submit">Sign in &amp; load records</button></form>\n<div id="panel" class="hidden"><p id="summary" class="status"></p><div class="toolbar"><button id="refresh">Refresh records</button><button id="download">Download JSON</button><button id="logout">Sign out</button></div><div class="tablewrap"><table><thead><tr><th>Name</th><th>Age</th><th>Contact</th><th>City</th><th>Created at (UTC)</th><th>Session ID</th></tr></thead><tbody id="rows"></tbody></table></div></div>\n<p id="status" class="status" role="status" aria-live="polite"></p>\n<script>\n(()=>{let token=\'\';const $=id=>document.getElementById(id);const status=m=>{$(\'status\').textContent=m};\nasync function api(path){const r=await fetch(path,{headers:{Authorization:\'Bearer \'+token},cache:\'no-store\'});if(!r.ok){let msg=\'Request failed (\'+r.status+\')\';try{const j=await r.json();if(j.detail)msg=j.detail}catch{}throw Error(msg)}return r}\nfunction cell(tr,value){const td=document.createElement(\'td\');td.textContent=value==null?\'\':String(value);tr.appendChild(td)}\nasync function load(){status(\'Loading customer records…\');try{const r=await api(\'/api/admin/customers\');const data=await r.json();$(\'rows\').replaceChildren();for(const c of data.customers||[]){const tr=document.createElement(\'tr\');cell(tr,c.name);cell(tr,c.age);cell(tr,c.contact);cell(tr,c.city);cell(tr,c.created_at);cell(tr,c.session_id);$(\'rows\').appendChild(tr)}$(\'summary\').textContent=(data.count??(data.customers||[]).length)+\' customer record(s)\';$(\'panel\').classList.remove(\'hidden\');status(\'Records loaded.\')}catch(e){$(\'panel\').classList.add(\'hidden\');status(e.message);if(/token|unauthorized|admin access/i.test(e.message))$(\'token\').focus()}}\n$(\'login\').addEventListener(\'submit\',async e=>{e.preventDefault();token=$(\'token\').value.trim();if(!token){status(\'Enter the admin token.\');return}await load()});$(\'refresh\').addEventListener(\'click\',load);$(\'logout\').addEventListener(\'click\',()=>{token=\'\';$(\'token\').value=\'\';$(\'rows\').replaceChildren();$(\'panel\').classList.add(\'hidden\');status(\'Signed out.\');$(\'token\').focus()});$(\'download\').addEventListener(\'click\',async()=>{try{status(\'Preparing download…\');const r=await api(\'/api/admin/customers/download\');const blob=await r.blob();const url=URL.createObjectURL(blob);const a=document.createElement(\'a\');a.href=url;a.download=\'customer_data.json\';document.body.appendChild(a);a.click();a.remove();URL.revokeObjectURL(url);status(\'JSON download started.\')}catch(e){status(e.message)}});\n})();</script></body></html>')
+    """Serve an authenticated dashboard for temporary JSON customer and assessment records."""
+    return HTMLResponse(content="""<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>GutGPT Admin</title><style>
+:root{color-scheme:light dark}body{font:16px system-ui,sans-serif;max-width:1200px;margin:32px auto;padding:0 16px}h1{margin-bottom:4px}.muted{opacity:.75}form,.toolbar{display:flex;gap:10px;flex-wrap:wrap;margin:18px 0}input,button{font:inherit;padding:10px;border-radius:8px;border:1px solid #888}input{min-width:250px;flex:1}button{cursor:pointer}table{width:100%;border-collapse:collapse;margin-top:16px}th,td{text-align:left;padding:10px;border-bottom:1px solid #8886;overflow-wrap:anywhere;vertical-align:top}th{position:sticky;top:0;background:Canvas}.status{margin:12px 0}.hidden{display:none}.tablewrap{overflow:auto;margin-bottom:28px}@media(max-width:600px){body{margin-top:18px}th,td{padding:7px;font-size:14px}}
+</style></head><body><h1>GutGPT Admin</h1><p class="muted">Sign in with GUTGPT_ADMIN_TOKEN configured in Render. Customer and assessment information is sensitive.</p>
+<form id="login"><label for="token">Admin token</label><input id="token" type="password" autocomplete="current-password" required placeholder="Enter admin token"><button type="submit">Sign in</button></form>
+<div id="panel" class="hidden"><h2>Customers</h2><p id="summary" class="status"></p><div class="toolbar"><button id="refresh">Refresh all records</button><button id="download">Download customer JSON</button><button id="logout">Sign out</button></div><div class="tablewrap"><table><thead><tr><th>Name</th><th>Age</th><th>Contact</th><th>City</th><th>Created at (UTC)</th><th>Session ID</th></tr></thead><tbody id="rows"></tbody></table></div>
+<h2>Completed assessments</h2><p id="assessmentSummary" class="status"></p><div class="toolbar"><button id="refreshAssessments">Refresh assessments</button><button id="downloadAssessments">Download assessment JSON</button></div><div class="tablewrap"><table><thead><tr><th>Customer</th><th>Diagnosis / pattern</th><th>Status</th><th>Symptoms</th><th>Recommendations</th><th>Created at (UTC)</th><th>Session ID</th></tr></thead><tbody id="assessmentRows"></tbody></table></div></div>
+<p id="status" class="status" role="status" aria-live="polite"></p>
+<script>
+(()=>{let token='';const $=id=>document.getElementById(id);const status=m=>{$('status').textContent=m};
+async function api(path){const r=await fetch(path,{headers:{Authorization:'Bearer '+token},cache:'no-store'});if(!r.ok){let msg='Request failed ('+r.status+')';try{const j=await r.json();if(j.detail)msg=j.detail}catch{}throw Error(msg)}return r}
+function cell(tr,value){const td=document.createElement('td');td.textContent=value==null?'':String(value);tr.appendChild(td)}
+async function loadCustomers(){const r=await api('/api/admin/customers');const data=await r.json();$('rows').replaceChildren();for(const c of data.customers||[]){const tr=document.createElement('tr');cell(tr,c.name);cell(tr,c.age);cell(tr,c.contact);cell(tr,c.city);cell(tr,c.created_at);cell(tr,c.session_id);$('rows').appendChild(tr)}$('summary').textContent=(data.count??(data.customers||[]).length)+' customer record(s)'}
+async function loadAssessments(){const r=await api('/api/admin/assessments');const data=await r.json();$('assessmentRows').replaceChildren();for(const a of data.assessments||[]){const tr=document.createElement('tr');cell(tr,a.customer_name);cell(tr,a.diagnosis);cell(tr,a.assessment_status);cell(tr,a.symptom_summary);cell(tr,JSON.stringify(a.recommendations||[]));cell(tr,a.created_at);cell(tr,a.session_id);$('assessmentRows').appendChild(tr)}$('assessmentSummary').textContent=(data.count??(data.assessments||[]).length)+' assessment record(s)'}
+async function load(){status('Loading JSON records…');try{await loadCustomers();await loadAssessments();$('panel').classList.remove('hidden');status('Records loaded.')}catch(e){$('panel').classList.add('hidden');status(e.message);if(/token|unauthorized|admin access/i.test(e.message))$('token').focus()}}
+async function download(path,name){const r=await api(path);const blob=await r.blob();const url=URL.createObjectURL(blob);const a=document.createElement('a');a.href=url;a.download=name;document.body.appendChild(a);a.click();a.remove();URL.revokeObjectURL(url)}
+$('login').addEventListener('submit',async e=>{e.preventDefault();token=$('token').value.trim();if(!token){status('Enter the admin token.');return}await load()});$('refresh').addEventListener('click',load);$('refreshAssessments').addEventListener('click',async()=>{try{await loadAssessments();status('Assessments refreshed.')}catch(e){status(e.message)}});$('download').addEventListener('click',async()=>{try{await download('/api/admin/customers/download','customer_data.json');status('Customer JSON download started.')}catch(e){status(e.message)}});$('downloadAssessments').addEventListener('click',async()=>{try{await download('/api/admin/assessments/download','assessment_data.json');status('Assessment JSON download started.')}catch(e){status(e.message)}});$('logout').addEventListener('click',()=>{token='';$('token').value='';$('rows').replaceChildren();$('assessmentRows').replaceChildren();$('panel').classList.add('hidden');status('Signed out.');$('token').focus()});
+})();</script></body></html>""")
 
 
 @app.get("/api/admin/customers")
@@ -616,20 +513,26 @@ def admin_download_customers(authorization: str | None = Header(default=None)):
 
 @app.get("/api/admin/assessments")
 def admin_list_assessments(customer_id: str | None = None, authorization: str | None = Header(default=None)):
-    """Return completed assessment history to an authenticated admin."""
+    """Return completed assessment history from JSON only to an authenticated admin."""
     _require_admin(authorization)
-    _init_assessment_db()
-    with _assessment_db_connect() as conn:
-        if customer_id:
-            rows = conn.execute(
-                "SELECT * FROM customer_assessments WHERE customer_id = " + ("%s" if USE_POSTGRES else "?") + " ORDER BY created_at DESC",
-                (customer_id,),
-            ).fetchall()
-        else:
-            rows = conn.execute(
-                "SELECT * FROM customer_assessments ORDER BY created_at DESC LIMIT 1000"
-            ).fetchall()
-    return {"count": len(rows), "assessments": [_assessment_row_to_dict(row) for row in rows]}
+    with CUSTOMER_LOCK:
+        assessments = _read_assessment_records()
+    if customer_id:
+        assessments = [item for item in assessments if item.get("customer_id") == customer_id]
+    assessments.sort(key=lambda item: item.get("created_at", ""), reverse=True)
+    return {"count": len(assessments), "assessments": assessments[:1000]}
+
+
+@app.get("/api/admin/assessments/download")
+def admin_download_assessments(authorization: str | None = Header(default=None)):
+    """Download completed assessment JSON after admin authentication."""
+    _require_admin(authorization)
+    with CUSTOMER_LOCK:
+        assessments = _read_assessment_records()
+    payload = json.dumps(assessments, ensure_ascii=False, indent=2, default=str) + "\n"
+    return Response(content=payload, media_type="application/json",
+                    headers={"Content-Disposition": 'attachment; filename="assessment_data.json"',
+                             "Cache-Control": "no-store"})
 
 
 @app.post("/api/customer/restore")
