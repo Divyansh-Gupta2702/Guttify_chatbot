@@ -52,6 +52,8 @@ FRONTEND_FILE = BASE_DIR / "index.html"
 CUSTOMER_DATA_FILE = BASE_DIR / "customer_data.json"
 # Set ASSESSMENT_DB_PATH to a persistent disk path in production (for example, /var/data/gutgpt_assessments.sqlite3).
 ASSESSMENT_DB_FILE = Path(os.getenv("ASSESSMENT_DB_PATH", str(BASE_DIR / "gutgpt_assessments.sqlite3")))
+DATABASE_URL = os.getenv("DATABASE_URL", "").strip()
+USE_POSTGRES = bool(DATABASE_URL)
 GUEST_TOKEN_TTL_SECONDS = 30 * 24 * 60 * 60
 JWT_ALGORITHM = "HS256"
 JWT_ISSUER = os.getenv("JWT_ISSUER", "gutgpt-api")
@@ -214,8 +216,28 @@ CUSTOMER_LOCK = RLock()
 REGISTERED_CUSTOMER_SESSIONS: set[str] = set()
 
 
+def _postgres_connect():
+    """Open PostgreSQL using the Render DATABASE_URL, if configured."""
+    if not DATABASE_URL:
+        raise RuntimeError("DATABASE_URL is not configured")
+    try:
+        import psycopg
+        from psycopg.rows import dict_row
+    except ImportError as exc:
+        raise RuntimeError("PostgreSQL is configured but psycopg is not installed") from exc
+    dsn = DATABASE_URL
+    if dsn.startswith("postgres://"):
+        dsn = "postgresql://" + dsn[len("postgres://"):]
+    # Render external URLs require TLS; preserve an explicit sslmode if supplied.
+    if "sslmode=" not in dsn and os.getenv("PGSSLMODE"):
+        pass
+    return psycopg.connect(dsn, row_factory=dict_row, connect_timeout=10)
+
+
 def _assessment_db_connect():
-    """Open the SQLite database used to persist completed assessments."""
+    """Open the active assessment store: PostgreSQL on Render, SQLite locally."""
+    if USE_POSTGRES:
+        return _postgres_connect()
     ASSESSMENT_DB_FILE.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(str(ASSESSMENT_DB_FILE), timeout=10)
     conn.row_factory = sqlite3.Row
@@ -224,25 +246,80 @@ def _assessment_db_connect():
 
 
 def _init_assessment_db() -> None:
-    """Create the assessment history table if it does not exist."""
+    """Create assessment and customer tables in the configured database."""
     with _assessment_db_connect() as conn:
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS customer_assessments (
-                assessment_id TEXT PRIMARY KEY,
-                customer_id TEXT NOT NULL,
-                session_id TEXT NOT NULL UNIQUE,
-                assessment_status TEXT NOT NULL,
-                diagnosis TEXT NOT NULL,
-                diagnosis_message TEXT NOT NULL,
-                symptom_summary TEXT NOT NULL,
-                symptom_state_json TEXT NOT NULL,
-                screening_json TEXT NOT NULL,
-                recommendations_json TEXT NOT NULL,
-                created_at TEXT NOT NULL
-            )
-        """)
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_assessments_customer_created ON customer_assessments(customer_id, created_at DESC)")
+        if USE_POSTGRES:
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS customer_assessments (
+                    assessment_id TEXT PRIMARY KEY,
+                    customer_id TEXT NOT NULL,
+                    session_id TEXT NOT NULL UNIQUE,
+                    assessment_status TEXT NOT NULL,
+                    diagnosis TEXT NOT NULL,
+                    diagnosis_message TEXT NOT NULL,
+                    symptom_summary TEXT NOT NULL,
+                    symptom_state_json TEXT NOT NULL,
+                    screening_json TEXT NOT NULL,
+                    recommendations_json TEXT NOT NULL,
+                    created_at TEXT NOT NULL
+                )
+            """)
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_assessments_customer_created ON customer_assessments(customer_id, created_at DESC)")
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS gutgpt_customers (
+                    session_id TEXT PRIMARY KEY,
+                    customer_id TEXT NOT NULL UNIQUE,
+                    data JSONB NOT NULL,
+                    created_at TEXT NOT NULL
+                )
+            """)
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_gutgpt_customers_customer_id ON gutgpt_customers(customer_id)")
+        else:
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS customer_assessments (
+                    assessment_id TEXT PRIMARY KEY,
+                    customer_id TEXT NOT NULL,
+                    session_id TEXT NOT NULL UNIQUE,
+                    assessment_status TEXT NOT NULL,
+                    diagnosis TEXT NOT NULL,
+                    diagnosis_message TEXT NOT NULL,
+                    symptom_summary TEXT NOT NULL,
+                    symptom_state_json TEXT NOT NULL,
+                    screening_json TEXT NOT NULL,
+                    recommendations_json TEXT NOT NULL,
+                    created_at TEXT NOT NULL
+                )
+            """)
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_assessments_customer_created ON customer_assessments(customer_id, created_at DESC)")
 
+
+def _read_legacy_customer_json() -> list[dict]:
+    """Read the legacy JSON file only for local mode or one-time PostgreSQL migration."""
+    if not CUSTOMER_DATA_FILE.exists():
+        return []
+    try:
+        with CUSTOMER_DATA_FILE.open("r", encoding="utf-8") as handle:
+            records = json.load(handle)
+        if not isinstance(records, list):
+            raise ValueError("customer_data.json must contain a JSON array")
+        return records
+    except (json.JSONDecodeError, OSError, ValueError) as exc:
+        logger.exception("Could not read customer data JSON")
+        raise HTTPException(status_code=500, detail="Customer records are temporarily unavailable.") from exc
+
+
+def _migrate_legacy_customers_if_empty() -> None:
+    """Import existing customer_data.json records once, only into an empty PG table."""
+    if not USE_POSTGRES or not CUSTOMER_DATA_FILE.exists():
+        return
+    with _assessment_db_connect() as conn:
+        count = conn.execute("SELECT COUNT(*) AS count FROM gutgpt_customers").fetchone()["count"]
+    if count:
+        return
+    records = _read_legacy_customer_json()
+    if records:
+        _write_customer_records(records)
+        logger.info("Imported %d legacy customer records into PostgreSQL", len(records))
 
 def _persist_completed_assessment(session_id: str, result: dict) -> None:
     """Persist one completed deterministic assessment against its customer ID."""
@@ -272,12 +349,14 @@ def _persist_completed_assessment(session_id: str, result: dict) -> None:
     now = datetime.now(timezone.utc).isoformat()
     _init_assessment_db()
     with _assessment_db_connect() as conn:
-        conn.execute("""
+        placeholders = "%s" if USE_POSTGRES else "?"
+        values_sql = ", ".join([placeholders] * 11)
+        conn.execute(f"""
             INSERT INTO customer_assessments (
                 assessment_id, customer_id, session_id, assessment_status, diagnosis,
                 diagnosis_message, symptom_summary, symptom_state_json, screening_json,
                 recommendations_json, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES ({values_sql})
             ON CONFLICT(session_id) DO UPDATE SET
                 assessment_status=excluded.assessment_status,
                 diagnosis=excluded.diagnosis,
@@ -308,22 +387,38 @@ def _assessment_row_to_dict(row):
 
 
 def _read_customer_records() -> list[dict]:
-    """Read customer records, treating a missing file as an empty JSON list."""
-    if not CUSTOMER_DATA_FILE.exists():
-        return []
-    try:
-        with CUSTOMER_DATA_FILE.open("r", encoding="utf-8") as handle:
-            records = json.load(handle)
-        if not isinstance(records, list):
-            raise ValueError("customer_data.json must contain a JSON array")
-        return records
-    except (json.JSONDecodeError, OSError, ValueError) as exc:
-        logger.exception("Could not read customer data JSON")
-        raise HTTPException(status_code=500, detail="Customer records are temporarily unavailable.") from exc
+    """Read customer records from PostgreSQL when configured, otherwise legacy JSON."""
+    if USE_POSTGRES:
+        _init_assessment_db()
+        _migrate_legacy_customers_if_empty()
+        with _assessment_db_connect() as conn:
+            rows = conn.execute("SELECT data FROM gutgpt_customers ORDER BY created_at ASC").fetchall()
+        return [dict(row["data"]) if not isinstance(row["data"], dict) else row["data"] for row in rows]
+    return _read_legacy_customer_json()
 
 
 def _write_customer_records(records: list[dict]) -> None:
-    """Atomically persist records so interrupted writes do not corrupt the JSON file."""
+    """Persist customer records in PostgreSQL or atomically update local JSON."""
+    if USE_POSTGRES:
+        _init_assessment_db()
+        try:
+            from psycopg.types.json import Jsonb
+        except ImportError as exc:
+            raise RuntimeError("PostgreSQL is configured but psycopg is not installed") from exc
+        with _assessment_db_connect() as conn:
+            for record in records:
+                if not record.get("session_id") or not record.get("customer_id"):
+                    continue
+                conn.execute("""
+                    INSERT INTO gutgpt_customers (session_id, customer_id, data, created_at)
+                    VALUES (%s, %s, %s, %s)
+                    ON CONFLICT(session_id) DO UPDATE SET
+                        customer_id=excluded.customer_id,
+                        data=excluded.data
+                """, (record["session_id"], record["customer_id"], Jsonb(record),
+                      str(record.get("created_at") or record.get("updated_at") or datetime.now(timezone.utc).isoformat())))
+        return
+    CUSTOMER_DATA_FILE.parent.mkdir(parents=True, exist_ok=True)
     temporary = CUSTOMER_DATA_FILE.with_suffix(".json.tmp")
     with temporary.open("w", encoding="utf-8") as handle:
         json.dump(records, handle, ensure_ascii=False, indent=2)
@@ -527,7 +622,7 @@ def admin_list_assessments(customer_id: str | None = None, authorization: str | 
     with _assessment_db_connect() as conn:
         if customer_id:
             rows = conn.execute(
-                "SELECT * FROM customer_assessments WHERE customer_id = ? ORDER BY created_at DESC",
+                "SELECT * FROM customer_assessments WHERE customer_id = " + ("%s" if USE_POSTGRES else "?") + " ORDER BY created_at DESC",
                 (customer_id,),
             ).fetchall()
         else:

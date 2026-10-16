@@ -206,3 +206,7 @@ When the existing deterministic flow returns a completed `DIAGNOSIS`, `RECOMMEND
 - Assessment records contain sensitive health-related information. Restrict admin access, keep the token secret, and define an appropriate retention/deletion policy.
 
 Run the targeted test with `python -m pytest tests/test_assessment_persistence.py -v`.
+
+## PostgreSQL persistence (Render)
+
+For durable customer registration and completed assessment storage, set `DATABASE_URL` to the Render PostgreSQL **Internal Database URL** in the web service environment. The service creates its customer and assessment tables automatically and installs the PostgreSQL driver from `requirements.txt`. See `POSTGRES_PERSISTENCE_SETUP.md` for deployment steps, migration behavior, and verification notes. Without `DATABASE_URL`, local development continues to use the existing JSON/SQLite stores.

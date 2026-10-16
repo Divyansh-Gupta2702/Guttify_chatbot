@@ -2,16 +2,6 @@ import json
 import sqlite3
 
 import app as gutgpt_app
-import pytest
-
-@pytest.fixture(autouse=True)
-def configured_test_jwt_secret(monkeypatch):
-    monkeypatch.setenv(
-        "JWT_SECRET_KEY",
-        "test-only-secret-that-is-at-least-32-bytes-long",
-    )
-    monkeypatch.setenv("JWT_ISSUER", "gutgpt-api")
-    monkeypatch.setenv("JWT_AUDIENCE", "gutgpt-guest-session")
 
 
 def test_completed_assessment_is_stored_with_customer_id(tmp_path, monkeypatch):
