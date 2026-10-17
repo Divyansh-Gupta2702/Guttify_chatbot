@@ -9,6 +9,7 @@ Run locally:
     uvicorn app:app --reload --host 0.0.0.0 --port 8000
 """
 from pathlib import Path
+import tempfile
 import os
 import uuid
 import time
@@ -234,11 +235,32 @@ def _read_json_records(path: Path, label: str) -> list[dict]:
 def _write_json_records(path: Path, records: list[dict]) -> None:
     """Atomically replace a JSON-array store to avoid partially-written files."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_suffix(path.suffix + ".tmp")
-    with temporary.open("w", encoding="utf-8") as handle:
-        json.dump(records, handle, ensure_ascii=False, indent=2, default=str)
-        handle.write("\n")
-    os.replace(temporary, path)
+    # A fixed ``.tmp`` name can collide when multiple worker processes write
+    # concurrently. Use a unique temporary file in the destination directory
+    # so os.replace remains atomic on the same filesystem.
+    temporary_name = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            dir=str(path.parent),
+            prefix=f".{path.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as handle:
+            temporary_name = handle.name
+            json.dump(records, handle, ensure_ascii=False, indent=2, default=str)
+            handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary_name, path)
+        temporary_name = None
+    finally:
+        if temporary_name and os.path.exists(temporary_name):
+            try:
+                os.unlink(temporary_name)
+            except OSError:
+                logger.warning("Could not remove temporary JSON file %s", temporary_name)
 
 
 def _read_customer_records() -> list[dict]:
@@ -277,12 +299,26 @@ def _persist_completed_assessment(session_id: str, result: dict) -> None:
         history = customer.setdefault("assessments", [])
         if not isinstance(history, list):
             history = customer["assessments"] = []
-        history.append({
-            "assessment_id": str(uuid.uuid4()),
-            "session_id": session_id,
-            "assessment": str(likely_assessment),
-            "completed_at": now,
-        })
+        # The chat endpoint may be retried by a browser/proxy. Treat persistence
+        # as idempotent per diagnostic session while still allowing a customer to
+        # have many assessments across different sessions.
+        existing = next(
+            (item for item in history
+             if isinstance(item, dict) and item.get("session_id") == session_id),
+            None,
+        )
+        if existing is None:
+            history.append({
+                "assessment_id": str(uuid.uuid4()),
+                "session_id": session_id,
+                "assessment": str(likely_assessment),
+                "completed_at": now,
+            })
+        else:
+            # Repair/update a legacy or partial record without creating a duplicate.
+            existing["assessment"] = str(likely_assessment)
+            existing.setdefault("assessment_id", str(uuid.uuid4()))
+            existing.setdefault("completed_at", now)
         # Keep the dashboard's Assessment column useful by showing the latest result.
         customer["likely_assessment"] = str(likely_assessment)
         customer.pop("final_symptom_summary", None)
@@ -295,7 +331,7 @@ class CustomerRegistrationRequest(BaseModel):
     session_id: str = Field(min_length=1, max_length=128)
     name: str = Field(min_length=1, max_length=100)
     age: int = Field(ge=1, le=120)
-    contact: str = Field(min_length=7, max_length=15)
+    contact: str = Field(min_length=1, max_length=100)
     city: str = Field(min_length=1, max_length=100)
     consent: bool
 
