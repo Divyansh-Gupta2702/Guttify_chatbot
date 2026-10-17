@@ -9,6 +9,7 @@ Run locally:
     uvicorn app:app --reload --host 0.0.0.0 --port 8000
 """
 from pathlib import Path
+from contextlib import asynccontextmanager
 import tempfile
 import os
 import uuid
@@ -114,30 +115,7 @@ def _decode_guest_jwt(token: str) -> dict:
         raise HTTPException(status_code=401, detail="GUEST_SESSION_INVALID. Please register again.")
     return claims
 
-app = FastAPI(title="GutGPT API", version="18.3-jwt-guest-30d-diag")
 
-# Shopify storefront origins are supplied as a comma-separated environment
-# variable, for example:
-# ALLOWED_ORIGINS=https://www.guttify.com,https://guttify.com
-def _configured_origins():
-    return [
-        origin.strip().rstrip("/")
-        for origin in os.getenv("ALLOWED_ORIGINS", "").split(",")
-        if origin.strip()
-    ]
-
-
-allowed_origins = _configured_origins()
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=allowed_origins,
-    allow_credentials=True,
-    allow_methods=["GET", "POST", "OPTIONS"],
-    allow_headers=["Content-Type"],
-)
-
-@app.on_event("startup")
 def validate_production_configuration():
     """Fail fast when required final-site configuration is missing."""
     missing = []
@@ -172,6 +150,37 @@ def validate_production_configuration():
         len(allowed_origins), SESSION_TTL_SECONDS, MAX_SESSIONS,
     )
 
+
+@asynccontextmanager
+async def lifespan(application: FastAPI):
+    """Validate required configuration when the application starts."""
+    validate_production_configuration()
+    yield
+
+
+app = FastAPI(title="GutGPT API", version="18.3-jwt-guest-30d-diag", lifespan=lifespan)
+
+
+# Shopify storefront origins are supplied as a comma-separated environment
+# variable, for example:
+# ALLOWED_ORIGINS=https://www.guttify.com,https://guttify.com
+def _configured_origins():
+    return [
+        origin.strip().rstrip("/")
+        for origin in os.getenv("ALLOWED_ORIGINS", "").split(",")
+        if origin.strip()
+    ]
+
+
+allowed_origins = _configured_origins()
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=allowed_origins,
+    allow_credentials=True,
+    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_headers=["Content-Type"],
+)
 
 def _cleanup_sessions(now: float | None = None):
     """Expire abandoned sessions and cap total in-memory session count."""
