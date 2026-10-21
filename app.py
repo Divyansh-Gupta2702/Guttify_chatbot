@@ -164,6 +164,11 @@ def validate_production_configuration():
 async def lifespan(application: FastAPI):
     """Validate required configuration when the application starts."""
     validate_production_configuration()
+    # Safe diagnostic: log the selected storage backend without exposing credentials.
+    logger.info(
+        "Customer storage backend: %s",
+        "PostgreSQL" if DATABASE_URL else "JSON fallback",
+    )
     if DATABASE_URL:
         _init_postgres()
     yield
