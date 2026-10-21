@@ -77,6 +77,12 @@ def _complete_constipation_session(manager, sid):
         "stool_form", "daily_frequency", "pain", "infection", "blood_mucus",
         "night_weight_fever", "reflux", "timing", "triggers", "swallowing",
     ]
+    # This fixture represents a completed questionnaire. Any asked fields not
+    # represented in its sample values were explicitly accepted as unknown.
+    from question_schema import question_has_answer
+    state.answered_unknown_fields = [
+        field for field in state.asked_fields if not question_has_answer(state, field)
+    ]
     return session
 
 

@@ -32,14 +32,19 @@ def next_question(state):
                 "7 — Entirely liquid, with no solid pieces.\n\n"
                 f"{text} Please reply with a number from **1 to 7**, or say **I don't know**."
             )
-        # A question is asked once per assessment. `asked_fields` prevents
-        # malformed/ambiguous answers from causing an infinite repeat loop.
+        # `asked_fields` is history, not evidence that a question was answered.
+        # If a prior state merge or interrupted turn left a required field empty,
+        # it must remain eligible to be asked. Explicitly accepted "unknown" is
+        # a valid conversational outcome and is tracked separately.
         unknown_fields = set(getattr(state, "answered_unknown_fields", []) or [])
-        if condition and name not in asked and name not in unknown_fields:
+        has_answer = question_has_answer(state, name)
+        if condition and name not in unknown_fields and (name not in asked or not has_answer):
             return name, text
         if name in {"blood_colour", "blood_location", "anal_pain", "lump", "constipation"}:
             if not condition:
-                logger.info("[QUESTION][BLEEDING][SKIP] field=%s reason=already_answered", name)
+                logger.info("[QUESTION][BLEEDING][SKIP] field=%s reason=not_required", name)
+            elif has_answer or name in unknown_fields:
+                logger.info("[QUESTION][BLEEDING][SKIP] field=%s reason=answered", name)
         return None
 
     # Safety-critical bleeding owns the assessment whenever bleeding has been

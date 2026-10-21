@@ -10,6 +10,8 @@ import app as gutgpt_app
 
 @pytest.fixture(autouse=True)
 def configured_test_jwt_secret(monkeypatch):
+    # These tests explicitly exercise the JSON backend, regardless of a developer's or CI runner's DATABASE_URL environment variable.
+    monkeypatch.setattr(gutgpt_app, "DATABASE_URL", "")
     monkeypatch.setenv("JWT_SECRET_KEY", "test-only-secret-that-is-at-least-32-bytes-long")
     monkeypatch.setenv("JWT_ISSUER", "gutgpt-api")
     monkeypatch.setenv("JWT_AUDIENCE", "gutgpt-guest-session")

@@ -5,6 +5,8 @@ import pytest
 
 @pytest.fixture(autouse=True)
 def configured_test_jwt_secret(monkeypatch):
+    # This test verifies JSON persistence, even when the developer has PostgreSQL configured.
+    monkeypatch.setattr(gutgpt_app, "DATABASE_URL", "")
     monkeypatch.setenv(
         "JWT_SECRET_KEY",
         "test-only-secret-that-is-at-least-32-bytes-long",
@@ -30,6 +32,13 @@ def test_completed_assessment_is_saved_on_customer_record(tmp_path, monkeypatch)
         state.secondary_symptoms = ["gas"]
         state.duration = "3 days"
         state.stool_form = 2
+        # Simulate the state after the real question engine has completed the
+        # assessment. The production guard must remain enabled and is tested
+        # separately for incomplete/ambiguous sessions.
+        session = gutgpt_app.conversation_manager.sessions[sid]
+        session.diagnosis_complete = True
+        session.awaiting_summary_confirmation = False
+        monkeypatch.setattr(gutgpt_app, "next_question", lambda _state: None)
 
         result = {
             "status": "DIAGNOSIS",

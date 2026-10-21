@@ -180,3 +180,62 @@ def test_model_provider_error_returns_safe_fallback(monkeypatch):
     assert nlu_extractor._llm_extract(
         "I would rate the pain 5", "severity", __import__("intent_parser").SymptomState(), "answer_question"
     ) is None
+
+
+def test_summary_confirmation_bypasses_nlu_model_pipeline(monkeypatch):
+    cm = ConversationManager()
+    sid = "summary-confirm-no-nlu"
+    session = cm._get_session(sid)
+    session.symptom_state.primary_symptom = "bloating"
+    session.symptom_state.duration = "3 days"
+    session.symptom_state.age = 34
+    session.symptom_state.asked_fields = ["duration", "age"]
+    session.awaiting_summary_confirmation = True
+
+    def forbidden_nlu(*args, **kwargs):
+        raise AssertionError("summary confirmation must not invoke NLU/Groq")
+
+    monkeypatch.setattr(cm, "_run_nlu", forbidden_nlu)
+    result = cm.handle_message(sid, "yes")
+    assert result["status"] in {"ASK", "DIAGNOSIS", "RECOMMENDATION_FOUND", "AMBIGUOUS", "SUMMARY_REVIEW"}
+    assert session.summary_reviewed is True
+
+
+def test_missing_blood_location_is_reasked_even_if_field_was_previously_asked():
+    from symptom_questionnaire import next_question
+    from intent_parser import SymptomState
+
+    state = SymptomState(
+        primary_symptom="acidity",
+        duration="1 week",
+        age=34,
+        blood_present=True,
+        blood_colour="bright_red",
+        blood_location=None,
+        asked_fields=["duration", "age", "blood_colour", "blood_location", "anal_pain", "lump", "constipation"],
+    )
+    result = next_question(state)
+    assert result is not None
+    assert result[0] == "blood_location"
+
+
+def test_missing_bleeding_discriminator_prevents_branch_completion():
+    from symptom_questionnaire import next_question
+    from intent_parser import SymptomState
+
+    state = SymptomState(
+        primary_symptom="acidity",
+        duration="1 week",
+        age=34,
+        blood_present=True,
+        blood_colour="bright_red",
+        blood_location=None,
+        sharp_pain_during_stool=False,
+        anal_pain=False,
+        lump_or_prolapse=False,
+        stool_form=4,
+        straining=False,
+        constipation_explicit=False,
+        asked_fields=["duration", "age", "blood_colour", "blood_location", "anal_pain", "lump", "constipation"],
+    )
+    assert next_question(state)[0] == "blood_location"

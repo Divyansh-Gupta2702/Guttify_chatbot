@@ -1534,7 +1534,9 @@ class ConversationManager:
             return {"status": "SAFETY_REVIEW", "message": caution["message"], "recommendations": [], "safety": caution, "screening": session.screening}
 
         # A summary review pauses only non-urgent completion. Safety above always
-        # has priority and may interrupt this gate.
+        # has priority and may interrupt this gate. A confirmed summary is a
+        # deterministic control action; it must not trigger a Groq/NLU call.
+        summary_confirmation_turn = False
         if session.awaiting_summary_confirmation:
             if self._is_summary_confirmation(user_message):
                 session.awaiting_summary_confirmation = False
@@ -1545,6 +1547,7 @@ class ConversationManager:
                 # without an active question, it could be misread as positive
                 # evidence for unrelated safety fields.
                 user_message = "summary confirmed"
+                summary_confirmation_turn = True
                 logger.info("[SUMMARY][CONFIRMED] session=%s", str(sid)[:8])
             elif self._is_summary_rejection(user_message):
                 session.awaiting_summary_confirmation = False
@@ -1714,7 +1717,24 @@ class ConversationManager:
         # Contextual NLU runs before relevance routing. An active question has
         # priority over generic domain/product classification.
         pending_question = session.last_question
-        nlu_facts = self._run_nlu(session, user_message)
+        if summary_confirmation_turn:
+            # The customer has confirmed the deterministic summary. Do not call
+            # the model to classify a control phrase, and do not derive new
+            # clinical facts from it. Continue through the existing rule engine
+            # and questionnaire-completeness gates below.
+            nlu_facts = {
+                "intent": "answer_question",
+                "confidence": 1.0,
+                "_resolver_source": "deterministic_control",
+                "_answer_status": "answered",
+                "_question_resolution": {
+                    "status": "answered", "values": {},
+                    "confidence": 1.0, "source": "deterministic_control",
+                },
+            }
+            logger.info("[NLU][MODEL_CALL] called=false reason=summary_confirmation_control")
+        else:
+            nlu_facts = self._run_nlu(session, user_message)
 
         # Keep the existing deterministic parser as a second layer.
         if pending_question:

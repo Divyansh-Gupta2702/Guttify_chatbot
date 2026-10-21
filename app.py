@@ -25,11 +25,13 @@ import jwt
 from jwt import InvalidTokenError
 from datetime import datetime, timezone, timedelta
 from zoneinfo import ZoneInfo
-
+from urllib.parse import urlparse
+from dotenv import load_dotenv
+load_dotenv()
 INDIA_TZ = ZoneInfo("Asia/Kolkata")
 from threading import RLock
 
-from fastapi import FastAPI, HTTPException, Header, Response
+from fastapi import FastAPI, HTTPException, Header, Response, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse
 from pydantic import BaseModel, Field
@@ -42,6 +44,7 @@ if not logger.handlers:
     )
 
 from guttify_agent import ConversationManager
+from symptom_questionnaire import next_question
 from symptom_summary import build_symptom_summary
 from guttify_chatbot import _deterministic_product_reply, _deterministic_screening_reply
 BASE_DIR = Path(__file__).resolve().parent
@@ -54,6 +57,7 @@ MAX_MESSAGE_LENGTH = max(256, min(10000, int(os.getenv("MAX_MESSAGE_LENGTH", "40
 MAX_HISTORY_MESSAGES = 100
 FRONTEND_FILE = BASE_DIR / "index.html"
 CUSTOMER_DATA_FILE = Path(os.getenv("CUSTOMER_DATA_FILE", str(BASE_DIR / "customer_data.json")))
+DATABASE_URL = os.getenv("DATABASE_URL", "").strip()
 GUEST_TOKEN_TTL_SECONDS = 30 * 24 * 60 * 60
 JWT_ALGORITHM = "HS256"
 JWT_ISSUER = os.getenv("JWT_ISSUER", "gutgpt-api")
@@ -123,6 +127,11 @@ def validate_production_configuration():
         missing.append("GROQ_API_KEY")
     if not allowed_origins:
         missing.append("ALLOWED_ORIGINS")
+    else:
+        try:
+            _validate_allowed_origins(allowed_origins)
+        except ValueError as exc:
+            raise RuntimeError(f"Invalid ALLOWED_ORIGINS configuration: {exc}") from exc
     if len(os.getenv("JWT_SECRET_KEY", "").encode("utf-8")) < 32:
         missing.append("JWT_SECRET_KEY (at least 32 UTF-8 bytes)")
     if missing:
@@ -155,6 +164,8 @@ def validate_production_configuration():
 async def lifespan(application: FastAPI):
     """Validate required configuration when the application starts."""
     validate_production_configuration()
+    if DATABASE_URL:
+        _init_postgres()
     yield
 
 
@@ -172,6 +183,20 @@ def _configured_origins():
     ]
 
 
+def _validate_allowed_origins(origins: list[str]) -> None:
+    """Reject wildcard, malformed, and insecure non-local CORS origins."""
+    for origin in origins:
+        if origin == "*":
+            raise ValueError("wildcard origins are not allowed")
+        parsed = urlparse(origin)
+        if parsed.scheme not in ("https", "http") or not parsed.netloc:
+            raise ValueError(f"{origin!r} must be an absolute HTTP(S) origin")
+        if parsed.username or parsed.password or parsed.path or parsed.params or parsed.query or parsed.fragment:
+            raise ValueError(f"{origin!r} must contain only scheme and host (no credentials, path, query, or fragment)")
+        if parsed.scheme != "https" and parsed.hostname not in ("localhost", "127.0.0.1", "::1"):
+            raise ValueError(f"non-local origin {origin!r} must use HTTPS")
+
+
 allowed_origins = _configured_origins()
 
 app.add_middleware(
@@ -181,6 +206,21 @@ app.add_middleware(
     allow_methods=["GET", "POST", "OPTIONS"],
     allow_headers=["Content-Type"],
 )
+
+
+@app.middleware("http")
+async def security_response_headers(request, call_next):
+    """Apply conservative browser security headers and prevent sensitive API caching."""
+    response = await call_next(request)
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    response.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
+    response.headers.setdefault("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
+    # Customer profiles, health-related chat, and admin exports must not be
+    # retained by shared proxies or browser HTTP caches.
+    if request.url.path.startswith("/api/") or request.url.path == "/admin":
+        response.headers["Cache-Control"] = "no-store"
+        response.headers["Pragma"] = "no-cache"
+    return response
 
 def _cleanup_sessions(now: float | None = None):
     """Expire abandoned sessions and cap total in-memory session count."""
@@ -221,6 +261,11 @@ HISTORY_LAST_ACCESS: dict[str, float] = {}
 _SESSION_LOCK = RLock()
 conversation_manager = ConversationManager()
 CUSTOMER_LOCK = RLock()
+# Local fallback is for development/JSON mode only. When DATABASE_URL is set,
+# rate-limit counters are stored in PostgreSQL so multiple workers share limits.
+_RATE_LIMIT_LOCK = RLock()
+_RATE_LIMIT_BUCKETS: dict[str, tuple[float, int]] = {}
+_RATE_LIMIT_LOCAL_MAX_KEYS = 20000
 REGISTERED_CUSTOMER_SESSIONS: set[str] = set()
 # Maps each active diagnostic session to its persistent customer profile.
 SESSION_CUSTOMER_IDS: dict[str, str] = {}
@@ -272,16 +317,194 @@ def _write_json_records(path: Path, records: list[dict]) -> None:
                 logger.warning("Could not remove temporary JSON file %s", temporary_name)
 
 
+def _postgres_connect():
+    """Open a PostgreSQL connection only when DATABASE_URL is configured."""
+    if not DATABASE_URL:
+        return None
+    try:
+        import psycopg
+        from psycopg.rows import dict_row
+        return psycopg.connect(DATABASE_URL, row_factory=dict_row, connect_timeout=8)
+    except Exception as exc:
+        logger.exception("PostgreSQL connection failed")
+        raise HTTPException(status_code=503, detail="Customer storage is temporarily unavailable.") from exc
+
+
+def _init_postgres() -> None:
+    """Create the durable customer and assessment tables if needed."""
+    if not DATABASE_URL:
+        return
+    conn = _postgres_connect()
+    if conn is None:
+        return
+    try:
+        with conn, conn.cursor() as cur:
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS customers (
+                    customer_id TEXT PRIMARY KEY,
+                    registration_session_id TEXT UNIQUE,
+                    name VARCHAR(150) NOT NULL,
+                    age INTEGER NOT NULL CHECK (age BETWEEN 1 AND 120),
+                    contact VARCHAR(15) NOT NULL,
+                    location VARCHAR(150) NOT NULL,
+                    consent_to_store BOOLEAN NOT NULL DEFAULT FALSE,
+                    guest_token_jti_hash TEXT,
+                    guest_token_expires_at TIMESTAMPTZ,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    updated_at TIMESTAMPTZ,
+                    likely_assessment TEXT,
+                    record_json JSONB NOT NULL DEFAULT '{}'::jsonb
+                )
+            """)
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS customer_assessments (
+                    assessment_id TEXT PRIMARY KEY,
+                    customer_id TEXT NOT NULL REFERENCES customers(customer_id) ON DELETE CASCADE,
+                    session_id VARCHAR(150) UNIQUE NOT NULL,
+                    assessment TEXT NOT NULL,
+                    completed_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                )
+            """)
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS api_rate_limits (
+                    rate_key TEXT PRIMARY KEY,
+                    window_started_at TIMESTAMPTZ NOT NULL,
+                    request_count INTEGER NOT NULL CHECK (request_count >= 0),
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                )
+            """)
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_api_rate_limits_updated_at ON api_rate_limits(updated_at)")
+            # Upgrade the simple tables created during the manual local setup.
+            # The app's stable customer IDs are UUID strings, not serial integers.
+            cur.execute("""
+                DO $$ DECLARE constraint_row RECORD; BEGIN
+                    FOR constraint_row IN
+                        SELECT conname FROM pg_constraint
+                        WHERE conrelid = 'customer_assessments'::regclass AND contype = 'f'
+                    LOOP
+                        EXECUTE format('ALTER TABLE customer_assessments DROP CONSTRAINT %I', constraint_row.conname);
+                    END LOOP;
+                END $$;
+            """)
+            cur.execute("ALTER TABLE customers ALTER COLUMN customer_id DROP DEFAULT")
+            cur.execute("ALTER TABLE customers ALTER COLUMN customer_id TYPE TEXT USING customer_id::text")
+            cur.execute("ALTER TABLE customers ADD COLUMN IF NOT EXISTS registration_session_id TEXT")
+            cur.execute("ALTER TABLE customers ADD COLUMN IF NOT EXISTS guest_token_jti_hash TEXT")
+            cur.execute("ALTER TABLE customers ADD COLUMN IF NOT EXISTS guest_token_expires_at TIMESTAMPTZ")
+            cur.execute("ALTER TABLE customers ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ")
+            cur.execute("ALTER TABLE customers ADD COLUMN IF NOT EXISTS likely_assessment TEXT")
+            cur.execute("ALTER TABLE customers ADD COLUMN IF NOT EXISTS record_json JSONB NOT NULL DEFAULT '{}'::jsonb")
+            cur.execute("ALTER TABLE customers ALTER COLUMN record_json DROP DEFAULT")
+            cur.execute("ALTER TABLE customer_assessments ALTER COLUMN assessment_id DROP DEFAULT")
+            cur.execute("ALTER TABLE customer_assessments ALTER COLUMN assessment_id TYPE TEXT USING assessment_id::text")
+            cur.execute("ALTER TABLE customer_assessments ALTER COLUMN customer_id TYPE TEXT USING customer_id::text")
+            cur.execute("ALTER TABLE customer_assessments ADD COLUMN IF NOT EXISTS completed_at TIMESTAMPTZ NOT NULL DEFAULT NOW()")
+            cur.execute("ALTER TABLE customer_assessments ADD CONSTRAINT customer_assessments_customer_id_fkey FOREIGN KEY (customer_id) REFERENCES customers(customer_id) ON DELETE CASCADE")
+            cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_customers_registration_session_id ON customers(registration_session_id) WHERE registration_session_id IS NOT NULL")
+            cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_customer_assessments_session_id ON customer_assessments(session_id)")
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_customer_assessments_customer_id ON customer_assessments(customer_id)")
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_customer_assessments_completed_at ON customer_assessments(completed_at)")
+    finally:
+        conn.close()
+
+
+def _to_utc_datetime(value):
+    if not value:
+        return None
+    if isinstance(value, datetime):
+        return value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value.astimezone(timezone.utc)
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        return parsed.replace(tzinfo=timezone.utc) if parsed.tzinfo is None else parsed.astimezone(timezone.utc)
+    except (TypeError, ValueError):
+        return None
+
+
 def _read_customer_records() -> list[dict]:
-    """Read customer records and discard the retired symptom-summary field."""
-    records = _read_json_records(CUSTOMER_DATA_FILE, "Customer")
+    """Read customer profiles and their assessment history from configured storage."""
+    if DATABASE_URL:
+        conn = _postgres_connect()
+        try:
+            with conn, conn.cursor() as cur:
+                cur.execute("SELECT record_json FROM customers ORDER BY created_at DESC")
+                records = [dict(row["record_json"] or {}) for row in cur.fetchall()]
+                for record in records:
+                    cid = str(record.get("customer_id", ""))
+                    cur.execute("SELECT assessment_id, session_id, assessment, completed_at FROM customer_assessments WHERE customer_id=%s ORDER BY completed_at", (cid,))
+                    history = cur.fetchall()
+                    if history:
+                        record["assessments"] = [{
+                            "assessment_id": row["assessment_id"], "session_id": row["session_id"],
+                            "assessment": row["assessment"],
+                            "completed_at": row["completed_at"].astimezone(INDIA_TZ).isoformat(),
+                        } for row in history]
+                        record["likely_assessment"] = history[-1]["assessment"]
+        except Exception as exc:
+            logger.exception("Could not read customer records from PostgreSQL")
+            raise HTTPException(status_code=503, detail="Customer records are temporarily unavailable.") from exc
+        finally:
+            conn.close()
+    else:
+        records = _read_json_records(CUSTOMER_DATA_FILE, "Customer")
     for record in records:
         record.pop("final_symptom_summary", None)
     return records
 
 
 def _write_customer_records(records: list[dict]) -> None:
-    _write_json_records(CUSTOMER_DATA_FILE, records)
+    """Persist customer profiles and assessment history to PostgreSQL or JSON dev storage."""
+    if not DATABASE_URL:
+        _write_json_records(CUSTOMER_DATA_FILE, records)
+        return
+    conn = _postgres_connect()
+    try:
+        with conn, conn.cursor() as cur:
+            # Serialize whole-store read/modify/write operations across workers.
+            cur.execute("SELECT pg_advisory_xact_lock(hashtext('gutgpt_customer_store'))")
+            keep_ids = []
+            for record in records:
+                cid = str(record["customer_id"])
+                keep_ids.append(cid)
+                created_at = _to_utc_datetime(record.get("created_at")) or datetime.now(timezone.utc)
+                updated_at = _to_utc_datetime(record.get("updated_at"))
+                expires_at = _to_utc_datetime(record.get("guest_token_expires_at"))
+                payload = dict(record)
+                payload.pop("final_symptom_summary", None)
+                cur.execute("""
+                    INSERT INTO customers (customer_id, registration_session_id, name, age, contact, location,
+                        consent_to_store, guest_token_jti_hash, guest_token_expires_at, created_at, updated_at,
+                        likely_assessment, record_json)
+                    VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb)
+                    ON CONFLICT (customer_id) DO UPDATE SET
+                        registration_session_id=EXCLUDED.registration_session_id,
+                        name=EXCLUDED.name, age=EXCLUDED.age, contact=EXCLUDED.contact,
+                        location=EXCLUDED.location, consent_to_store=EXCLUDED.consent_to_store,
+                        guest_token_jti_hash=EXCLUDED.guest_token_jti_hash,
+                        guest_token_expires_at=EXCLUDED.guest_token_expires_at,
+                        updated_at=EXCLUDED.updated_at, likely_assessment=EXCLUDED.likely_assessment,
+                        record_json=EXCLUDED.record_json
+                """, (cid, record.get("session_id"), record.get("name", "Customer"), int(record.get("age") or 1),
+                      str(record.get("contact", "")), str(record.get("location", record.get("city", ""))),
+                      bool(record.get("consent_to_store")), record.get("guest_token_jti_hash"), expires_at,
+                      created_at, updated_at, record.get("likely_assessment"), json.dumps(payload, ensure_ascii=False, default=str)))
+                for item in record.get("assessments", []) if isinstance(record.get("assessments", []), list) else []:
+                    if not isinstance(item, dict) or not item.get("session_id"):
+                        continue
+                    completed = _to_utc_datetime(item.get("completed_at")) or datetime.now(timezone.utc)
+                    cur.execute("""
+                        INSERT INTO customer_assessments (assessment_id, customer_id, session_id, assessment, completed_at)
+                        VALUES (%s,%s,%s,%s,%s)
+                        ON CONFLICT (session_id) DO UPDATE SET assessment=EXCLUDED.assessment,
+                            customer_id=EXCLUDED.customer_id, completed_at=EXCLUDED.completed_at
+                    """, (str(item.get("assessment_id") or uuid.uuid4()), cid, str(item["session_id"]),
+                          str(item.get("assessment", "Insufficient information")), completed))
+            # Do not delete rows absent from this in-memory snapshot: another worker may have
+            # registered a customer after the snapshot was read. This API has no customer-delete route.
+    except Exception as exc:
+        logger.exception("Could not write customer records to PostgreSQL")
+        raise HTTPException(status_code=503, detail="Customer records could not be saved.") from exc
+    finally:
+        conn.close()
 
 
 def _persist_completed_assessment(session_id: str, result: dict) -> None:
@@ -290,6 +513,16 @@ def _persist_completed_assessment(session_id: str, result: dict) -> None:
         session = conversation_manager.sessions.get(session_id)
         if session is None:
             logger.error("Assessment persistence skipped: conversation missing session=%s", session_id[:8])
+            return
+        # Endpoint status alone is not proof of completion: guard persistence
+        # against stale/ambiguous completion paths and missing required fields.
+        pending_question = next_question(session.symptom_state)
+        if session.awaiting_summary_confirmation or not session.diagnosis_complete or pending_question:
+            logger.warning(
+                "Assessment persistence blocked: incomplete session=%s summary_pending=%s diagnosis_complete=%s pending_question=%s",
+                session_id[:8], session.awaiting_summary_confirmation,
+                session.diagnosis_complete, pending_question[0] if pending_question else None,
+            )
             return
         screening = result.get("screening") or getattr(session, "screening", None) or {}
 
@@ -363,6 +596,75 @@ class ChatResponse(BaseModel):
     recommendations: list[dict] = Field(default_factory=list)
 
 
+def _request_client_key(request: Request) -> str:
+    """Use the ASGI peer address; do not trust arbitrary X-Forwarded-For input."""
+    host = request.client.host if request.client and request.client.host else "unknown-client"
+    return host[:128]
+
+
+def _enforce_rate_limit(request: Request, *, scope: str, identity: str,
+                        limit: int, window_seconds: int) -> None:
+    """Enforce a fixed-window limit, shared through PostgreSQL when configured.
+
+    The raw identity is never persisted: keys are SHA-256 hashes. PostgreSQL
+    errors fail closed rather than silently disabling protection in DB mode.
+    """
+    raw_key = f"{scope}:{identity}"
+    rate_key = hashlib.sha256(raw_key.encode("utf-8")).hexdigest()
+    if DATABASE_URL:
+        conn = _postgres_connect()
+        if conn is None:
+            raise HTTPException(status_code=503, detail="Request protection is temporarily unavailable.")
+        try:
+            with conn, conn.cursor() as cur:
+                cur.execute("""
+                    INSERT INTO api_rate_limits (rate_key, window_started_at, request_count, updated_at)
+                    VALUES (%s, NOW(), 1, NOW())
+                    ON CONFLICT (rate_key) DO UPDATE SET
+                        request_count = CASE
+                            WHEN api_rate_limits.window_started_at <= NOW() - (%s * INTERVAL '1 second') THEN 1
+                            ELSE api_rate_limits.request_count + 1
+                        END,
+                        window_started_at = CASE
+                            WHEN api_rate_limits.window_started_at <= NOW() - (%s * INTERVAL '1 second') THEN NOW()
+                            ELSE api_rate_limits.window_started_at
+                        END,
+                        updated_at = NOW()
+                    RETURNING request_count, GREATEST(0, CEIL(EXTRACT(EPOCH FROM
+                        (window_started_at + (%s * INTERVAL '1 second') - NOW()))))::integer AS retry_after
+                """, (rate_key, window_seconds, window_seconds, window_seconds))
+                row = cur.fetchone()
+                count = int(row["request_count"] if isinstance(row, dict) else row[0])
+                retry_after = int(row["retry_after"] if isinstance(row, dict) else row[1])
+                # Bound storage growth without issuing a cleanup query on every
+                # request. This is housekeeping only; enforcement is in the upsert.
+                if secrets.randbelow(100) == 0:
+                    cur.execute("DELETE FROM api_rate_limits WHERE updated_at < NOW() - INTERVAL '2 days'")
+        finally:
+            conn.close()
+    else:
+        # Development fallback: per-process only. Production should configure
+        # DATABASE_URL to enable shared enforcement across instances/workers.
+        now = time.monotonic()
+        with _RATE_LIMIT_LOCK:
+            bucket = _RATE_LIMIT_BUCKETS.get(rate_key)
+            if bucket is None or now - bucket[0] >= window_seconds:
+                bucket = (now, 0)
+            count = bucket[1] + 1
+            _RATE_LIMIT_BUCKETS[rate_key] = (bucket[0], count)
+            if len(_RATE_LIMIT_BUCKETS) > _RATE_LIMIT_LOCAL_MAX_KEYS:
+                oldest = sorted(_RATE_LIMIT_BUCKETS.items(), key=lambda item: item[1][0])
+                for old_key, _ in oldest[:len(_RATE_LIMIT_BUCKETS) - _RATE_LIMIT_LOCAL_MAX_KEYS]:
+                    _RATE_LIMIT_BUCKETS.pop(old_key, None)
+            retry_after = max(1, int(window_seconds - (now - bucket[0])))
+    if count > limit:
+        raise HTTPException(
+            status_code=429,
+            detail="Too many requests. Please wait before trying again.",
+            headers={"Retry-After": str(max(1, retry_after))},
+        )
+
+
 @app.get("/")
 def frontend():
     """Serve the basic browser chat frontend at the backend root."""
@@ -401,8 +703,15 @@ def widget():
 
 
 @app.post("/api/session")
-def new_session():
-    """Create a new conversation session for a visitor."""
+def new_session(request: Request = None):
+    """Create a new conversation session for a visitor.
+
+    FastAPI injects the request for HTTP calls. The optional default also keeps
+    direct Python calls used by legacy unit tests backwards-compatible; those
+    calls are not HTTP traffic and therefore do not use the request rate limiter.
+    """
+    if request is not None:
+        _enforce_rate_limit(request, scope="session-create", identity=_request_client_key(request), limit=20, window_seconds=600)
     _cleanup_sessions()
     session_id = str(uuid.uuid4())
     now = time.monotonic()
@@ -414,8 +723,16 @@ def new_session():
 
 
 @app.post("/api/customer")
-def register_customer(req: CustomerRegistrationRequest):
-    """Save customer details to a local JSON file before allowing assessment."""
+def register_customer(req: CustomerRegistrationRequest, request: Request = None):
+    """Save customer details to configured PostgreSQL storage (or local JSON when DATABASE_URL is unset).
+
+    FastAPI injects the request for HTTP calls. The optional default preserves
+    direct-call compatibility for unit tests; all real HTTP requests still pass
+    through both IP/client and session registration rate limits.
+    """
+    if request is not None:
+        _enforce_rate_limit(request, scope="customer-register-ip", identity=_request_client_key(request), limit=10, window_seconds=600)
+        _enforce_rate_limit(request, scope="customer-register-session", identity=req.session_id, limit=5, window_seconds=600)
     if not req.consent:
         raise HTTPException(status_code=400, detail="Please consent to storing these details to continue.")
 
@@ -437,6 +754,7 @@ def register_customer(req: CustomerRegistrationRequest):
         # Idempotent profile creation for registration retries. A retry rotates
         # the guest credential and invalidates any previously issued token.
         existing = next((item for item in records if item.get("session_id") == req.session_id), None)
+        _assert_registration_customer_binding(req.session_id, existing)
         if existing is None:
             record = {
                 "customer_id": str(uuid.uuid4()),
@@ -475,20 +793,45 @@ def register_customer(req: CustomerRegistrationRequest):
     return {"status": "REGISTERED", "customer_id": record["customer_id"], "guest_token": guest_token, "token_expires_at": token_expires_at}
 
 
-def _require_admin(authorization: str | None) -> None:
-    """Require a configured bearer token; never expose customer data publicly."""
+def _require_admin(authorization: str | None, request: Request) -> None:
+    """Require a strong bearer token and throttle failed admin authentication."""
     configured_token = os.getenv("GUTGPT_ADMIN_TOKEN", "").strip()
-    if not configured_token:
+    if len(configured_token.encode("utf-8")) < 32:
         raise HTTPException(
             status_code=503,
-            detail="Admin access is not configured. Set GUTGPT_ADMIN_TOKEN in the service environment.",
+            detail="Admin access is not securely configured. Set GUTGPT_ADMIN_TOKEN to a random secret of at least 32 bytes.",
         )
     supplied = authorization or ""
     expected = f"Bearer {configured_token}"
-    # compare_digest avoids timing-sensitive token comparisons.
-    import hmac
-    if not hmac.compare_digest(supplied, expected):
+    # compare_digest avoids timing-sensitive token comparisons. Only failed
+    # attempts consume the brute-force budget, so normal admin refreshes work.
+    if not hmac.compare_digest(supplied.encode("utf-8"), expected.encode("utf-8")):
+        _enforce_rate_limit(
+            request, scope="admin-auth-failure", identity=_request_client_key(request),
+            limit=10, window_seconds=900,
+        )
         raise HTTPException(status_code=401, detail="Invalid or missing admin token.")
+
+
+def _assert_session_customer_binding(session_id: str, customer_id: str) -> None:
+    """Prevent a restore token from switching an already-bound session to another profile."""
+    bound_customer_id = SESSION_CUSTOMER_IDS.get(session_id)
+    if bound_customer_id is not None and not hmac.compare_digest(bound_customer_id, customer_id):
+        logger.warning("Guest restore rejected reason=session_customer_binding_mismatch session=%s", session_id[:8])
+        raise HTTPException(status_code=409, detail="SESSION_CUSTOMER_MISMATCH. Start a new session to restore this profile.")
+
+
+def _assert_registration_customer_binding(session_id: str, existing_record: dict | None) -> None:
+    """Prevent registration from rebinding a restored session to another profile."""
+    bound_customer_id = SESSION_CUSTOMER_IDS.get(session_id)
+    if bound_customer_id is not None and (
+        existing_record is None or existing_record.get("customer_id") != bound_customer_id
+    ):
+        logger.warning("Registration rejected reason=session_customer_binding_mismatch session=%s", session_id[:8])
+        raise HTTPException(
+            status_code=409,
+            detail="SESSION_CUSTOMER_MISMATCH. Start a new session before registering a different profile.",
+        )
 
 
 @app.get("/admin", response_class=HTMLResponse, include_in_schema=False)
@@ -500,38 +843,38 @@ def admin_dashboard():
 :root{color-scheme:light dark}body{font:16px system-ui,sans-serif;max-width:1400px;margin:32px auto;padding:0 16px}h1{margin-bottom:4px}.muted{opacity:.75}form,.toolbar{display:flex;gap:10px;flex-wrap:wrap;margin:18px 0}input,button{font:inherit;padding:10px;border-radius:8px;border:1px solid #888}input{min-width:250px;flex:1}button{cursor:pointer}table{width:100%;border-collapse:collapse;margin-top:16px}th,td{text-align:left;padding:10px;border-bottom:1px solid #8886;overflow-wrap:anywhere;vertical-align:top;min-width:120px}th{position:sticky;top:0;background:Canvas}.status{margin:12px 0}.hidden{display:none}.tablewrap{overflow:auto;margin-bottom:28px}@media(max-width:600px){body{margin-top:18px}th,td{padding:7px;font-size:14px}}
 </style></head><body><h1>GutGPT Admin</h1><p class="muted">Sign in with GUTGPT_ADMIN_TOKEN configured in Render. Customer and assessment information is sensitive.</p>
 <form id="login"><label for="token">Admin token</label><input id="token" type="password" autocomplete="current-password" required placeholder="Enter admin token"><button type="submit">Sign in</button></form>
-<div id="panel" class="hidden"><h2>Customers</h2><p id="summary" class="status"></p><div class="toolbar"><button id="refresh">Refresh records</button><button id="download">Download customer JSON</button><button id="logout">Sign out</button></div><div class="tablewrap"><table><thead><tr><th>Name</th><th>Age</th><th>Contact</th><th>Location</th><th>Assessment</th><th>Registered at (UTC)</th><th>Session ID</th></tr></thead><tbody id="rows"></tbody></table></div></div>
+<div id="panel" class="hidden"><h2>Customers</h2><p id="summary" class="status"></p><div class="toolbar"><button id="refresh">Refresh records</button><button id="download">Download customer JSON</button><button id="logout">Sign out</button></div><div class="tablewrap"><table><thead><tr><th>Name</th><th>Age</th><th>Contact</th><th>Location</th><th>Assessment</th><th>Registered at (IST)</th><th>Session ID</th></tr></thead><tbody id="rows"></tbody></table></div></div>
 <p id="status" class="status" role="status" aria-live="polite"></p>
 <script>
 (()=>{let token='';const $=id=>document.getElementById(id);const status=m=>{$('status').textContent=m};
 async function api(path){const r=await fetch(path,{headers:{Authorization:'Bearer '+token},cache:'no-store'});if(!r.ok){let msg='Request failed ('+r.status+')';try{const j=await r.json();if(j.detail)msg=j.detail}catch{}throw Error(msg)}return r}
 function cell(tr,value){const td=document.createElement('td');td.textContent=value==null?'':String(value);tr.appendChild(td)}
-async function load(){status('Loading customer JSON…');try{const r=await api('/api/admin/customers');const data=await r.json();$('rows').replaceChildren();for(const c of data.customers||[]){const tr=document.createElement('tr');cell(tr,c.name);cell(tr,c.age);cell(tr,c.contact);cell(tr,c.location ?? c.city);cell(tr,c.likely_assessment);cell(tr,c.created_at);cell(tr,c.session_id);$('rows').appendChild(tr)}$('summary').textContent=(data.count??(data.customers||[]).length)+' customer record(s)';$('panel').classList.remove('hidden');status('Records loaded.')}catch(e){$('panel').classList.add('hidden');status(e.message);if(/token|unauthorized|admin access/i.test(e.message))$('token').focus()}}
-async function download(){try{const r=await api('/api/admin/customers/download');const blob=await r.blob();const url=URL.createObjectURL(blob);const a=document.createElement('a');a.href=url;a.download='customer_data.json';document.body.appendChild(a);a.click();a.remove();URL.revokeObjectURL(url);status('Customer JSON download started.')}catch(e){status(e.message)}}
+async function load(){status('Loading customer records…');try{const r=await api('/api/admin/customers');const data=await r.json();$('rows').replaceChildren();for(const c of data.customers||[]){const tr=document.createElement('tr');cell(tr,c.name);cell(tr,c.age);cell(tr,c.contact);cell(tr,c.location ?? c.city);cell(tr,c.likely_assessment);cell(tr,c.created_at);cell(tr,c.session_id);$('rows').appendChild(tr)}$('summary').textContent=(data.count??(data.customers||[]).length)+' customer record(s)';$('panel').classList.remove('hidden');status('Records loaded.')}catch(e){$('panel').classList.add('hidden');status(e.message);if(/token|unauthorized|admin access/i.test(e.message))$('token').focus()}}
+async function download(){try{const r=await api('/api/admin/customers/download');const blob=await r.blob();const url=URL.createObjectURL(blob);const a=document.createElement('a');a.href=url;a.download='gutgpt_customer_records.json';document.body.appendChild(a);a.click();a.remove();URL.revokeObjectURL(url);status('Customer records download started.')}catch(e){status(e.message)}}
 $('login').addEventListener('submit',async e=>{e.preventDefault();token=$('token').value.trim();if(!token){status('Enter the admin token.');return}await load()});$('refresh').addEventListener('click',load);$('download').addEventListener('click',download);$('logout').addEventListener('click',()=>{token='';$('token').value='';$('rows').replaceChildren();$('panel').classList.add('hidden');status('Signed out.');$('token').focus()});
 })();</script></body></html>""")
 
 
 @app.get("/api/admin/customers")
-def admin_list_customers(authorization: str | None = Header(default=None)):
+def admin_list_customers(request: Request, authorization: str | None = Header(default=None)):
     """Return customer records only to an authenticated admin."""
-    _require_admin(authorization)
+    _require_admin(authorization, request)
     with CUSTOMER_LOCK:
         records = _read_customer_records()
     return {"count": len(records), "customers": records}
 
 
 @app.get("/api/admin/customers/download")
-def admin_download_customers(authorization: str | None = Header(default=None)):
-    """Download the JSON records as an attachment after admin authentication."""
-    _require_admin(authorization)
+def admin_download_customers(request: Request, authorization: str | None = Header(default=None)):
+    """Download customer records as JSON after admin authentication."""
+    _require_admin(authorization, request)
     with CUSTOMER_LOCK:
         records = _read_customer_records()
     payload = json.dumps(records, ensure_ascii=False, indent=2) + "\\n"
     return Response(
         content=payload,
         media_type="application/json",
-        headers={"Content-Disposition": 'attachment; filename="customer_data.json"',
+        headers={"Content-Disposition": 'attachment; filename="gutgpt_customer_records.json"',
                  "Cache-Control": "no-store"},
     )
 
@@ -539,8 +882,16 @@ def admin_download_customers(authorization: str | None = Header(default=None)):
 
 
 @app.post("/api/customer/restore")
-def restore_customer(req: CustomerRestoreRequest):
-    """Restore a profile using a signed 30-day JWT, with one-time legacy upgrade."""
+def restore_customer(req: CustomerRestoreRequest, request: Request = None):
+    """Restore a profile using a signed 30-day JWT, with one-time legacy upgrade.
+
+    Request is optional only to preserve direct Python-call compatibility in unit
+    tests. FastAPI supplies it for every HTTP request, so endpoint rate limits
+    remain enforced for network callers.
+    """
+    if request is not None:
+        _enforce_rate_limit(request, scope="customer-restore-ip", identity=_request_client_key(request), limit=30, window_seconds=600)
+        _enforce_rate_limit(request, scope="customer-restore-session", identity=req.session_id, limit=10, window_seconds=600)
     with _SESSION_LOCK:
         if req.session_id not in HISTORY or req.session_id not in conversation_manager.sessions:
             raise HTTPException(status_code=410, detail="SESSION_EXPIRED")
@@ -589,6 +940,10 @@ def restore_customer(req: CustomerRestoreRequest):
             logger.warning("Guest restore rejected reason=customer_token_expired session=%s", req.session_id[:8])
             raise HTTPException(status_code=401, detail="GUEST_SESSION_EXPIRED. Please register again.")
 
+        # A restore may bind a fresh session to a customer, but must not silently
+        # switch a session that is already authenticated as a different customer.
+        _assert_session_customer_binding(req.session_id, record["customer_id"])
+
         # Upgrade legacy opaque credentials on first successful restoration.
         rotated_token = None
         if claims is None:
@@ -619,8 +974,15 @@ def restore_customer(req: CustomerRestoreRequest):
 
 
 @app.post("/api/chat", response_model=ChatResponse)
-def chat(req: ChatRequest):
-    """Process one user message through the existing GutGPT logic."""
+def chat(req: ChatRequest, request: Request = None):
+    """Process one user message through the existing GutGPT logic.
+
+    Request is optional only for existing direct Python-call tests. FastAPI
+    supplies it for HTTP calls, where rate limiting remains mandatory.
+    """
+    if request is not None:
+        _enforce_rate_limit(request, scope="chat-session", identity=req.session_id, limit=30, window_seconds=60)
+        _enforce_rate_limit(request, scope="chat-ip", identity=_request_client_key(request), limit=120, window_seconds=60)
     request_id = uuid.uuid4().hex[:8]
     total_start = time.perf_counter()
     message = req.message.strip()
