@@ -64,17 +64,16 @@ CLAUSE_BREAKS = {"and", "but", "however", "although", "while", "yet"}
 
 
 def _negative(text, phrase):
-    """Return True only when negation clearly applies to this phrase.
+    """Return True only when negation applies within the same clause.
 
-    Negation is deliberately local. A generic seven-word window can wrongly
-    interpret "no appetite and vomiting blood" as negated vomiting blood.
+    Punctuation and contrast/conjunction boundaries prevent a preceding
+    negative from suppressing a separate symptom ("no fever, chest pain").
     """
     n = re.sub(r"\s+", " ", (text or "").lower()).strip()
     phrase = phrase.lower().strip()
     if not n or not phrase:
         return False
 
-    # Direct constructions: "no blood in my stool", "don't have black stool".
     direct_patterns = [
         rf"\b(?:no|not|never|without)\s+(?:any\s+)?{re.escape(phrase)}\b",
         rf"\b(?:do not|dont|don't|does not|doesnt|doesn't)\s+(?:have|has|experience|experiencing|notice|noticing|see|seeing)\s+(?:any\s+)?{re.escape(phrase)}\b",
@@ -85,22 +84,21 @@ def _negative(text, phrase):
     if any(re.search(pattern, n) for pattern in direct_patterns):
         return True
 
-    words = n.split()
+    # Split at punctuation and clause-level conjunctions before applying the
+    # local negation window. A comma or full stop is a hard boundary.
+    clauses = re.split(r"[,.!?;:]+|\b(?:and|but|however|although|while|yet)\b", n)
     phrase_words = phrase.split()
-    for i in range(len(words) - len(phrase_words) + 1):
-        if words[i:i + len(phrase_words)] != phrase_words:
-            continue
-        before = words[max(0, i - 5):i]
-        # Stop at conjunctions so "no appetite and vomiting blood" is not
-        # interpreted as "no vomiting blood".
-        if any(w in CLAUSE_BREAKS for w in before):
-            before = before[before.index(next(w for w in before if w in CLAUSE_BREAKS)) + 1:]
-        window = before[-4:]
-        joined = " ".join(window)
-        if re.search(r"\b(?:no|not|never|without)\b", joined):
-            return True
-        if re.search(r"\b(?:don't|dont|doesn't|doesnt|haven't|hadn't)\s+(?:have|has|had)?\b", joined):
-            return True
+    for clause in clauses:
+        words = clause.split()
+        for i in range(len(words) - len(phrase_words) + 1):
+            if words[i:i + len(phrase_words)] != phrase_words:
+                continue
+            before = words[max(0, i - 5):i]
+            joined = " ".join(before[-4:])
+            if re.search(r"\b(?:no|not|never|without)\b", joined):
+                return True
+            if re.search(r"\b(?:don't|dont|doesn't|doesnt|haven't|havent|hadn't|hadnt)(?:\s+(?:have|has|had))?\b", joined):
+                return True
     return False
 
 
@@ -116,7 +114,7 @@ def detect_red_flags(text):
             found.append(label)
 
     bleeding = _concept_present(n, [
-        "blood in stool", "blood in my stool", "blood in the stool",
+        "bloody stool", "bloody stools", "blood in stool", "blood in my stool", "blood in the stool",
         "blood while passing stool", "blood after stool", "blood after bowel movement",
         "blood on toilet paper", "fresh blood", "rectal bleeding", "bleeding from anus",
         "bleeding while pooping", "bleeding when pooping", "bleeding when i poop",
@@ -134,10 +132,17 @@ def detect_red_flags(text):
 
 
 def is_pregnancy_or_lactation(text):
-    n = (text or "").lower()
-    return any(x in n for x in [
-        "pregnant", "pregnancy", "breastfeeding", "breast feeding", "lactating", "lactation",
-    ])
+    """Detect an affirmative self-disclosure, not negations or third parties."""
+    n = re.sub(r"\s+", " ", (text or "").lower()).strip()
+    if not n:
+        return False
+    # Explicit negatives/corrections must not set a session-long caution.
+    if re.search(r"\b(?:not|never|no longer|stopped|quit|finished)\b.{0,35}\b(?:pregnant|pregnancy|breastfeeding|breast feeding|lactating|lactation)\b", n):
+        return False
+    # A disclosure about someone else is not the current user's status.
+    if re.search(r"\b(?:my wife|my partner|my girlfriend|my sister|my mother|my friend|she|her)\b.{0,45}\b(?:pregnant|pregnancy|breastfeeding|breast feeding|lactating|lactation)\b", n):
+        return False
+    return bool(re.search(r"\b(?:pregnant|pregnancy|breastfeeding|breast feeding|lactating|lactation)\b", n))
 
 
 def derive_red_flags(state):

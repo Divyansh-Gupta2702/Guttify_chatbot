@@ -72,7 +72,7 @@ Do not use `allow_origins=["*"]` for the production storefront.
 
 ## Session behavior
 
-The widget stores a signed JWT guest credential in browser `localStorage`. The
+The widget stores a signed JWT guest credential in browser `sessionStorage`. The
 JWT expires after 30 days and is validated server-side for signature, issuer,
 audience, expiry, token type, and revocation. No API keys or LLM secrets are
 sent to the browser. The credential is a bearer secret, so protect the widget
@@ -191,7 +191,7 @@ Required Render environment variables:
 - `JWT_AUDIENCE`: normally `gutgpt-guest-session`.
 - Keep `ALLOWED_ORIGINS` set to the exact Shopify storefront origin(s), without a wildcard.
 
-`PyJWT` is installed through `requirements.txt`. Startup fails closed if `JWT_SECRET_KEY` is absent or shorter than 32 bytes. Changing the secret invalidates existing JWT sessions, so rotate it only with a planned re-registration/recovery path. The browser currently stores the credential in `localStorage`; this is compatible with the cross-origin widget but is exposed to successful same-origin script injection. Protect the widget against XSS and consider a carefully configured HttpOnly cookie/CSRF design in a future hardening pass.
+`PyJWT` is installed through `requirements.txt`. Startup fails closed if `JWT_SECRET_KEY` is absent or shorter than 32 bytes. Changing the secret invalidates existing JWT sessions, so rotate it only with a planned re-registration/recovery path. The browser stores the credential in `sessionStorage`, which survives page refreshes in the same tab but is cleared when the tab/session ends. This reduces persistence across visits and limits exposure compared with long-lived `localStorage`, but it remains accessible to successful same-origin script injection. Protect the widget against XSS and consider a carefully configured HttpOnly cookie/CSRF design in a future hardening pass.
 
 For a smooth upgrade, the restore endpoint supports an unexpired legacy opaque token already stored by the prior release exactly once, then returns and persists a new JWT. The widget replaces the legacy token with the JWT. Legacy tokens that have expired or whose JSON records were lost cannot be upgraded and require registration again. The JWT expires 30 days after issue; this is not a sliding expiration.
 

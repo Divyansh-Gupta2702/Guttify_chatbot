@@ -188,19 +188,27 @@ class ConversationManager:
     def __init__(self):
         self.sessions = {}
         self.last_access = {}
+        # Protect shared maps briefly; each conversation has its own lock so a
+        # slow LLM call in one session cannot block unrelated customers.
         self._lock = RLock()
+        self._session_locks = {}
 
     def _get_session(self, sid):
-        self.last_access[sid] = time.monotonic()
-        return self.sessions.setdefault(sid, SessionState())
+        with self._lock:
+            self.last_access[sid] = time.monotonic()
+            return self.sessions.setdefault(sid, SessionState())
 
     def reset(self, sid):
-        self.sessions[sid] = SessionState()
-        self.last_access[sid] = time.monotonic()
+        with self._lock:
+            self.sessions[sid] = SessionState()
+            self.last_access[sid] = time.monotonic()
+            self._session_locks.setdefault(sid, RLock())
 
     def remove(self, sid):
-        self.sessions.pop(sid, None)
-        self.last_access.pop(sid, None)
+        with self._lock:
+            self.sessions.pop(sid, None)
+            self.last_access.pop(sid, None)
+            self._session_locks.pop(sid, None)
 
     @staticmethod
     def _set(data, key, value):
@@ -480,7 +488,9 @@ class ConversationManager:
         changed = {k: v for k, v in facts.items() if v not in (None, [], "", False)}
 
         logger.info("[NLU][QUESTION_CONTEXT] last_question=%s", current_question)
-        logger.info("[NLU][RAW] %r", text)
+        # Do not write raw symptom/health text to application logs. Keep only
+        # non-sensitive telemetry needed to diagnose extraction behavior.
+        logger.debug("[NLU][RAW_REDACTED] message_length=%d", len(text or ""))
         logger.info(
             "[NLU] message_length=%d assessment_active=%s last_question=%s intent=%s confidence=%.2f",
             len(text), bool(session.symptom_state.primary_symptom or current_question),
@@ -1147,8 +1157,9 @@ class ConversationManager:
         # Explicit negatives are first-class and can correct stale values, but
         # only when the user's message explicitly names the affected concept.
         if re.search(r"\b(?:no|not|never|without|don't|dont|do not|haven't|have not)\b", normalized):
-            if re.search(r"\b(?:blood|bleeding)\b", normalized) and not re.search(r"\b(?:no|not|never|without)\b.{0,35}\b(?:exception|but)\b", normalized):
-                merged_data["blood_present"] = False if re.search(r"\b(?:no|not|never|without)\b.{0,35}\b(?:blood|bleeding)\b", normalized) else merged_data.get("blood_present")
+            # Blood presence is owned by the contextual resolver and the active
+            # bleeding question. Never overwrite it with a broad substring rule:
+            # "No pain. Blood is bright red" contains both a negation and blood.
             if re.search(r"\b(?:weight loss|lost weight)\b", normalized) and re.search(r"\b(?:no|not|never|without|haven't|have not)\b.{0,35}\b(?:weight|lost weight)\b", normalized):
                 merged_data["weight_loss"] = False
 
@@ -1492,12 +1503,16 @@ class ConversationManager:
         if recommendations:
             session.last_product = recommendations[0]
         session.awaiting_close = True
+        session.diagnosis_complete = True
         return result
 
     def handle_message(self, sid, user_message):
-        # Serialize session mutation so concurrent requests cannot interleave
-        # questionnaire updates for the same in-memory manager.
+        # Serialize mutations only within this session. Never hold the shared
+        # map lock across extraction/network work: a slow Groq call must not
+        # stall registration or conversations belonging to other customers.
         with self._lock:
+            session_lock = self._session_locks.setdefault(sid, RLock())
+        with session_lock:
             return self._handle_message(sid, user_message)
 
     def _handle_message(self, sid, user_message):
@@ -1510,6 +1525,11 @@ class ConversationManager:
             session.pregnancy_lactation_caution = True
 
         if safety["red_flag"]:
+            # Persist the safety signal in structured session state. A later
+            # downplaying message must not erase an earlier urgent disclosure.
+            state_flags = list(getattr(session.symptom_state, "red_flags", []) or [])
+            session.symptom_state.red_flags = list(dict.fromkeys(state_flags + list(safety.get("reasons") or [])))
+            session.diagnosis_complete = True
             screening = {
                 "pattern": "Red-flag presentation",
                 "likely_condition": "Red-flag presentation",
@@ -1521,6 +1541,27 @@ class ConversationManager:
                 "message": safety["message"],
             }
             session.screening = screening
+            return {"status": "SAFETY_REVIEW", "message": safety["message"], "recommendations": [], "safety": safety, "screening": screening}
+
+        # Safety flags remain active for the life of this conversation. Do not
+        # resume routine assessment based on a later message that omits them.
+        existing_flags = list(getattr(session.symptom_state, "red_flags", []) or [])
+        if existing_flags:
+            safety = {
+                "safe_to_recommend": False, "requires_doctor": True,
+                "red_flag": True, "reasons": existing_flags,
+                "message": "A warning sign was reported earlier in this chat. Please seek prompt medical evaluation; I cannot continue routine product recommendations in this session.",
+            }
+            screening = session.screening or {
+                "pattern": "Red-flag presentation", "likely_condition": "Red-flag presentation",
+                "confidence": "high", "evidence": existing_flags, "differentials": [],
+                "action": "urgent_medical_evaluation", "product_allowed": False,
+                "message": safety["message"],
+            }
+            screening["action"] = "urgent_medical_evaluation"
+            screening["product_allowed"] = False
+            session.screening = screening
+            session.diagnosis_complete = True
             return {"status": "SAFETY_REVIEW", "message": safety["message"], "recommendations": [], "safety": safety, "screening": screening}
 
         if session.pregnancy_lactation_caution:

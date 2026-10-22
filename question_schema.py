@@ -641,6 +641,11 @@ def question_has_answer(state: Any, question_id: str | None) -> bool:
     if not question_id:
         return True
     if question_id in set(getattr(state, "answered_unknown_fields", []) or []):
+        # Unknown cannot satisfy safety-critical bleeding discriminators. The
+        # engine must keep asking/clarifying rather than treating absence of
+        # information as a negative clinical finding.
+        if question_id in {"blood", "bleeding", "blood_colour", "blood_location", "blood_mucus", "anal_pain", "lump"}:
+            return False
         return True
     # Compatibility: unknown legacy IDs remain governed by their explicit
     # questionnaire condition rather than being treated as answered.

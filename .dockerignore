@@ -12,3 +12,10 @@ Data/
 Pipfile
 README*.md
 virtual
+*.dump
+customer_data.json
+app.py.bak
+*.bak
+*.log
+secrets/
+private/

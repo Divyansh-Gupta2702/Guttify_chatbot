@@ -538,7 +538,11 @@ def _persist_completed_assessment(session_id: str, result: dict) -> None:
         # Endpoint status alone is not proof of completion: guard persistence
         # against stale/ambiguous completion paths and missing required fields.
         pending_question = next_question(session.symptom_state)
-        if session.awaiting_summary_confirmation or not session.diagnosis_complete or pending_question:
+        urgent_safety_outcome = bool(
+            result.get("status") == "SAFETY_REVIEW"
+            and (result.get("screening") or {}).get("action") == "urgent_medical_evaluation"
+        )
+        if not urgent_safety_outcome and (session.awaiting_summary_confirmation or not session.diagnosis_complete or pending_question):
             logger.warning(
                 "Assessment persistence blocked: incomplete session=%s summary_pending=%s diagnosis_complete=%s pending_question=%s",
                 session_id[:8], session.awaiting_summary_confirmation,
@@ -1129,6 +1133,11 @@ def chat(req: ChatRequest, request: Request = None):
     # questions, safety reviews, greetings, or later acknowledgements.
     if status in ("DIAGNOSIS", "RECOMMENDATION_FOUND", "AMBIGUOUS"):
         reply = append_human_support_footer(reply)
+
+    # Persist urgent safety outcomes as well as completed routine assessments.
+    if status in ("DIAGNOSIS", "RECOMMENDATION_FOUND", "AMBIGUOUS") or (
+        status == "SAFETY_REVIEW" and (result.get("screening") or {}).get("action") == "urgent_medical_evaluation"
+    ):
         try:
             _persist_completed_assessment(req.session_id, result)
         except Exception:
