@@ -67,7 +67,9 @@ JWT_AUDIENCE = os.getenv("JWT_AUDIENCE", "gutgpt-guest-session")
 def _jwt_signing_key() -> str:
     """Return the configured JWT signing key; never use an insecure fallback."""
     key = os.getenv("JWT_SECRET_KEY", "")
-    if len(key.encode("utf-8")) < 32:
+    # 32 arbitrary UTF-8 bytes do not establish 256 bits of entropy. Require
+    # the 43-character URL-safe representation produced by token_urlsafe(32).
+    if len(key) < 43 or not re.fullmatch(r"[A-Za-z0-9_-]+", key):
         raise HTTPException(
             status_code=503,
             detail="Guest sessions are temporarily unavailable. Server authentication is not configured.",
@@ -132,8 +134,9 @@ def validate_production_configuration():
             _validate_allowed_origins(allowed_origins)
         except ValueError as exc:
             raise RuntimeError(f"Invalid ALLOWED_ORIGINS configuration: {exc}") from exc
-    if len(os.getenv("JWT_SECRET_KEY", "").encode("utf-8")) < 32:
-        missing.append("JWT_SECRET_KEY (at least 32 UTF-8 bytes)")
+    jwt_secret = os.getenv("JWT_SECRET_KEY", "")
+    if len(jwt_secret) < 43 or not re.fullmatch(r"[A-Za-z0-9_-]+", jwt_secret):
+        missing.append("JWT_SECRET_KEY (at least 43 URL-safe characters generated from 32 random bytes)")
     if missing:
         raise RuntimeError(
             "Missing required production environment variable(s): "
@@ -169,6 +172,16 @@ async def lifespan(application: FastAPI):
         "Customer storage backend: %s",
         "PostgreSQL" if DATABASE_URL else "JSON fallback",
     )
+    workers = os.getenv("WEB_CONCURRENCY", "1").strip()
+    try:
+        worker_count = int(workers)
+    except ValueError:
+        worker_count = 1
+    if worker_count > 1:
+        raise RuntimeError(
+            "GutGPT diagnostic sessions are currently in-memory and require one worker. "
+            "Do not set WEB_CONCURRENCY above 1 until a shared session backend is implemented."
+        )
     if DATABASE_URL:
         _init_postgres()
     yield
@@ -271,6 +284,9 @@ CUSTOMER_LOCK = RLock()
 _RATE_LIMIT_LOCK = RLock()
 _RATE_LIMIT_BUCKETS: dict[str, tuple[float, int]] = {}
 _RATE_LIMIT_LOCAL_MAX_KEYS = 20000
+_RATE_LIMIT_CLEANUP_LOCK = RLock()
+_RATE_LIMIT_CLEANUP_LAST: float | None = None
+_RATE_LIMIT_CLEANUP_INTERVAL_SECONDS = 600.0
 REGISTERED_CUSTOMER_SESSIONS: set[str] = set()
 # Maps each active diagnostic session to its persistent customer profile.
 SESSION_CUSTOMER_IDS: dict[str, str] = {}
@@ -607,6 +623,18 @@ def _request_client_key(request: Request) -> str:
     return host[:128]
 
 
+def _should_cleanup_rate_limits() -> bool:
+    """Run shared rate-limit-table housekeeping at most once per 10 minutes per worker."""
+    global _RATE_LIMIT_CLEANUP_LAST
+    now = time.monotonic()
+    with _RATE_LIMIT_CLEANUP_LOCK:
+        if (_RATE_LIMIT_CLEANUP_LAST is not None
+                and now - _RATE_LIMIT_CLEANUP_LAST < _RATE_LIMIT_CLEANUP_INTERVAL_SECONDS):
+            return False
+        _RATE_LIMIT_CLEANUP_LAST = now
+        return True
+
+
 def _enforce_rate_limit(request: Request, *, scope: str, identity: str,
                         limit: int, window_seconds: int) -> None:
     """Enforce a fixed-window limit, shared through PostgreSQL when configured.
@@ -641,9 +669,9 @@ def _enforce_rate_limit(request: Request, *, scope: str, identity: str,
                 row = cur.fetchone()
                 count = int(row["request_count"] if isinstance(row, dict) else row[0])
                 retry_after = int(row["retry_after"] if isinstance(row, dict) else row[1])
-                # Bound storage growth without issuing a cleanup query on every
-                # request. This is housekeeping only; enforcement is in the upsert.
-                if secrets.randbelow(100) == 0:
+                # Deterministic housekeeping avoids random latency spikes and
+                # cleans stale rows at the first request and periodically thereafter.
+                if _should_cleanup_rate_limits():
                     cur.execute("DELETE FROM api_rate_limits WHERE updated_at < NOW() - INTERVAL '2 days'")
         finally:
             conn.close()
@@ -782,6 +810,11 @@ def register_customer(req: CustomerRegistrationRequest, request: Request = None)
         record["guest_token_jti_hash"] = token_jti_hash
         record["guest_token_expires_at"] = token_expires_at
         record["updated_at"] = datetime.now(INDIA_TZ).isoformat()
+        bound_sessions = record.setdefault("bound_session_ids", [])
+        if not isinstance(bound_sessions, list):
+            bound_sessions = record["bound_session_ids"] = []
+        if req.session_id not in bound_sessions:
+            bound_sessions.append(req.session_id)
         _write_customer_records(records)
         REGISTERED_CUSTOMER_SESSIONS.add(req.session_id)
         SESSION_CUSTOMER_IDS[req.session_id] = record["customer_id"]
@@ -799,7 +832,11 @@ def register_customer(req: CustomerRegistrationRequest, request: Request = None)
 
 
 def _require_admin(authorization: str | None, request: Request) -> None:
-    """Require a strong bearer token and throttle failed admin authentication."""
+    """Require a strong bearer token and throttle admin traffic and failed authentication."""
+    _enforce_rate_limit(
+        request, scope="admin-api", identity=_request_client_key(request),
+        limit=120, window_seconds=60,
+    )
     configured_token = os.getenv("GUTGPT_ADMIN_TOKEN", "").strip()
     if len(configured_token.encode("utf-8")) < 32:
         raise HTTPException(
@@ -818,9 +855,23 @@ def _require_admin(authorization: str | None, request: Request) -> None:
         raise HTTPException(status_code=401, detail="Invalid or missing admin token.")
 
 
+def _persisted_session_customer_id(session_id: str) -> str | None:
+    """Resolve a session binding from durable customer storage after process restart."""
+    for record in _read_customer_records():
+        bound_sessions = record.get("bound_session_ids", [])
+        if record.get("session_id") == session_id or (
+            isinstance(bound_sessions, list) and session_id in bound_sessions
+        ):
+            customer_id = record.get("customer_id")
+            return str(customer_id) if customer_id else None
+    return None
+
+
 def _assert_session_customer_binding(session_id: str, customer_id: str) -> None:
     """Prevent a restore token from switching an already-bound session to another profile."""
     bound_customer_id = SESSION_CUSTOMER_IDS.get(session_id)
+    if bound_customer_id is None:
+        bound_customer_id = _persisted_session_customer_id(session_id)
     if bound_customer_id is not None and not hmac.compare_digest(bound_customer_id, customer_id):
         logger.warning("Guest restore rejected reason=session_customer_binding_mismatch session=%s", session_id[:8])
         raise HTTPException(status_code=409, detail="SESSION_CUSTOMER_MISMATCH. Start a new session to restore this profile.")
@@ -829,6 +880,8 @@ def _assert_session_customer_binding(session_id: str, customer_id: str) -> None:
 def _assert_registration_customer_binding(session_id: str, existing_record: dict | None) -> None:
     """Prevent registration from rebinding a restored session to another profile."""
     bound_customer_id = SESSION_CUSTOMER_IDS.get(session_id)
+    if bound_customer_id is None:
+        bound_customer_id = _persisted_session_customer_id(session_id)
     if bound_customer_id is not None and (
         existing_record is None or existing_record.get("customer_id") != bound_customer_id
     ):
@@ -875,7 +928,7 @@ def admin_download_customers(request: Request, authorization: str | None = Heade
     _require_admin(authorization, request)
     with CUSTOMER_LOCK:
         records = _read_customer_records()
-    payload = json.dumps(records, ensure_ascii=False, indent=2) + "\\n"
+    payload = json.dumps(records, ensure_ascii=False, indent=2) + "\n"
     return Response(
         content=payload,
         media_type="application/json",
@@ -959,6 +1012,13 @@ def restore_customer(req: CustomerRestoreRequest, request: Request = None):
             record["updated_at"] = now.isoformat()
             _write_customer_records(records)
 
+        bound_sessions = record.setdefault("bound_session_ids", [])
+        if not isinstance(bound_sessions, list):
+            bound_sessions = record["bound_session_ids"] = []
+        if req.session_id not in bound_sessions:
+            bound_sessions.append(req.session_id)
+            record["updated_at"] = now.isoformat()
+            _write_customer_records(records)
         REGISTERED_CUSTOMER_SESSIONS.add(req.session_id)
         SESSION_CUSTOMER_IDS[req.session_id] = record["customer_id"]
         with conversation_manager._lock:

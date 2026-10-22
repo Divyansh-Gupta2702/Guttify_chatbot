@@ -324,18 +324,23 @@
       const GUEST_TOKEN_STORAGE_KEY = "gutgpt_guest_token_v1";
       const LEGACY_CUSTOMER_STORAGE_KEY = "gutgpt_customer_id_v1";
 
+      // Retire the old long-lived token location; sessionStorage survives refreshes
+      // but is cleared when the tab's browsing session ends. It remains JS-readable,
+      // so this is exposure reduction, not a substitute for XSS prevention.
+      try { window.localStorage.removeItem(GUEST_TOKEN_STORAGE_KEY); } catch {}
+
       function getStoredGuestToken() {
-        try { return window.localStorage.getItem(GUEST_TOKEN_STORAGE_KEY) || ""; }
+        try { return window.sessionStorage.getItem(GUEST_TOKEN_STORAGE_KEY) || ""; }
         catch { return ""; }
       }
 
       function storeGuestToken(token) {
         if (typeof token !== "string" || !token) return false;
         try {
-          window.localStorage.setItem(GUEST_TOKEN_STORAGE_KEY, token);
+          window.sessionStorage.setItem(GUEST_TOKEN_STORAGE_KEY, token);
           // The legacy customer ID is not an authentication credential.
           window.localStorage.removeItem(LEGACY_CUSTOMER_STORAGE_KEY);
-          return window.localStorage.getItem(GUEST_TOKEN_STORAGE_KEY) === token;
+          return window.sessionStorage.getItem(GUEST_TOKEN_STORAGE_KEY) === token;
         } catch {
           return false;
         }
@@ -362,7 +367,7 @@
         } catch (error) {
           // Never use a customer ID as a substitute for an authentication token.
           if (String(error.message || "").includes("GUEST_SESSION_INVALID") || String(error.message || "").includes("HTTP 401")) {
-            try { window.localStorage.removeItem(GUEST_TOKEN_STORAGE_KEY); } catch {}
+            try { window.sessionStorage.removeItem(GUEST_TOKEN_STORAGE_KEY); } catch {}
           } else {
             console.warn("Could not restore saved customer profile", error);
           }

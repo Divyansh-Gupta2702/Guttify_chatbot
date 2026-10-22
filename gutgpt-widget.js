@@ -385,6 +385,10 @@
   let sessionId = null;
   let customerRegistered = false;
   const GUEST_TOKEN_STORAGE_KEY = "gutgpt_guest_token_v1";
+  // Retire the old persistent token location. sessionStorage remains readable
+  // by same-origin JavaScript; prevent XSS and consider HttpOnly cookies where
+  // deployment topology supports them.
+  try { window.localStorage.removeItem(GUEST_TOKEN_STORAGE_KEY); } catch (_) {}
   let busy = false;
   let ended = false;
 
@@ -521,7 +525,7 @@
       form.hidden = true;
 
       let guestToken = "";
-      try { guestToken = window.localStorage.getItem(GUEST_TOKEN_STORAGE_KEY) || ""; } catch (_) {}
+      try { guestToken = window.sessionStorage.getItem(GUEST_TOKEN_STORAGE_KEY) || ""; } catch (_) {}
       if (guestToken) {
         try {
           const restored = await fetchJson("/api/customer/restore", {
@@ -532,7 +536,7 @@
             // A legacy opaque credential is upgraded to a signed JWT by the
             // backend during restoration. Replace it immediately in storage.
             if (typeof restored.guest_token === "string" && restored.guest_token) {
-              try { window.localStorage.setItem(GUEST_TOKEN_STORAGE_KEY, restored.guest_token); } catch (_) {}
+              try { window.sessionStorage.setItem(GUEST_TOKEN_STORAGE_KEY, restored.guest_token); } catch (_) {}
             }
             customerRegistered = true;
             intake.hidden = true;
@@ -543,7 +547,7 @@
         } catch (restoreError) {
           // Only invalidate a credential that the server explicitly rejects.
           if (restoreError?.status === 401) {
-            try { window.localStorage.removeItem(GUEST_TOKEN_STORAGE_KEY); } catch (_) {}
+            try { window.sessionStorage.removeItem(GUEST_TOKEN_STORAGE_KEY); } catch (_) {}
           } else {
             throw restoreError;
           }
@@ -591,7 +595,7 @@
       if (data.status !== "REGISTERED") throw new Error("REGISTRATION_FAILED");
       customerRegistered = true;
       if (typeof data.guest_token === "string" && data.guest_token) {
-        try { window.localStorage.setItem(GUEST_TOKEN_STORAGE_KEY, data.guest_token); } catch (_) {}
+        try { window.sessionStorage.setItem(GUEST_TOKEN_STORAGE_KEY, data.guest_token); } catch (_) {}
       }
       intake.hidden = true;
       messages.hidden = false;
