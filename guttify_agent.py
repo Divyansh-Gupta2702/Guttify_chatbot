@@ -1502,8 +1502,13 @@ class ConversationManager:
         recommendations = result.get("recommendations") or []
         if recommendations:
             session.last_product = recommendations[0]
+        # A product-support recommendation closes the recommendation flow but
+        # is not a clinical diagnosis. A recommendation produced from a completed
+        # clinical screening keeps the assessment-complete flag. `awaiting_close`
+        # independently prevents a later symptom from restarting either flow.
         session.awaiting_close = True
-        session.diagnosis_complete = True
+        screening = result.get("screening") or session.screening or {}
+        session.diagnosis_complete = screening.get("action") != "product_support"
         return result
 
     def handle_message(self, sid, user_message):

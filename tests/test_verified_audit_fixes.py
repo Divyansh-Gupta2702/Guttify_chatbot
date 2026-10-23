@@ -60,8 +60,9 @@ def test_unknown_does_not_satisfy_bleeding_safety_discriminators():
     assert not question_has_answer(state, "anal_pain")
 
 
-def test_product_concern_recommendation_marks_assessment_complete():
+def test_product_concern_recommendation_does_not_mark_clinical_diagnosis_complete():
     manager = ConversationManager()
     result = manager.handle_message("product-complete", "I have dull skin")
     assert result["status"] == "RECOMMENDATION_FOUND"
-    assert manager.sessions["product-complete"].diagnosis_complete is True
+    assert manager.sessions["product-complete"].awaiting_close is True
+    assert manager.sessions["product-complete"].diagnosis_complete is False

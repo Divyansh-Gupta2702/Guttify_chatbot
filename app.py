@@ -55,10 +55,10 @@ QUESTION_FLOW_SCHEMA_VERSION = "v18.1"
 from support_footer import append_human_support_footer
 MAX_MESSAGE_LENGTH = max(256, min(10000, int(os.getenv("MAX_MESSAGE_LENGTH", "4000"))))
 MAX_HISTORY_MESSAGES = 100
-FRONTEND_FILE = BASE_DIR / "index.html"
 CUSTOMER_DATA_FILE = Path(os.getenv("CUSTOMER_DATA_FILE", str(BASE_DIR / "customer_data.json")))
 DATABASE_URL = os.getenv("DATABASE_URL", "").strip()
 GUEST_TOKEN_TTL_SECONDS = 30 * 24 * 60 * 60
+GUEST_COOKIE_NAME = "gutgpt_guest_token"
 JWT_ALGORITHM = "HS256"
 JWT_ISSUER = os.getenv("JWT_ISSUER", "gutgpt-api")
 JWT_AUDIENCE = os.getenv("JWT_AUDIENCE", "gutgpt-guest-session")
@@ -94,6 +94,81 @@ def _issue_guest_jwt(customer_id: str) -> tuple[str, str, str]:
     }
     token = jwt.encode(claims, _jwt_signing_key(), algorithm=JWT_ALGORITHM)
     return token, hashlib.sha256(jti.encode("utf-8")).hexdigest(), expires.isoformat()
+
+
+def _request_is_secure(request: Request | None) -> bool:
+    """Honor TLS termination at a trusted reverse proxy."""
+    if request is None:
+        return False
+    forwarded_proto = request.headers.get("x-forwarded-proto", "").split(",", 1)[0].strip().lower()
+    return request.url.scheme == "https" or forwarded_proto == "https"
+
+
+def _uses_partitioned_guest_cookie(request: Request | None, secure: bool) -> bool:
+    """Use CHIPS for allowlisted HTTPS storefront embeds on a different host.
+
+    Partitioned cookies remain HttpOnly and are scoped to the top-level Shopify
+    site. This helps browsers that block unpartitioned third-party cookies; it
+    does not promise cross-browser persistence where partitioned cookies are
+    unsupported or disabled. First-party frontend requests keep the normal
+    host-only cookie behavior.
+    """
+    if request is None or not secure:
+        return False
+    origin = request.headers.get("origin", "").strip().rstrip("/")
+    if not origin or origin not in allowed_origins:
+        return False
+    try:
+        origin_host = urlparse(origin).hostname
+    except ValueError:
+        return False
+    return bool(origin_host and origin_host.lower() != (request.url.hostname or "").lower())
+
+
+def _mark_last_guest_cookie_partitioned(response: Response, enabled: bool) -> None:
+    """Append the CHIPS attribute without requiring a newer Starlette version."""
+    if not enabled:
+        return
+    cookie_prefix = f"{GUEST_COOKIE_NAME}=".encode("ascii")
+    for index in range(len(response.raw_headers) - 1, -1, -1):
+        name, value = response.raw_headers[index]
+        if name.lower() == b"set-cookie" and value.startswith(cookie_prefix):
+            if b"; partitioned" not in value.lower():
+                response.raw_headers[index] = (name, value + b"; Partitioned")
+            return
+
+
+def _set_guest_cookie(response: Response | None, request: Request | None, token: str, max_age: int) -> None:
+    """Set a persistent, HttpOnly guest credential; partition it for embeds.
+
+    HTTPS requests use SameSite=None; Secure. For allowlisted cross-host
+    Shopify requests, Partitioned additionally enables CHIPS-capable browsers
+    to retain the credential without making it readable to JavaScript.
+    """
+    if response is None or not token:
+        return
+    secure = _request_is_secure(request)
+    response.set_cookie(
+        key=GUEST_COOKIE_NAME,
+        value=token,
+        max_age=max(0, int(max_age)),
+        httponly=True,
+        secure=secure,
+        samesite="none" if secure else "lax",
+        path="/",
+    )
+    _mark_last_guest_cookie_partitioned(response, _uses_partitioned_guest_cookie(request, secure))
+
+
+def _delete_guest_cookie(response: Response | None, request: Request | None) -> None:
+    if response is None:
+        return
+    secure = _request_is_secure(request)
+    response.delete_cookie(
+        key=GUEST_COOKIE_NAME, path="/", httponly=True, secure=secure,
+        samesite="none" if secure else "lax",
+    )
+    _mark_last_guest_cookie_partitioned(response, _uses_partitioned_guest_cookie(request, secure))
 
 
 def _decode_guest_jwt(token: str) -> dict:
@@ -703,20 +778,14 @@ def _enforce_rate_limit(request: Request, *, scope: str, identity: str,
 
 
 @app.get("/")
-def frontend():
-    """Serve the basic browser chat frontend at the backend root."""
-    if not FRONTEND_FILE.exists():
-        raise HTTPException(status_code=500, detail="GutGPT frontend is not installed.")
-    return FileResponse(FRONTEND_FILE, media_type="text/html")
-
-
-@app.get("/bristol-stool-chart.png")
-def bristol_stool_chart():
-    """Serve the Bristol chart used by the browser-based frontend."""
-    chart_file = BASE_DIR / "Bristol Stool Chart Infographic.png"
-    if not chart_file.exists():
-        raise HTTPException(status_code=404, detail="Bristol stool chart image is not installed.")
-    return FileResponse(chart_file, media_type="image/png", headers={"Cache-Control": "public, max-age=3600"})
+def service_info():
+    """Expose backend service information; the customer UI is the Shopify widget."""
+    return {
+        "service": "GutGPT API",
+        "status": "running",
+        "health": "/api/health",
+        "shopify_widget": "/gutgpt-widget.js",
+    }
 
 
 @app.get("/api/health", response_model=str)
@@ -760,7 +829,7 @@ def new_session(request: Request = None):
 
 
 @app.post("/api/customer")
-def register_customer(req: CustomerRegistrationRequest, request: Request = None):
+def register_customer(req: CustomerRegistrationRequest, request: Request = None, response: Response = None):
     """Save customer details to configured PostgreSQL storage (or local JSON when DATABASE_URL is unset).
 
     FastAPI injects the request for HTTP calls. The optional default preserves
@@ -831,7 +900,10 @@ def register_customer(req: CustomerRegistrationRequest, request: Request = None)
         if session_state is not None:
             session_state.symptom_state.age = record.get("age")
 
+    _set_guest_cookie(response, request, guest_token, GUEST_TOKEN_TTL_SECONDS)
     logger.info("Customer registration saved session=%s", req.session_id[:8])
+    # Keep the response field temporarily for API compatibility with older clients;
+    # the updated first-party frontends do not persist or read this value.
     return {"status": "REGISTERED", "customer_id": record["customer_id"], "guest_token": guest_token, "token_expires_at": token_expires_at}
 
 
@@ -944,7 +1016,7 @@ def admin_download_customers(request: Request, authorization: str | None = Heade
 
 
 @app.post("/api/customer/restore")
-def restore_customer(req: CustomerRestoreRequest, request: Request = None):
+def restore_customer(req: CustomerRestoreRequest, request: Request = None, response: Response = None):
     """Restore a profile using a signed 30-day JWT, with one-time legacy upgrade.
 
     Request is optional only to preserve direct Python-call compatibility in unit
@@ -958,16 +1030,23 @@ def restore_customer(req: CustomerRestoreRequest, request: Request = None):
         if req.session_id not in HISTORY or req.session_id not in conversation_manager.sessions:
             raise HTTPException(status_code=410, detail="SESSION_EXPIRED")
 
+    # Prefer the HttpOnly cookie. The request-body token is a temporary
+    # migration path for older browser clients and direct API callers.
+    supplied_token = (request.cookies.get(GUEST_COOKIE_NAME, "") if request is not None else "") or req.guest_token
+    if not supplied_token:
+        _delete_guest_cookie(response, request)
+        raise HTTPException(status_code=401, detail="GUEST_SESSION_INVALID. Please register again.")
+
     now = datetime.now(timezone.utc)
     claims = None
     try:
-        claims = _decode_guest_jwt(req.guest_token)
+        claims = _decode_guest_jwt(supplied_token)
     except HTTPException as token_error:
         # A three-segment value is JWT-shaped. Do not hide a JWT validation
         # failure by treating it as a legacy opaque credential.
         if token_error.status_code != 401:
             raise
-        if req.guest_token.count(".") == 2:
+        if supplied_token.count(".") == 2:
             logger.warning("Guest restore rejected reason=jwt_validation_failed session=%s", req.session_id[:8])
             raise
         # Compatibility path for older releases that stored opaque tokens.
@@ -983,7 +1062,7 @@ def restore_customer(req: CustomerRestoreRequest, request: Request = None):
                            and item.get("guest_token_jti_hash")
                            and hmac.compare_digest(item["guest_token_jti_hash"], supplied_jti_hash)), None)
         else:
-            legacy_hash = hashlib.sha256(req.guest_token.encode("utf-8")).hexdigest()
+            legacy_hash = hashlib.sha256(supplied_token.encode("utf-8")).hexdigest()
             record = next((item for item in records
                            if item.get("guest_token_hash")
                            and hmac.compare_digest(item["guest_token_hash"], legacy_hash)), None)
@@ -1036,6 +1115,15 @@ def restore_customer(req: CustomerRestoreRequest, request: Request = None):
             "customer": {"name": record.get("name", "Customer"), "age": record.get("age"), "city": record.get("city", "")},
             "customer_id": record["customer_id"],
         }
+        active_token = rotated_token or supplied_token
+        try:
+            cookie_expiry = datetime.fromisoformat(record.get("guest_token_expires_at", "").replace("Z", "+00:00"))
+            if cookie_expiry.tzinfo is None:
+                cookie_expiry = cookie_expiry.replace(tzinfo=timezone.utc)
+            cookie_max_age = max(0, int((cookie_expiry - now).total_seconds()))
+        except (ValueError, TypeError):
+            cookie_max_age = GUEST_TOKEN_TTL_SECONDS
+        _set_guest_cookie(response, request, active_token, cookie_max_age)
         if rotated_token:
             result["guest_token"] = rotated_token
             result["token_expires_at"] = record["guest_token_expires_at"]

@@ -36,6 +36,10 @@ def test_restore_cannot_switch_an_already_bound_session_to_another_customer(monk
 
 def test_restore_allows_unbound_or_same_customer_session(monkeypatch):
     monkeypatch.setattr(gutgpt_app, "SESSION_CUSTOMER_IDS", {"session-a": "customer-a"})
+    # This unit test checks in-memory binding semantics, not database availability.
+    # Persistent binding lookup is covered separately and must still fail closed
+    # when configured production storage is unavailable.
+    monkeypatch.setattr(gutgpt_app, "_persisted_session_customer_id", lambda session_id: None)
     gutgpt_app._assert_session_customer_binding("session-new", "customer-b")
     gutgpt_app._assert_session_customer_binding("session-a", "customer-a")
 
@@ -89,3 +93,54 @@ def test_registration_rejects_switching_a_bound_session_to_a_new_profile(monkeyp
 def test_registration_allows_retry_for_same_bound_customer(monkeypatch):
     monkeypatch.setattr(gutgpt_app, "SESSION_CUSTOMER_IDS", {"session-a": "customer-a"})
     gutgpt_app._assert_registration_customer_binding("session-a", {"customer_id": "customer-a"})
+
+
+def _cookie_request(origin, scheme="https", host="api.example.com", forwarded_proto=""):
+    from starlette.requests import Request
+    headers = [(b"origin", origin.encode())] if origin else []
+    if forwarded_proto:
+        headers.append((b"x-forwarded-proto", forwarded_proto.encode()))
+    return Request({
+        "type": "http", "http_version": "1.1", "method": "POST",
+        "scheme": scheme, "path": "/api/customer", "raw_path": b"/api/customer",
+        "query_string": b"", "headers": headers,
+        "client": ("127.0.0.1", 12345), "server": (host, 443 if scheme == "https" else 80),
+    })
+
+
+def test_guest_cookie_is_partitioned_for_allowlisted_cross_host_https_storefront(monkeypatch):
+    from fastapi import Response
+    monkeypatch.setattr(gutgpt_app, "allowed_origins", ["https://shop.example-store.com"])
+    response = Response()
+    request = _cookie_request("https://shop.example-store.com")
+    gutgpt_app._set_guest_cookie(response, request, "test-token", 3600)
+    cookie = next(value.decode() for name, value in response.raw_headers if name.lower() == b"set-cookie")
+    assert "HttpOnly" in cookie
+    assert "Secure" in cookie
+    assert "SameSite=none" in cookie
+    assert "Partitioned" in cookie
+    assert "test-token" in cookie
+
+
+def test_guest_cookie_is_not_partitioned_for_first_party_or_untrusted_origins(monkeypatch):
+    from fastapi import Response
+    monkeypatch.setattr(gutgpt_app, "allowed_origins", ["https://shop.example-store.com"])
+    first_party = Response()
+    gutgpt_app._set_guest_cookie(first_party, _cookie_request("https://api.example.com"), "test-token", 3600)
+    first_cookie = next(value.decode() for name, value in first_party.raw_headers if name.lower() == b"set-cookie")
+    assert "Partitioned" not in first_cookie
+
+    untrusted = Response()
+    gutgpt_app._set_guest_cookie(untrusted, _cookie_request("https://evil.example"), "test-token", 3600)
+    untrusted_cookie = next(value.decode() for name, value in untrusted.raw_headers if name.lower() == b"set-cookie")
+    assert "Partitioned" not in untrusted_cookie
+
+
+def test_partitioned_guest_cookie_deletion_uses_matching_partition_attribute(monkeypatch):
+    from fastapi import Response
+    monkeypatch.setattr(gutgpt_app, "allowed_origins", ["https://shop.example-store.com"])
+    response = Response()
+    gutgpt_app._delete_guest_cookie(response, _cookie_request("https://shop.example-store.com"))
+    cookie = next(value.decode() for name, value in response.raw_headers if name.lower() == b"set-cookie")
+    assert "Max-Age=0" in cookie
+    assert "Partitioned" in cookie

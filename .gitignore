@@ -12,3 +12,4 @@ customer_data.json.tmp
 
 # Contains sensitive customer and health assessment data; never commit real records
 gutgpt_local_backup.dump
+db-backups

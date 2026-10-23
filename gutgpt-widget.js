@@ -385,10 +385,16 @@
   let sessionId = null;
   let customerRegistered = false;
   const GUEST_TOKEN_STORAGE_KEY = "gutgpt_guest_token_v1";
-  // Retire the old persistent token location. sessionStorage remains readable
-  // by same-origin JavaScript; prevent XSS and consider HttpOnly cookies where
-  // deployment topology supports them.
+  // Guest JWTs are now held in a persistent HttpOnly cookie by the API.
+  // sessionStorage is read only as a one-time migration path for older tabs.
   try { window.localStorage.removeItem(GUEST_TOKEN_STORAGE_KEY); } catch (_) {}
+  try { window.localStorage.removeItem("gutgpt_customer_id_v1"); } catch (_) {}
+  function getLegacyGuestToken() {
+    try { return window.sessionStorage.getItem(GUEST_TOKEN_STORAGE_KEY) || ""; } catch (_) { return ""; }
+  }
+  function clearLegacyGuestToken() {
+    try { window.sessionStorage.removeItem(GUEST_TOKEN_STORAGE_KEY); } catch (_) {}
+  }
   let busy = false;
   let ended = false;
 
@@ -482,6 +488,7 @@
 
     try {
       const response = await fetch(`${GUTGPT_API_URL}${path}`, {
+        credentials: "include",
         ...options,
         signal: controller.signal,
       });
@@ -524,20 +531,17 @@
       messages.hidden = true;
       form.hidden = true;
 
-      let guestToken = "";
-      try { guestToken = window.sessionStorage.getItem(GUEST_TOKEN_STORAGE_KEY) || ""; } catch (_) {}
-      if (guestToken) {
+      {
+        const guestToken = getLegacyGuestToken();
         try {
           const restored = await fetchJson("/api/customer/restore", {
             method: "POST", headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ session_id: sessionId, guest_token: guestToken }),
           });
           if (restored.status === "RESTORED") {
-            // A legacy opaque credential is upgraded to a signed JWT by the
-            // backend during restoration. Replace it immediately in storage.
-            if (typeof restored.guest_token === "string" && restored.guest_token) {
-              try { window.sessionStorage.setItem(GUEST_TOKEN_STORAGE_KEY, restored.guest_token); } catch (_) {}
-            }
+            // Successful restoration confirms the server set/refreshed the
+            // HttpOnly cookie; discard any old tab-scoped migration token.
+            clearLegacyGuestToken();
             customerRegistered = true;
             intake.hidden = true;
             messages.hidden = false;
@@ -547,7 +551,7 @@
         } catch (restoreError) {
           // Only invalidate a credential that the server explicitly rejects.
           if (restoreError?.status === 401) {
-            try { window.sessionStorage.removeItem(GUEST_TOKEN_STORAGE_KEY); } catch (_) {}
+            clearLegacyGuestToken();
           } else {
             throw restoreError;
           }
@@ -594,9 +598,7 @@
       });
       if (data.status !== "REGISTERED") throw new Error("REGISTRATION_FAILED");
       customerRegistered = true;
-      if (typeof data.guest_token === "string" && data.guest_token) {
-        try { window.sessionStorage.setItem(GUEST_TOKEN_STORAGE_KEY, data.guest_token); } catch (_) {}
-      }
+      clearLegacyGuestToken();
       intake.hidden = true;
       messages.hidden = false;
       form.hidden = false;

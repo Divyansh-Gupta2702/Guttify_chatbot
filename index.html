@@ -324,31 +324,23 @@
       const GUEST_TOKEN_STORAGE_KEY = "gutgpt_guest_token_v1";
       const LEGACY_CUSTOMER_STORAGE_KEY = "gutgpt_customer_id_v1";
 
-      // Retire the old long-lived token location; sessionStorage survives refreshes
-      // but is cleared when the tab's browsing session ends. It remains JS-readable,
-      // so this is exposure reduction, not a substitute for XSS prevention.
+      // The server owns the guest JWT in a persistent HttpOnly cookie. This
+      // sessionStorage lookup exists only to migrate an older tab-scoped token once.
       try { window.localStorage.removeItem(GUEST_TOKEN_STORAGE_KEY); } catch {}
+      try { window.localStorage.removeItem(LEGACY_CUSTOMER_STORAGE_KEY); } catch {}
 
-      function getStoredGuestToken() {
+      function getLegacyGuestToken() {
         try { return window.sessionStorage.getItem(GUEST_TOKEN_STORAGE_KEY) || ""; }
         catch { return ""; }
       }
 
-      function storeGuestToken(token) {
-        if (typeof token !== "string" || !token) return false;
-        try {
-          window.sessionStorage.setItem(GUEST_TOKEN_STORAGE_KEY, token);
-          // The legacy customer ID is not an authentication credential.
-          window.localStorage.removeItem(LEGACY_CUSTOMER_STORAGE_KEY);
-          return window.sessionStorage.getItem(GUEST_TOKEN_STORAGE_KEY) === token;
-        } catch {
-          return false;
-        }
+      function clearLegacyGuestToken() {
+        try { window.sessionStorage.removeItem(GUEST_TOKEN_STORAGE_KEY); } catch {}
       }
 
       async function restoreRegisteredCustomer() {
-        const guestToken = getStoredGuestToken();
-        if (!guestToken || !sessionId) return false;
+        if (!sessionId) return false;
+        const guestToken = getLegacyGuestToken();
         try {
           const data = await api("/api/customer/restore", {
             method: "POST",
@@ -356,7 +348,7 @@
             body: JSON.stringify({ session_id: sessionId, guest_token: guestToken })
           });
           if (!data || data.status !== "RESTORED") return false;
-          if (typeof data.guest_token === "string" && data.guest_token) storeGuestToken(data.guest_token);
+          clearLegacyGuestToken();
           customerRegistered = true;
           intake.hidden = true;
           messages.hidden = false;
@@ -367,7 +359,7 @@
         } catch (error) {
           // Never use a customer ID as a substitute for an authentication token.
           if (String(error.message || "").includes("GUEST_SESSION_INVALID") || String(error.message || "").includes("HTTP 401")) {
-            try { window.sessionStorage.removeItem(GUEST_TOKEN_STORAGE_KEY); } catch {}
+            clearLegacyGuestToken();
           } else {
             console.warn("Could not restore saved customer profile", error);
           }
@@ -470,7 +462,7 @@
       }
 
       async function api(path, options = {}) {
-        const response = await fetch(path, options);
+        const response = await fetch(path, { credentials: "include", ...options });
 
         let data = null;
 
@@ -630,12 +622,10 @@
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify(customer)
           });
-          if (!data || data.status !== "REGISTERED" || typeof data.guest_token !== "string" || !data.guest_token) {
-            throw new Error("Registration succeeded without a guest-session token. Please contact support.");
+          if (!data || data.status !== "REGISTERED") {
+            throw new Error("Registration could not be confirmed. Please try again.");
           }
-          if (!storeGuestToken(data.guest_token)) {
-            throw new Error("Your details were saved, but this browser could not save the secure session. Please enable site storage and refresh.");
-          }
+          clearLegacyGuestToken();
           customerRegistered = true;
           intake.hidden = true;
           messages.hidden = false;

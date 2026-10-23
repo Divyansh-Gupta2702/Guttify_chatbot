@@ -31,7 +31,8 @@ uvicorn app:app --reload --host 0.0.0.0 --port 8000
 
 Check:
 
-- `http://localhost:8000/` → `GutGPT chatbot backend is running.`
+- `http://localhost:8000/` → backend service metadata (JSON; no standalone chat UI)
+- `http://localhost:8000/api/health` → health check
 - `http://localhost:8000/gutgpt-widget.js` → widget JavaScript
 
 For a separate local test page, load:
@@ -72,11 +73,21 @@ Do not use `allow_origins=["*"]` for the production storefront.
 
 ## Session behavior
 
-The widget stores a signed JWT guest credential in browser `sessionStorage`. The
-JWT expires after 30 days and is validated server-side for signature, issuer,
-audience, expiry, token type, and revocation. No API keys or LLM secrets are
-sent to the browser. The credential is a bearer secret, so protect the widget
-against XSS and do not log or share it.
+The API stores the signed JWT guest credential in a persistent, host-only
+`HttpOnly` cookie (`gutgpt_guest_token`) with a 30-day maximum age. The JWT is
+validated server-side for signature, issuer, audience, expiry, token type, and
+revocation. The widget sends credentials with API requests and does not persist
+newly issued guest tokens in JavaScript-readable storage. For allowlisted HTTPS
+cross-host storefront requests, the backend additionally marks the cookie
+`Partitioned` (CHIPS) while keeping it `HttpOnly`; this can help supported
+browsers retain a storefront-partitioned credential when unpartitioned
+third-party cookies are blocked. First-party requests retain a normal host-only
+cookie. CHIPS is not supported uniformly by every browser/privacy setting, and
+it cannot recover an old first-party cookie when that browser refuses to send it
+in the embedded context. Test the actual Shopify storefront in supported
+browsers before considering restoration complete. No API keys or LLM secrets
+are sent to the browser. Protect the widget against XSS and do not log or share
+guest credentials.
 
 The backend keeps the existing in-memory conversation state. Therefore use a
 single Uvicorn worker unless session state is moved to a shared store such as
@@ -92,7 +103,7 @@ Never put `GROQ_API_KEY` or any other provider credential into
 The important runtime files are:
 
 - `app.py` — FastAPI API and widget hosting
-- `gutgpt-widget.js` — standalone Shopify widget
+- `gutgpt-widget.js` — customer-facing Shopify widget (the only customer UI)
 - `guttify_agent.py` — conversation/session/diagnosis flow
 - `clinical_rule_engine.py` — clinical rules
 - `recommendation_engine.py` — product matching
@@ -191,9 +202,9 @@ Required Render environment variables:
 - `JWT_AUDIENCE`: normally `gutgpt-guest-session`.
 - Keep `ALLOWED_ORIGINS` set to the exact Shopify storefront origin(s), without a wildcard.
 
-`PyJWT` is installed through `requirements.txt`. Startup fails closed if `JWT_SECRET_KEY` is absent or shorter than 32 bytes. Changing the secret invalidates existing JWT sessions, so rotate it only with a planned re-registration/recovery path. The browser stores the credential in `sessionStorage`, which survives page refreshes in the same tab but is cleared when the tab/session ends. This reduces persistence across visits and limits exposure compared with long-lived `localStorage`, but it remains accessible to successful same-origin script injection. Protect the widget against XSS and consider a carefully configured HttpOnly cookie/CSRF design in a future hardening pass.
+`PyJWT` is installed through `requirements.txt`. Startup fails closed if `JWT_SECRET_KEY` is absent or is not a URL-safe secret of at least 43 characters. Changing the secret invalidates existing JWT sessions, so rotate it only with a planned re-registration/recovery path. HTTPS uses `Secure; SameSite=None` for the Shopify-embedded widget, and allowlisted cross-host storefront responses additionally use `Partitioned` where applicable. Local HTTP development uses `SameSite=Lax`. The widget sends credentials with API requests and uses tab-scoped storage only to migrate older tokens. Browser third-party-cookie restrictions may still affect cross-site embeds; verify registration and returning-customer restoration on the real storefront and each supported browser.
 
-For a smooth upgrade, the restore endpoint supports an unexpired legacy opaque token already stored by the prior release exactly once, then returns and persists a new JWT. The widget replaces the legacy token with the JWT. Legacy tokens that have expired or whose JSON records were lost cannot be upgraded and require registration again. The JWT expires 30 days after issue; this is not a sliding expiration.
+For a smooth upgrade, the restore endpoint accepts an unexpired legacy token from a prior release once, then upgrades it to a signed JWT in the HttpOnly cookie. The widget clears the old tab-scoped token after successful restoration. Legacy tokens that have expired or whose customer records were lost cannot be upgraded and require registration again. The JWT expires 30 days after issue; this is not a sliding expiration.
 
 ## Assessment summary fields (temporary JSON mode)
 

@@ -72,11 +72,31 @@ def test_jwt_key_requires_url_safe_43_character_minimum(monkeypatch):
     assert error.value.status_code == 503
 
 
-def test_frontends_do_not_read_or_write_guest_tokens_in_local_storage():
+def test_widget_does_not_persist_guest_tokens_and_standalone_frontend_is_removed():
     root = Path(gutgpt_app.BASE_DIR)
-    for filename in ("index.html", "gutgpt-widget.js"):
-        source = (root / filename).read_text(encoding="utf-8")
-        assert "localStorage.getItem(GUEST_TOKEN_STORAGE_KEY)" not in source
-        assert "localStorage.setItem(GUEST_TOKEN_STORAGE_KEY" not in source
-        assert "sessionStorage.getItem(GUEST_TOKEN_STORAGE_KEY)" in source
-        assert "sessionStorage.setItem(GUEST_TOKEN_STORAGE_KEY" in source
+    for filename in ("index.html", "chat.html"):
+        assert not (root / filename).exists(), f"standalone frontend artifact remains: {filename}"
+
+    source = (root / "gutgpt-widget.js").read_text(encoding="utf-8")
+    assert "localStorage.getItem(GUEST_TOKEN_STORAGE_KEY)" not in source
+    assert "localStorage.setItem(GUEST_TOKEN_STORAGE_KEY" not in source
+    assert "sessionStorage.getItem(GUEST_TOKEN_STORAGE_KEY)" in source  # one-time legacy migration only
+    assert "sessionStorage.setItem(GUEST_TOKEN_STORAGE_KEY" not in source
+    assert 'credentials: "include"' in source
+
+
+def test_guest_cookie_is_persistent_httponly_and_host_only():
+    from fastapi import Response
+
+    response = Response()
+    gutgpt_app._set_guest_cookie(
+        response, _request(), "test.signed.jwt", gutgpt_app.GUEST_TOKEN_TTL_SECONDS
+    )
+    header = response.headers.get("set-cookie", "")
+    assert "gutgpt_guest_token=test.signed.jwt" in header
+    assert "Max-Age=2592000" in header
+    assert "HttpOnly" in header
+    assert "Path=/" in header
+    assert "SameSite=lax" in header
+    assert "Domain=" not in header
+    assert "Secure" not in header  # local HTTP development; HTTPS uses Secure + SameSite=None
