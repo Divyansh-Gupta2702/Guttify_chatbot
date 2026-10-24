@@ -522,6 +522,7 @@
     // profile using its opaque credential. Never restore prior answers.
     sessionId = null;
     status.textContent = "Connecting…";
+    let resumeFailed = false;
     try {
       const data = await fetchJson("/api/session", { method: "POST" });
       if (typeof data.session_id !== "string" || !data.session_id) throw new Error("INVALID_SESSION");
@@ -546,7 +547,27 @@
             intake.hidden = true;
             messages.hidden = false;
             form.hidden = false;
-            addMessage("Welcome back, " + String(restored.customer?.name || "there").replace(/[<>]/g, "") + "! Your profile is restored. You can start a new assessment; previous answers have not been carried over.", "bot");
+            let resume = { status: "NO_ACTIVE_ASSESSMENT", messages: [] };
+            try {
+              resume = await fetchJson("/api/customer/resume", {
+                method: "POST", headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ session_id: sessionId }),
+              });
+            } catch (resumeError) {
+              console.error("GutGPT assessment resume failed", resumeError);
+              resumeFailed = true;
+            }
+            const safeName = String(restored.customer?.name || "there").replace(/[<>]/g, "");
+            if (resume.status === "RESUMED" && Array.isArray(resume.messages) && resume.messages.length) {
+              addMessage("Welcome back, " + safeName + "! I've restored your unfinished assessment so you can continue.", "bot");
+              for (const item of resume.messages) {
+                if (item && (item.role === "user" || item.role === "assistant") && typeof item.content === "string") {
+                  addMessage(item.content, item.role === "assistant" ? "bot" : "user");
+                }
+              }
+            } else {
+              addMessage("Welcome back, " + safeName + "! Your profile is restored. You can start a new assessment.", "bot");
+            }
           }
         } catch (restoreError) {
           // Only invalidate a credential that the server explicitly rejects.
@@ -557,7 +578,8 @@
           }
         }
       }
-      status.textContent = "";
+      if (typeof resumeFailed === "undefined" || !resumeFailed) status.textContent = "";
+      else status.textContent = "Your profile loaded, but saved assessment progress could not be recovered. Please retry before starting over.";
     } catch (error) {
       console.error("GutGPT session initialization failed", error);
       status.textContent = "";

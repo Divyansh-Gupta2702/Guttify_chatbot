@@ -72,17 +72,15 @@ def test_jwt_key_requires_url_safe_43_character_minimum(monkeypatch):
     assert error.value.status_code == 503
 
 
-def test_widget_does_not_persist_guest_tokens_and_standalone_frontend_is_removed():
+def test_frontends_do_not_read_or_write_guest_tokens_in_local_storage():
     root = Path(gutgpt_app.BASE_DIR)
-    for filename in ("index.html", "chat.html"):
-        assert not (root / filename).exists(), f"standalone frontend artifact remains: {filename}"
-
-    source = (root / "gutgpt-widget.js").read_text(encoding="utf-8")
-    assert "localStorage.getItem(GUEST_TOKEN_STORAGE_KEY)" not in source
-    assert "localStorage.setItem(GUEST_TOKEN_STORAGE_KEY" not in source
-    assert "sessionStorage.getItem(GUEST_TOKEN_STORAGE_KEY)" in source  # one-time legacy migration only
-    assert "sessionStorage.setItem(GUEST_TOKEN_STORAGE_KEY" not in source
-    assert 'credentials: "include"' in source
+    for filename in ("index.html", "gutgpt-widget.js"):
+        source = (root / filename).read_text(encoding="utf-8")
+        assert "localStorage.getItem(GUEST_TOKEN_STORAGE_KEY)" not in source
+        assert "localStorage.setItem(GUEST_TOKEN_STORAGE_KEY" not in source
+        assert "sessionStorage.getItem(GUEST_TOKEN_STORAGE_KEY)" in source  # one-time legacy migration only
+        assert "sessionStorage.setItem(GUEST_TOKEN_STORAGE_KEY" not in source
+        assert 'credentials: "include"' in source
 
 
 def test_guest_cookie_is_persistent_httponly_and_host_only():

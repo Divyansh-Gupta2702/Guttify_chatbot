@@ -31,8 +31,7 @@ uvicorn app:app --reload --host 0.0.0.0 --port 8000
 
 Check:
 
-- `http://localhost:8000/` → backend service metadata (JSON; no standalone chat UI)
-- `http://localhost:8000/api/health` → health check
+- `http://localhost:8000/` → `GutGPT chatbot backend is running.`
 - `http://localhost:8000/gutgpt-widget.js` → widget JavaScript
 
 For a separate local test page, load:
@@ -103,7 +102,7 @@ Never put `GROQ_API_KEY` or any other provider credential into
 The important runtime files are:
 
 - `app.py` — FastAPI API and widget hosting
-- `gutgpt-widget.js` — customer-facing Shopify widget (the only customer UI)
+- `gutgpt-widget.js` — standalone Shopify widget
 - `guttify_agent.py` — conversation/session/diagnosis flow
 - `clinical_rule_engine.py` — clinical rules
 - `recommendation_engine.py` — product matching
@@ -204,7 +203,7 @@ Required Render environment variables:
 
 `PyJWT` is installed through `requirements.txt`. Startup fails closed if `JWT_SECRET_KEY` is absent or is not a URL-safe secret of at least 43 characters. Changing the secret invalidates existing JWT sessions, so rotate it only with a planned re-registration/recovery path. HTTPS uses `Secure; SameSite=None` for the Shopify-embedded widget, and allowlisted cross-host storefront responses additionally use `Partitioned` where applicable. Local HTTP development uses `SameSite=Lax`. The widget sends credentials with API requests and uses tab-scoped storage only to migrate older tokens. Browser third-party-cookie restrictions may still affect cross-site embeds; verify registration and returning-customer restoration on the real storefront and each supported browser.
 
-For a smooth upgrade, the restore endpoint accepts an unexpired legacy token from a prior release once, then upgrades it to a signed JWT in the HttpOnly cookie. The widget clears the old tab-scoped token after successful restoration. Legacy tokens that have expired or whose customer records were lost cannot be upgraded and require registration again. The JWT expires 30 days after issue; this is not a sliding expiration.
+For a smooth upgrade, the restore endpoint accepts an unexpired legacy token from a prior release once, then upgrades it to a signed JWT in the HttpOnly cookie. The frontend clears the old tab-scoped token after successful restoration. Legacy tokens that have expired or whose customer records were lost cannot be upgraded and require registration again. The JWT expires 30 days after issue; this is not a sliding expiration.
 
 ## Assessment summary fields (temporary JSON mode)
 

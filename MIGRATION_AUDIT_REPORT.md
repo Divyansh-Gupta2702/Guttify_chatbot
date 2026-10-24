@@ -53,29 +53,19 @@ This is a compatibility improvement, not a universal fix. CHIPS availability var
 - `python -m pip install -r requirements.txt`: could not install dependencies because package index DNS/network access is unavailable.
 - No full test pass count can honestly be reported. Tests requiring imports/runtime dependencies remain unverified.
 
-## Widget-only migration change
+## Why frontend removal is blocked
 
-The user reports that the full regression suite and manual Shopify widget checks now pass. Based on that confirmation, this working copy removes the standalone customer-facing frontend while preserving the backend API, Shopify widget, admin dashboard/API, deterministic diagnosis and recommendation logic, safety checks, customer storage code, and test suite. The user-reported checks have not been independently rerun in this environment.
+The full regression suite could not run, actual Shopify browser testing is unavailable in this environment, and language/multilingual feature parity is unresolved. Therefore `index.html`, `chat.html`, the `/` route, and the chart route have intentionally not been removed. Removing them now would violate the migration's own definition of done.
 
-Changes in the widget-only package:
+## Next steps
 
-- Removed `index.html`, `chat.html`, and the unused standalone Bristol chart image asset.
-- Removed the root route that served `index.html` and removed the frontend-only `/bristol-stool-chart.png` route.
-- The root route now returns JSON service metadata; `/api/health` remains the health endpoint and `/gutgpt-widget.js` continues serving the Shopify widget.
-- Updated the security regression test to assert that standalone frontend files are absent and the widget does not persist guest JWTs in JavaScript-readable storage.
-- Updated README deployment guidance.
-
-The original uploaded archive and the previous debug-fixes archive remain unchanged. No production endpoint was contacted, no deployment was performed, and no customer data was modified.
-
-## Remaining release checks
-
-1. Run the full regression suite against this widget-only package in the project's normal environment and confirm all tests pass after the route and artifact removals.
-2. Re-run a Docker build and container smoke test, confirming `/`, `/api/health`, and `/gutgpt-widget.js` respond correctly.
-3. Confirm Shopify registration, refresh, returning-customer restoration, and multi-customer isolation on the production storefront after deploying this package.
-4. Confirm the production environment variables and persistent database configuration before deployment. Keep a rollback copy of the current deployed image/package.
-
-Admin dashboard `/admin` and `/api/admin/*` are intentionally retained; this change removes only the standalone customer-facing frontend.
+1. Run the full test suite in the project's normal environment with `requirements.txt` installed; record baseline and post-change results.
+2. Add/execute an HTTP-level test through FastAPI `TestClient` for cookie attributes and restore behavior (requires app dependencies).
+3. Test Shopify registration then reload/return in Chrome with third-party cookies blocked, Safari, and any officially supported browsers. Inspect cookie storage and request headers without copying token values.
+4. Confirm exact production `ALLOWED_ORIGINS`, `GUTGPT_API_URL`/widget script URL, HTTPS and reverse-proxy headers.
+5. Verify language and other `chat.html` features are either migrated or explicitly retired.
+6. Only after parity and tests pass, remove standalone routes/assets and adjust deployment files; keep admin endpoints and data untouched.
 
 ## Rollback
 
-The original uploaded ZIP and the previous debug-fixes ZIP remain unchanged. Restore the previous deployed package/image if the widget-only release fails verification. No production deployment or customer-data mutation has been performed by this change.
+The original uploaded ZIP is untouched. To roll back this incremental change in the working copy, restore the original `app.py`, `README.md`, and `tests/test_phase2b_security_basics.py` from the uploaded archive. No production deployment or data mutation occurred.

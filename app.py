@@ -43,7 +43,9 @@ if not logger.handlers:
         format="%(asctime)s | %(levelname)s | %(message)s",
     )
 
-from guttify_agent import ConversationManager
+from guttify_agent import ConversationManager, SessionState
+from intent_parser import SymptomState
+from dataclasses import asdict
 from symptom_questionnaire import next_question
 from symptom_summary import build_symptom_summary
 from guttify_chatbot import _deterministic_product_reply, _deterministic_screening_reply
@@ -55,6 +57,7 @@ QUESTION_FLOW_SCHEMA_VERSION = "v18.1"
 from support_footer import append_human_support_footer
 MAX_MESSAGE_LENGTH = max(256, min(10000, int(os.getenv("MAX_MESSAGE_LENGTH", "4000"))))
 MAX_HISTORY_MESSAGES = 100
+FRONTEND_FILE = BASE_DIR / "index.html"
 CUSTOMER_DATA_FILE = Path(os.getenv("CUSTOMER_DATA_FILE", str(BASE_DIR / "customer_data.json")))
 DATABASE_URL = os.getenv("DATABASE_URL", "").strip()
 GUEST_TOKEN_TTL_SECONDS = 30 * 24 * 60 * 60
@@ -603,6 +606,69 @@ def _write_customer_records(records: list[dict]) -> None:
         conn.close()
 
 
+def _persist_assessment_checkpoint(session_id: str, completed: bool = False) -> None:
+    """Durably checkpoint an in-progress session after each chat turn.
+
+    Uses the same configured customer store as registration (PostgreSQL or the
+    explicitly configured JSON development store). No diagnosis logic is run here.
+    """
+    customer_id = SESSION_CUSTOMER_IDS.get(session_id)
+    if not customer_id:
+        return
+    with conversation_manager._lock:
+        state = conversation_manager.sessions.get(session_id)
+        if state is None:
+            return
+        checkpoint = {
+            "state": asdict(state),
+            "history": list(HISTORY.get(session_id, [])),
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+            "active": not bool(completed or state.diagnosis_complete or state.ended),
+        }
+    with CUSTOMER_LOCK:
+        records = _read_customer_records()
+        record = next((r for r in records if r.get("customer_id") == customer_id), None)
+        if record is None:
+            logger.error("Checkpoint skipped: customer record missing session=%s", session_id[:8])
+            return
+        record["active_checkpoint"] = checkpoint if checkpoint["active"] else None
+        record["updated_at"] = datetime.now(INDIA_TZ).isoformat()
+        _write_customer_records(records)
+
+
+def _restore_assessment_checkpoint(customer_id: str, new_session_id: str) -> dict | None:
+    """Restore the most recent unfinished assessment for this authenticated customer."""
+    with CUSTOMER_LOCK:
+        records = _read_customer_records()
+        record = next((r for r in records if r.get("customer_id") == customer_id), None)
+        checkpoint = (record or {}).get("active_checkpoint")
+        if not isinstance(checkpoint, dict) or not checkpoint.get("active"):
+            return None
+        payload = checkpoint.get("state")
+        if not isinstance(payload, dict) or not isinstance(payload.get("symptom_state"), dict):
+            logger.warning("Ignoring malformed assessment checkpoint customer=%s", customer_id[:8])
+            return None
+        try:
+            payload = dict(payload)
+            payload["symptom_state"] = SymptomState(**payload["symptom_state"])
+            restored_state = SessionState(**payload)
+            restored_history = checkpoint.get("history", [])
+            if not isinstance(restored_history, list):
+                restored_history = []
+            restored_history = [m for m in restored_history if isinstance(m, dict) and m.get("role") in ("user", "assistant") and isinstance(m.get("content"), str)][-MAX_HISTORY_MESSAGES:]
+        except (TypeError, ValueError) as exc:
+            logger.warning("Ignoring incompatible assessment checkpoint: %s", exc)
+            return None
+        with conversation_manager._lock:
+            conversation_manager.sessions[new_session_id] = restored_state
+            conversation_manager.last_access[new_session_id] = time.monotonic()
+            conversation_manager._session_locks.setdefault(new_session_id, RLock())
+        with _SESSION_LOCK:
+            HISTORY[new_session_id] = restored_history
+            HISTORY_LAST_ACCESS[new_session_id] = time.monotonic()
+        return {"status": "RESUMED", "messages": restored_history, "updated_at": checkpoint.get("updated_at")}
+
+
 def _persist_completed_assessment(session_id: str, result: dict) -> None:
     """Store only the likely assessment value on the matching customer row."""
     with conversation_manager._lock:
@@ -778,14 +844,20 @@ def _enforce_rate_limit(request: Request, *, scope: str, identity: str,
 
 
 @app.get("/")
-def service_info():
-    """Expose backend service information; the customer UI is the Shopify widget."""
-    return {
-        "service": "GutGPT API",
-        "status": "running",
-        "health": "/api/health",
-        "shopify_widget": "/gutgpt-widget.js",
-    }
+def frontend():
+    """Serve the basic browser chat frontend at the backend root."""
+    if not FRONTEND_FILE.exists():
+        raise HTTPException(status_code=500, detail="GutGPT frontend is not installed.")
+    return FileResponse(FRONTEND_FILE, media_type="text/html")
+
+
+@app.get("/bristol-stool-chart.png")
+def bristol_stool_chart():
+    """Serve the Bristol chart used by the browser-based frontend."""
+    chart_file = BASE_DIR / "Bristol Stool Chart Infographic.png"
+    if not chart_file.exists():
+        raise HTTPException(status_code=404, detail="Bristol stool chart image is not installed.")
+    return FileResponse(chart_file, media_type="image/png", headers={"Cache-Control": "public, max-age=3600"})
 
 
 @app.get("/api/health", response_model=str)
@@ -1130,6 +1202,22 @@ def restore_customer(req: CustomerRestoreRequest, request: Request = None, respo
         return result
 
 
+@app.post("/api/customer/resume")
+def resume_customer_assessment(req: CustomerRestoreRequest, request: Request = None):
+    """Resume an unfinished assessment only after the customer session is authenticated."""
+    if request is not None:
+        _enforce_rate_limit(request, scope="customer-resume-ip", identity=_request_client_key(request), limit=30, window_seconds=600)
+    with _SESSION_LOCK:
+        if req.session_id not in HISTORY or req.session_id not in conversation_manager.sessions:
+            raise HTTPException(status_code=410, detail="SESSION_EXPIRED")
+    # Reuse the authenticated customer binding created by /api/customer/restore.
+    customer_id = SESSION_CUSTOMER_IDS.get(req.session_id)
+    if not customer_id or req.session_id not in REGISTERED_CUSTOMER_SESSIONS:
+        raise HTTPException(status_code=403, detail="CUSTOMER_REGISTRATION_REQUIRED")
+    resumed = _restore_assessment_checkpoint(customer_id, req.session_id)
+    return resumed or {"status": "NO_ACTIVE_ASSESSMENT", "messages": []}
+
+
 @app.post("/api/chat", response_model=ChatResponse)
 def chat(req: ChatRequest, request: Request = None):
     """Process one user message through the existing GutGPT logic.
@@ -1168,6 +1256,15 @@ def chat(req: ChatRequest, request: Request = None):
     with _SESSION_LOCK:
         history = HISTORY[req.session_id]
         HISTORY_LAST_ACCESS[req.session_id] = time.monotonic()
+    try:
+        completed_turn = status in ("DIAGNOSIS", "RECOMMENDATION_FOUND", "AMBIGUOUS", "DIAGNOSIS_COMPLETE", "RECOMMENDATION_COMPLETE", "SESSION_ENDED") or (
+            status == "SAFETY_REVIEW" and (result.get("screening") or {}).get("action") == "urgent_medical_evaluation"
+        )
+        _persist_assessment_checkpoint(req.session_id, completed=completed_turn)
+    except Exception:
+        # Do not silently claim a successful durable save. The reply remains
+        # available, but logs make the checkpoint failure observable.
+        logger.exception("Assessment checkpoint persistence failed session=%s", req.session_id[:8])
     history_ms = (time.perf_counter() - history_start) * 1000
     logger.info("[PERF][%s] Session/history lookup: %.2f ms", request_id, history_ms)
 
@@ -1248,6 +1345,15 @@ def chat(req: ChatRequest, request: Request = None):
         if len(history) > MAX_HISTORY_MESSAGES:
             del history[:-MAX_HISTORY_MESSAGES]
         HISTORY_LAST_ACCESS[req.session_id] = time.monotonic()
+    try:
+        completed_turn = status in ("DIAGNOSIS", "RECOMMENDATION_FOUND", "AMBIGUOUS", "DIAGNOSIS_COMPLETE", "RECOMMENDATION_COMPLETE", "SESSION_ENDED") or (
+            status == "SAFETY_REVIEW" and (result.get("screening") or {}).get("action") == "urgent_medical_evaluation"
+        )
+        _persist_assessment_checkpoint(req.session_id, completed=completed_turn)
+    except Exception:
+        # Do not silently claim a successful durable save. The reply remains
+        # available, but logs make the checkpoint failure observable.
+        logger.exception("Assessment checkpoint persistence failed session=%s", req.session_id[:8])
     history_ms = (time.perf_counter() - history_start) * 1000
     logger.info("[PERF][%s] History append: %.2f ms", request_id, history_ms)
 
