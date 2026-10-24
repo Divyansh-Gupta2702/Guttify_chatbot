@@ -57,7 +57,6 @@ QUESTION_FLOW_SCHEMA_VERSION = "v18.1"
 from support_footer import append_human_support_footer
 MAX_MESSAGE_LENGTH = max(256, min(10000, int(os.getenv("MAX_MESSAGE_LENGTH", "4000"))))
 MAX_HISTORY_MESSAGES = 100
-FRONTEND_FILE = BASE_DIR / "index.html"
 CUSTOMER_DATA_FILE = Path(os.getenv("CUSTOMER_DATA_FILE", str(BASE_DIR / "customer_data.json")))
 DATABASE_URL = os.getenv("DATABASE_URL", "").strip()
 GUEST_TOKEN_TTL_SECONDS = 30 * 24 * 60 * 60
@@ -844,20 +843,14 @@ def _enforce_rate_limit(request: Request, *, scope: str, identity: str,
 
 
 @app.get("/")
-def frontend():
-    """Serve the basic browser chat frontend at the backend root."""
-    if not FRONTEND_FILE.exists():
-        raise HTTPException(status_code=500, detail="GutGPT frontend is not installed.")
-    return FileResponse(FRONTEND_FILE, media_type="text/html")
-
-
-@app.get("/bristol-stool-chart.png")
-def bristol_stool_chart():
-    """Serve the Bristol chart used by the browser-based frontend."""
-    chart_file = BASE_DIR / "Bristol Stool Chart Infographic.png"
-    if not chart_file.exists():
-        raise HTTPException(status_code=404, detail="Bristol stool chart image is not installed.")
-    return FileResponse(chart_file, media_type="image/png", headers={"Cache-Control": "public, max-age=3600"})
+def api_root():
+    """Expose backend status only; the customer-facing UI is the Shopify widget."""
+    return {
+        "service": "GutGPT API",
+        "status": "ok",
+        "widget_script": "/gutgpt-widget.js",
+        "health": "/api/health",
+    }
 
 
 @app.get("/api/health", response_model=str)
@@ -1256,15 +1249,9 @@ def chat(req: ChatRequest, request: Request = None):
     with _SESSION_LOCK:
         history = HISTORY[req.session_id]
         HISTORY_LAST_ACCESS[req.session_id] = time.monotonic()
-    try:
-        completed_turn = status in ("DIAGNOSIS", "RECOMMENDATION_FOUND", "AMBIGUOUS", "DIAGNOSIS_COMPLETE", "RECOMMENDATION_COMPLETE", "SESSION_ENDED") or (
-            status == "SAFETY_REVIEW" and (result.get("screening") or {}).get("action") == "urgent_medical_evaluation"
-        )
-        _persist_assessment_checkpoint(req.session_id, completed=completed_turn)
-    except Exception:
-        # Do not silently claim a successful durable save. The reply remains
-        # available, but logs make the checkpoint failure observable.
-        logger.exception("Assessment checkpoint persistence failed session=%s", req.session_id[:8])
+    # Measure the session/history lookup separately. Checkpoint persistence
+    # happens after the rule engine has produced this turn's result and after
+    # the updated conversation history has been appended below.
     history_ms = (time.perf_counter() - history_start) * 1000
     logger.info("[PERF][%s] Session/history lookup: %.2f ms", request_id, history_ms)
 
