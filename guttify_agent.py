@@ -55,7 +55,7 @@ PRODUCT_ELIGIBILITY = {
     "Food-triggered gas/bloating pattern": {"Digest Boost", "Acid Ease", "Guttify Poopie"},
     "Constipation-associated bloating pattern": {"Digest Boost", "Guttify Poopie"},
     "Functional gas/bloating pattern": {"Digest Boost", "Acid Ease", "Guttify Poopie"},
-    "Possible hemorrhoid pattern": {"Piles Pure", "Piloease Anal Care Spray"},
+    "Possible hemorrhoid pattern": {"Piles Pure", "Piloease Anal Care Spray", "Guttify Poopie"},
     "Possible anal fissure pattern": {"Piloease Anal Care Spray"},
 }
 

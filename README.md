@@ -1,12 +1,23 @@
 # GutGPT Backend + Embeddable Shopify Widget
 
-GutGPT is now a backend-only FastAPI application plus one embeddable JavaScript
-widget. The existing diagnosis, recommendation, safety-checking, product data,
-LLM, and conversation logic remain in the Python modules.
+GutGPT is a backend-only FastAPI application plus one embeddable JavaScript
+widget. There is no standalone customer-facing HTML frontend or frontend dev
+server in this project. The existing diagnosis, recommendation, safety-checking,
+product data, LLM, and conversation logic remain in the Python modules.
 
 ## Architecture
 
 Shopify website → `gutgpt-widget.js` → AWS FastAPI → GutGPT logic → LLM/product data
+
+
+## Widget-only local architecture
+
+This repository does not start a service on port `3000`. The backend runs on
+port `8000` by default and serves the widget script at
+`http://localhost:8000/gutgpt-widget.js`. If something is still listening on
+port `3000`, it is a separately started process or an old container outside
+this Compose configuration; stop that process/container separately. The backend
+root route returns JSON status only and never serves a customer-facing page.
 
 ## Shopify installation
 
@@ -31,7 +42,7 @@ uvicorn app:app --reload --host 0.0.0.0 --port 8000
 
 Check:
 
-- `http://localhost:8000/` → `GutGPT chatbot backend is running.`
+- `http://localhost:8000/` → backend status JSON (not a chat UI).
 - `http://localhost:8000/gutgpt-widget.js` → widget JavaScript
 
 For a separate local test page, load:

@@ -1,3 +1,5 @@
+> **Status note (2026-10-24):** This is a historical audit report. Its statement that standalone frontend removal is blocked has been superseded by `WIDGET_ONLY_MIGRATION_NOTES.md`. In the current working copy, `index.html`, `chat.html`, the root HTML-serving route, and the standalone chart route have been removed. Full Python regression tests and real Shopify browser verification remain outstanding.
+
 # GutGPT v18.3 — Frontend-to-Widget Migration Audit (Incremental)
 
 ## Scope and safety
