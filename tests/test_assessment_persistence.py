@@ -7,6 +7,9 @@ import pytest
 def configured_test_jwt_secret(monkeypatch):
     # This test verifies JSON persistence, even when the developer has PostgreSQL configured.
     monkeypatch.setattr(gutgpt_app, "DATABASE_URL", "")
+    store = []
+    monkeypatch.setattr(gutgpt_app, "_read_customer_records", lambda: store)
+    monkeypatch.setattr(gutgpt_app, "_write_customer_records", lambda records: store.__setitem__(slice(None), records))
     monkeypatch.setenv(
         "JWT_SECRET_KEY",
         "test-only-secret-that-is-at-least-32-bytes-long",
@@ -15,8 +18,6 @@ def configured_test_jwt_secret(monkeypatch):
     monkeypatch.setenv("JWT_AUDIENCE", "gutgpt-guest-session")
 
 def test_completed_assessment_is_saved_on_customer_record(tmp_path, monkeypatch):
-    data_file = tmp_path / "customer_data.json"
-    monkeypatch.setattr(gutgpt_app, "CUSTOMER_DATA_FILE", data_file)
     sid = gutgpt_app.new_session()["session_id"]
     try:
         registered = gutgpt_app.register_customer(gutgpt_app.CustomerRegistrationRequest(
@@ -54,7 +55,7 @@ def test_completed_assessment_is_saved_on_customer_record(tmp_path, monkeypatch)
         }
         gutgpt_app._persist_completed_assessment(sid, result)
 
-        rows = json.loads(data_file.read_text(encoding="utf-8"))
+        rows = gutgpt_app._read_customer_records()
         assert len(rows) == 1
         record = rows[0]
         assert record["customer_id"] == registered["customer_id"]

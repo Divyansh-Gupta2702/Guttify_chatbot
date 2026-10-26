@@ -10,7 +10,6 @@ Run locally:
 """
 from pathlib import Path
 from contextlib import asynccontextmanager
-import tempfile
 import os
 import uuid
 import time
@@ -57,7 +56,6 @@ QUESTION_FLOW_SCHEMA_VERSION = "v18.1"
 from support_footer import append_human_support_footer
 MAX_MESSAGE_LENGTH = max(256, min(10000, int(os.getenv("MAX_MESSAGE_LENGTH", "4000"))))
 MAX_HISTORY_MESSAGES = 100
-CUSTOMER_DATA_FILE = Path(os.getenv("CUSTOMER_DATA_FILE", str(BASE_DIR / "customer_data.json")))
 DATABASE_URL = os.getenv("DATABASE_URL", "").strip()
 GUEST_TOKEN_TTL_SECONDS = 30 * 24 * 60 * 60
 GUEST_COOKIE_NAME = "gutgpt_guest_token"
@@ -204,6 +202,8 @@ def validate_production_configuration():
     missing = []
     if not os.getenv("GROQ_API_KEY"):
         missing.append("GROQ_API_KEY")
+    if not DATABASE_URL:
+        missing.append("DATABASE_URL (PostgreSQL is required; JSON-file storage is disabled)")
     if not allowed_origins:
         missing.append("ALLOWED_ORIGINS")
     else:
@@ -245,10 +245,7 @@ async def lifespan(application: FastAPI):
     """Validate required configuration when the application starts."""
     validate_production_configuration()
     # Safe diagnostic: log the selected storage backend without exposing credentials.
-    logger.info(
-        "Customer storage backend: %s",
-        "PostgreSQL" if DATABASE_URL else "JSON fallback",
-    )
+    logger.info("Customer storage backend: PostgreSQL (required)")
     workers = os.getenv("WEB_CONCURRENCY", "1").strip()
     try:
         worker_count = int(workers)
@@ -259,8 +256,7 @@ async def lifespan(application: FastAPI):
             "GutGPT diagnostic sessions are currently in-memory and require one worker. "
             "Do not set WEB_CONCURRENCY above 1 until a shared session backend is implemented."
         )
-    if DATABASE_URL:
-        _init_postgres()
+    _init_postgres()
     yield
 
 
@@ -330,6 +326,8 @@ def _cleanup_sessions(now: float | None = None):
             HISTORY.pop(sid, None)
             HISTORY_LAST_ACCESS.pop(sid, None)
             conversation_manager.remove(sid)
+            SESSION_CUSTOMER_IDS.pop(sid, None)
+            SESSION_ASSESSMENT_IDS.pop(sid, None)
             with CUSTOMER_LOCK:
                 REGISTERED_CUSTOMER_SESSIONS.discard(sid)
 
@@ -356,69 +354,22 @@ HISTORY_LAST_ACCESS: dict[str, float] = {}
 _SESSION_LOCK = RLock()
 conversation_manager = ConversationManager()
 CUSTOMER_LOCK = RLock()
-# Local fallback is for development/JSON mode only. When DATABASE_URL is set,
-# rate-limit counters are stored in PostgreSQL so multiple workers share limits.
-_RATE_LIMIT_LOCK = RLock()
-_RATE_LIMIT_BUCKETS: dict[str, tuple[float, int]] = {}
-_RATE_LIMIT_LOCAL_MAX_KEYS = 20000
+# Rate-limit counters are stored in PostgreSQL and shared across application workers.
 _RATE_LIMIT_CLEANUP_LOCK = RLock()
 _RATE_LIMIT_CLEANUP_LAST: float | None = None
 _RATE_LIMIT_CLEANUP_INTERVAL_SECONDS = 600.0
 REGISTERED_CUSTOMER_SESSIONS: set[str] = set()
 # Maps each active diagnostic session to its persistent customer profile.
 SESSION_CUSTOMER_IDS: dict[str, str] = {}
-
-
-def _read_json_records(path: Path, label: str) -> list[dict]:
-    """Read a JSON-array store; a missing file means no records yet."""
-    if not path.exists():
-        return []
-    try:
-        with path.open("r", encoding="utf-8") as handle:
-            records = json.load(handle)
-        if not isinstance(records, list) or any(not isinstance(item, dict) for item in records):
-            raise ValueError(f"{path.name} must contain a JSON array of objects")
-        return records
-    except (json.JSONDecodeError, OSError, ValueError) as exc:
-        logger.exception("Could not read %s JSON", label)
-        raise HTTPException(status_code=500, detail=f"{label} records are temporarily unavailable.") from exc
-
-
-def _write_json_records(path: Path, records: list[dict]) -> None:
-    """Atomically replace a JSON-array store to avoid partially-written files."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    # A fixed ``.tmp`` name can collide when multiple worker processes write
-    # concurrently. Use a unique temporary file in the destination directory
-    # so os.replace remains atomic on the same filesystem.
-    temporary_name = None
-    try:
-        with tempfile.NamedTemporaryFile(
-            mode="w",
-            encoding="utf-8",
-            dir=str(path.parent),
-            prefix=f".{path.name}.",
-            suffix=".tmp",
-            delete=False,
-        ) as handle:
-            temporary_name = handle.name
-            json.dump(records, handle, ensure_ascii=False, indent=2, default=str)
-            handle.write("\n")
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.replace(temporary_name, path)
-        temporary_name = None
-    finally:
-        if temporary_name and os.path.exists(temporary_name):
-            try:
-                os.unlink(temporary_name)
-            except OSError:
-                logger.warning("Could not remove temporary JSON file %s", temporary_name)
+# Stable assessment identity survives browser refreshes and session-token rotation.
+SESSION_ASSESSMENT_IDS: dict[str, str] = {}
 
 
 def _postgres_connect():
-    """Open a PostgreSQL connection only when DATABASE_URL is configured."""
+    """Open a PostgreSQL connection. JSON/file fallback is intentionally unsupported."""
     if not DATABASE_URL:
-        return None
+        logger.critical("DATABASE_URL is required; refusing to use file-based customer storage")
+        raise HTTPException(status_code=503, detail="PostgreSQL storage is not configured.")
     try:
         import psycopg
         from psycopg.rows import dict_row
@@ -429,40 +380,114 @@ def _postgres_connect():
 
 
 def _init_postgres() -> None:
-    """Create the durable customer and assessment tables if needed."""
-    if not DATABASE_URL:
-        return
+    """Create/upgrade PostgreSQL tables and migrate legacy customer JSON safely."""
     conn = _postgres_connect()
-    if conn is None:
-        return
     try:
         with conn, conn.cursor() as cur:
+            # The customer profile table intentionally contains only profile fields.
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS customers (
                     customer_id TEXT PRIMARY KEY,
-                    registration_session_id TEXT UNIQUE,
                     name VARCHAR(150) NOT NULL,
                     age INTEGER NOT NULL CHECK (age BETWEEN 1 AND 120),
-                    contact VARCHAR(15) NOT NULL,
+                    contact VARCHAR(100) NOT NULL,
                     location VARCHAR(150) NOT NULL,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    likely_assessment TEXT
+                )
+            """)
+            # Session credentials, bindings, chat history and resumable checkpoint data
+            # live separately from customer profile data. JSONB is used only for the
+            # structured, evolving conversation state, never as a customer record.
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS customer_chat_state (
+                    customer_id TEXT PRIMARY KEY REFERENCES customers(customer_id) ON DELETE CASCADE,
+                    registration_session_id TEXT UNIQUE,
                     consent_to_store BOOLEAN NOT NULL DEFAULT FALSE,
                     guest_token_jti_hash TEXT,
                     guest_token_expires_at TIMESTAMPTZ,
-                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-                    updated_at TIMESTAMPTZ,
-                    likely_assessment TEXT,
-                    record_json JSONB NOT NULL DEFAULT '{}'::jsonb
+                    bound_session_ids TEXT[] NOT NULL DEFAULT ARRAY[]::TEXT[],
+                    last_session_id TEXT,
+                    active_assessment_id TEXT,
+                    active_checkpoint JSONB,
+                    chat_state JSONB NOT NULL DEFAULT '{}'::jsonb,
+                    chat_history JSONB NOT NULL DEFAULT '[]'::jsonb,
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
                 )
             """)
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS customer_assessments (
                     assessment_id TEXT PRIMARY KEY,
                     customer_id TEXT NOT NULL REFERENCES customers(customer_id) ON DELETE CASCADE,
-                    session_id VARCHAR(150) UNIQUE NOT NULL,
-                    assessment TEXT NOT NULL,
-                    completed_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                    session_id VARCHAR(150) UNIQUE,
+                    assessment TEXT,
+                    status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active','completed','abandoned')),
+                    started_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    completed_at TIMESTAMPTZ
                 )
             """)
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS assessment_messages (
+                    message_id BIGSERIAL PRIMARY KEY,
+                    assessment_id TEXT NOT NULL REFERENCES customer_assessments(assessment_id) ON DELETE CASCADE,
+                    sequence_no BIGINT NOT NULL,
+                    turn_id TEXT NOT NULL,
+                    role TEXT NOT NULL CHECK (role IN ('user','assistant')),
+                    content TEXT NOT NULL,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    UNIQUE (assessment_id, sequence_no),
+                    UNIQUE (assessment_id, turn_id, role)
+                )
+            """)
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS assessment_state (
+                    assessment_id TEXT PRIMARY KEY REFERENCES customer_assessments(assessment_id) ON DELETE CASCADE,
+                    checkpoint JSONB NOT NULL,
+                    checkpoint_version INTEGER NOT NULL DEFAULT 1,
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                )
+            """)
+            # Upgrade installations created by the short-lived schema that used
+            # assessment_sessions + assessment_session_bindings. customer_assessments
+            # is now the single canonical assessment/lifecycle table.
+            cur.execute("""
+                DO $$ BEGIN
+                    IF to_regclass(current_schema() || '.assessment_sessions') IS NOT NULL THEN
+                        INSERT INTO customer_assessments (assessment_id, customer_id, status, started_at, updated_at, completed_at)
+                        SELECT assessment_id, customer_id, status, started_at, updated_at, completed_at
+                        FROM assessment_sessions
+                        ON CONFLICT (assessment_id) DO UPDATE SET
+                            status=EXCLUDED.status,
+                            started_at=LEAST(customer_assessments.started_at, EXCLUDED.started_at),
+                            updated_at=GREATEST(customer_assessments.updated_at, EXCLUDED.updated_at),
+                            completed_at=COALESCE(customer_assessments.completed_at, EXCLUDED.completed_at);
+                    END IF;
+                END $$;
+            """)
+            cur.execute("""
+                DO $$ DECLARE c RECORD; BEGIN
+                    FOR c IN SELECT conname FROM pg_constraint
+                        WHERE conrelid='assessment_messages'::regclass AND contype='f'
+                    LOOP EXECUTE format('ALTER TABLE assessment_messages DROP CONSTRAINT %I', c.conname); END LOOP;
+                    FOR c IN SELECT conname FROM pg_constraint
+                        WHERE conrelid='assessment_state'::regclass AND contype='f'
+                    LOOP EXECUTE format('ALTER TABLE assessment_state DROP CONSTRAINT %I', c.conname); END LOOP;
+                    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname='assessment_messages_assessment_id_fkey') THEN
+                        ALTER TABLE assessment_messages ADD CONSTRAINT assessment_messages_assessment_id_fkey
+                            FOREIGN KEY (assessment_id) REFERENCES customer_assessments(assessment_id) ON DELETE CASCADE;
+                    END IF;
+                    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname='assessment_state_assessment_id_fkey') THEN
+                        ALTER TABLE assessment_state ADD CONSTRAINT assessment_state_assessment_id_fkey
+                            FOREIGN KEY (assessment_id) REFERENCES customer_assessments(assessment_id) ON DELETE CASCADE;
+                    END IF;
+                END $$;
+            """)
+            cur.execute("DROP TABLE IF EXISTS assessment_session_bindings")
+            cur.execute("DROP TABLE IF EXISTS assessment_sessions")
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_customer_assessments_customer_status ON customer_assessments(customer_id, status, updated_at DESC)")
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_assessment_messages_history ON assessment_messages(assessment_id, sequence_no)")
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS api_rate_limits (
                     rate_key TEXT PRIMARY KEY,
@@ -472,8 +497,7 @@ def _init_postgres() -> None:
                 )
             """)
             cur.execute("CREATE INDEX IF NOT EXISTS idx_api_rate_limits_updated_at ON api_rate_limits(updated_at)")
-            # Upgrade the simple tables created during the manual local setup.
-            # The app's stable customer IDs are UUID strings, not serial integers.
+            # Drop any legacy FK definitions and recreate the expected customer FK.
             cur.execute("""
                 DO $$ DECLARE constraint_row RECORD; BEGIN
                     FOR constraint_row IN
@@ -486,22 +510,113 @@ def _init_postgres() -> None:
             """)
             cur.execute("ALTER TABLE customers ALTER COLUMN customer_id DROP DEFAULT")
             cur.execute("ALTER TABLE customers ALTER COLUMN customer_id TYPE TEXT USING customer_id::text")
-            cur.execute("ALTER TABLE customers ADD COLUMN IF NOT EXISTS registration_session_id TEXT")
-            cur.execute("ALTER TABLE customers ADD COLUMN IF NOT EXISTS guest_token_jti_hash TEXT")
-            cur.execute("ALTER TABLE customers ADD COLUMN IF NOT EXISTS guest_token_expires_at TIMESTAMPTZ")
-            cur.execute("ALTER TABLE customers ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ")
+            cur.execute("ALTER TABLE customers ADD COLUMN IF NOT EXISTS name VARCHAR(150) NOT NULL DEFAULT 'Customer'")
+            cur.execute("ALTER TABLE customers ADD COLUMN IF NOT EXISTS age INTEGER NOT NULL DEFAULT 1")
+            cur.execute("ALTER TABLE customers ADD COLUMN IF NOT EXISTS contact VARCHAR(100) NOT NULL DEFAULT ''")
+            cur.execute("ALTER TABLE customers ADD COLUMN IF NOT EXISTS location VARCHAR(150) NOT NULL DEFAULT ''")
+            cur.execute("ALTER TABLE customers ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()")
+            cur.execute("ALTER TABLE customers ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()")
             cur.execute("ALTER TABLE customers ADD COLUMN IF NOT EXISTS likely_assessment TEXT")
-            cur.execute("ALTER TABLE customers ADD COLUMN IF NOT EXISTS record_json JSONB NOT NULL DEFAULT '{}'::jsonb")
-            cur.execute("ALTER TABLE customers ALTER COLUMN record_json DROP DEFAULT")
+            cur.execute("ALTER TABLE customers ALTER COLUMN contact TYPE VARCHAR(100) USING contact::text")
+            cur.execute("UPDATE customers SET created_at = COALESCE(created_at, NOW()), updated_at = COALESCE(updated_at, created_at, NOW())")
+            cur.execute("ALTER TABLE customers ALTER COLUMN created_at SET NOT NULL")
+            cur.execute("ALTER TABLE customers ALTER COLUMN updated_at SET NOT NULL")
             cur.execute("ALTER TABLE customer_assessments ALTER COLUMN assessment_id DROP DEFAULT")
             cur.execute("ALTER TABLE customer_assessments ALTER COLUMN assessment_id TYPE TEXT USING assessment_id::text")
             cur.execute("ALTER TABLE customer_assessments ALTER COLUMN customer_id TYPE TEXT USING customer_id::text")
-            cur.execute("ALTER TABLE customer_assessments ADD COLUMN IF NOT EXISTS completed_at TIMESTAMPTZ NOT NULL DEFAULT NOW()")
+            cur.execute("ALTER TABLE customer_assessments ADD COLUMN IF NOT EXISTS completed_at TIMESTAMPTZ")
+            cur.execute("ALTER TABLE customer_assessments ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'completed'")
+            cur.execute("ALTER TABLE customer_assessments ADD COLUMN IF NOT EXISTS started_at TIMESTAMPTZ NOT NULL DEFAULT NOW()")
+            cur.execute("ALTER TABLE customer_assessments ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()")
+            cur.execute("ALTER TABLE customer_assessments ALTER COLUMN session_id DROP NOT NULL")
+            cur.execute("ALTER TABLE customer_assessments ALTER COLUMN assessment DROP NOT NULL")
+            cur.execute("ALTER TABLE customer_assessments ALTER COLUMN completed_at DROP NOT NULL")
+            cur.execute("ALTER TABLE customer_assessments ALTER COLUMN completed_at DROP DEFAULT")
+            cur.execute("ALTER TABLE customer_chat_state ADD COLUMN IF NOT EXISTS active_assessment_id TEXT")
             cur.execute("ALTER TABLE customer_assessments ADD CONSTRAINT customer_assessments_customer_id_fkey FOREIGN KEY (customer_id) REFERENCES customers(customer_id) ON DELETE CASCADE")
-            cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_customers_registration_session_id ON customers(registration_session_id) WHERE registration_session_id IS NOT NULL")
-            cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_customer_assessments_session_id ON customer_assessments(session_id)")
+
+            # Migrate legacy JSONB record fields into dedicated session columns before
+            # dropping the old column. This is idempotent and preserves checkpoint,
+            # authentication, consent and session-binding data across upgrades.
+            cur.execute("""
+                DO $$ BEGIN
+                    IF EXISTS (
+                        SELECT 1 FROM information_schema.columns
+                        WHERE table_schema = current_schema() AND table_name = 'customers' AND column_name = 'record_json'
+                    ) THEN
+                        EXECUTE $migrate$
+                            INSERT INTO customer_chat_state (
+                                customer_id, registration_session_id, consent_to_store,
+                                guest_token_jti_hash, guest_token_expires_at,
+                                bound_session_ids, last_session_id, active_checkpoint,
+                                chat_state, chat_history, updated_at
+                            )
+                            SELECT c.customer_id,
+                                   COALESCE(c.registration_session_id, NULLIF(c.record_json->>'session_id','')),
+                                   COALESCE(c.consent_to_store, (c.record_json->>'consent_to_store')::boolean, FALSE),
+                                   COALESCE(c.guest_token_jti_hash, NULLIF(c.record_json->>'guest_token_jti_hash','')),
+                                   COALESCE(c.guest_token_expires_at, NULLIF(c.record_json->>'guest_token_expires_at','')::timestamptz),
+                                   COALESCE(ARRAY(SELECT jsonb_array_elements_text(
+                                       CASE WHEN jsonb_typeof(c.record_json->'bound_session_ids') = 'array'
+                                            THEN c.record_json->'bound_session_ids' ELSE '[]'::jsonb END)), ARRAY[]::text[]),
+                                   NULLIF(c.record_json->>'session_id',''),
+                                   c.record_json->'active_checkpoint',
+                                   COALESCE(c.record_json - ARRAY['customer_id','name','age','contact','location','city','created_at','updated_at','likely_assessment','assessments','session_id','consent_to_store','guest_token_jti_hash','guest_token_expires_at','bound_session_ids','active_checkpoint'], '{}'::jsonb),
+                                   COALESCE(c.record_json->'active_checkpoint'->'history', '[]'::jsonb),
+                                   COALESCE(c.updated_at, NOW())
+                            FROM customers c
+                            ON CONFLICT (customer_id) DO UPDATE SET
+                                registration_session_id = COALESCE(customer_chat_state.registration_session_id, EXCLUDED.registration_session_id),
+                                consent_to_store = customer_chat_state.consent_to_store OR EXCLUDED.consent_to_store,
+                                guest_token_jti_hash = COALESCE(customer_chat_state.guest_token_jti_hash, EXCLUDED.guest_token_jti_hash),
+                                guest_token_expires_at = COALESCE(customer_chat_state.guest_token_expires_at, EXCLUDED.guest_token_expires_at),
+                                bound_session_ids = ARRAY(SELECT DISTINCT unnest(customer_chat_state.bound_session_ids || EXCLUDED.bound_session_ids)),
+                                last_session_id = COALESCE(customer_chat_state.last_session_id, EXCLUDED.last_session_id),
+                                active_checkpoint = COALESCE(customer_chat_state.active_checkpoint, EXCLUDED.active_checkpoint),
+                                chat_state = customer_chat_state.chat_state || EXCLUDED.chat_state,
+                                updated_at = GREATEST(customer_chat_state.updated_at, EXCLUDED.updated_at)
+                        $migrate$;
+                        -- Move assessment rows embedded in the old JSON record to the normalized history table.
+                        EXECUTE $assessments$
+                            INSERT INTO customer_assessments (assessment_id, customer_id, session_id, assessment, completed_at)
+                            SELECT COALESCE(NULLIF(a.item->>'assessment_id',''), md5(c.customer_id || ':' || a.item->>'session_id')),
+                                   c.customer_id, a.item->>'session_id',
+                                   COALESCE(a.item->>'assessment', 'Insufficient information'),
+                                   COALESCE(NULLIF(a.item->>'completed_at','')::timestamptz, NOW())
+                            FROM customers c
+                            CROSS JOIN LATERAL jsonb_array_elements(
+                                CASE WHEN jsonb_typeof(c.record_json->'assessments') = 'array'
+                                     THEN c.record_json->'assessments' ELSE '[]'::jsonb END) AS a(item)
+                            WHERE NULLIF(a.item->>'session_id','') IS NOT NULL
+                            ON CONFLICT (session_id) DO NOTHING
+                        $assessments$;
+                        EXECUTE 'ALTER TABLE customers DROP COLUMN record_json';
+                    END IF;
+                END $$;
+            """)
+            # Move legacy auth/session columns off customers after their values are in
+            # customer_chat_state. DROP COLUMN is metadata-only and leaves all migrated data intact.
+            cur.execute("ALTER TABLE customers DROP COLUMN IF EXISTS registration_session_id")
+            cur.execute("ALTER TABLE customers DROP COLUMN IF EXISTS consent_to_store")
+            cur.execute("ALTER TABLE customers DROP COLUMN IF EXISTS guest_token_jti_hash")
+            cur.execute("ALTER TABLE customers DROP COLUMN IF EXISTS guest_token_expires_at")
+            # Enforce the requested minimal customer schema even if the DB came from
+            # an older manual setup with extra columns (e.g. city or legacy id fields).
+            cur.execute("""
+                DO $$ DECLARE col RECORD; BEGIN
+                    FOR col IN
+                        SELECT column_name FROM information_schema.columns
+                        WHERE table_schema = current_schema() AND table_name = 'customers'
+                          AND column_name NOT IN ('customer_id','name','age','contact','location','created_at','updated_at','likely_assessment')
+                    LOOP
+                        EXECUTE format('ALTER TABLE customers DROP COLUMN %I', col.column_name);
+                    END LOOP;
+                END $$;
+            """)
+            cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_customer_chat_registration_session ON customer_chat_state(registration_session_id) WHERE registration_session_id IS NOT NULL")
             cur.execute("CREATE INDEX IF NOT EXISTS idx_customer_assessments_customer_id ON customer_assessments(customer_id)")
             cur.execute("CREATE INDEX IF NOT EXISTS idx_customer_assessments_completed_at ON customer_assessments(completed_at)")
+            cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_customer_assessments_session_id ON customer_assessments(session_id)")
     finally:
         conn.close()
 
@@ -519,85 +634,135 @@ def _to_utc_datetime(value):
 
 
 def _read_customer_records() -> list[dict]:
-    """Read customer profiles and their assessment history from configured storage."""
-    if DATABASE_URL:
-        conn = _postgres_connect()
-        try:
-            with conn, conn.cursor() as cur:
-                cur.execute("SELECT record_json FROM customers ORDER BY created_at DESC")
-                records = [dict(row["record_json"] or {}) for row in cur.fetchall()]
-                for record in records:
-                    cid = str(record.get("customer_id", ""))
-                    cur.execute("SELECT assessment_id, session_id, assessment, completed_at FROM customer_assessments WHERE customer_id=%s ORDER BY completed_at", (cid,))
-                    history = cur.fetchall()
-                    if history:
-                        record["assessments"] = [{
-                            "assessment_id": row["assessment_id"], "session_id": row["session_id"],
-                            "assessment": row["assessment"],
-                            "completed_at": row["completed_at"].astimezone(INDIA_TZ).isoformat(),
-                        } for row in history]
-                        record["likely_assessment"] = history[-1]["assessment"]
-        except Exception as exc:
-            logger.exception("Could not read customer records from PostgreSQL")
-            raise HTTPException(status_code=503, detail="Customer records are temporarily unavailable.") from exc
-        finally:
-            conn.close()
-    else:
-        records = _read_json_records(CUSTOMER_DATA_FILE, "Customer")
+    """Assemble the legacy in-process record shape from normalized PostgreSQL tables."""
+    conn = _postgres_connect()
+    try:
+        with conn, conn.cursor() as cur:
+            cur.execute("""
+                SELECT c.customer_id, c.name, c.age, c.contact, c.location,
+                       c.created_at, c.updated_at, c.likely_assessment,
+                       s.registration_session_id, s.consent_to_store,
+                       s.guest_token_jti_hash, s.guest_token_expires_at,
+                       s.bound_session_ids, s.last_session_id, s.active_checkpoint,
+                       s.chat_state, s.chat_history
+                FROM customers c
+                LEFT JOIN customer_chat_state s ON s.customer_id = c.customer_id
+                ORDER BY c.created_at DESC
+            """)
+            records = []
+            for row in cur.fetchall():
+                record = {
+                    "customer_id": row["customer_id"], "name": row["name"], "age": row["age"],
+                    "contact": row["contact"], "location": row["location"],
+                    "created_at": row["created_at"].astimezone(INDIA_TZ).isoformat() if row["created_at"] else None,
+                    "updated_at": row["updated_at"].astimezone(INDIA_TZ).isoformat() if row["updated_at"] else None,
+                    "likely_assessment": row["likely_assessment"],
+                    "session_id": row["registration_session_id"] or row["last_session_id"],
+                    "consent_to_store": bool(row["consent_to_store"]),
+                    "guest_token_jti_hash": row["guest_token_jti_hash"],
+                    "guest_token_expires_at": row["guest_token_expires_at"].astimezone(timezone.utc).isoformat() if row["guest_token_expires_at"] else None,
+                    "bound_session_ids": list(row["bound_session_ids"] or []),
+                    "active_checkpoint": row["active_checkpoint"],
+                }
+                # Keep this dict only as a compatibility adapter for existing business logic;
+                # it is never stored as a monolithic customer JSON record.
+                for key, value in (row["chat_state"] or {}).items():
+                    record.setdefault(key, value)
+                record["chat_history"] = row["chat_history"] or []
+                cur.execute("SELECT assessment_id, session_id, assessment, completed_at, status, started_at, updated_at FROM customer_assessments WHERE customer_id=%s ORDER BY started_at", (record["customer_id"],))
+                history = cur.fetchall()
+                record["assessments"] = [{
+                    "assessment_id": item["assessment_id"], "session_id": item["session_id"],
+                    "assessment": item["assessment"],
+                    "completed_at": item["completed_at"].astimezone(INDIA_TZ).isoformat() if item["completed_at"] else None,
+                    "status": item["status"],
+                    "started_at": item["started_at"].astimezone(INDIA_TZ).isoformat(),
+                    "updated_at": item["updated_at"].astimezone(INDIA_TZ).isoformat(),
+                } for item in history]
+                if history:
+                    record["likely_assessment"] = history[-1]["assessment"]
+                records.append(record)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("Could not read customer records from PostgreSQL")
+        raise HTTPException(status_code=503, detail="Customer records are temporarily unavailable.") from exc
+    finally:
+        conn.close()
     for record in records:
         record.pop("final_symptom_summary", None)
     return records
 
 
 def _write_customer_records(records: list[dict]) -> None:
-    """Persist customer profiles and assessment history to PostgreSQL or JSON dev storage."""
-    if not DATABASE_URL:
-        _write_json_records(CUSTOMER_DATA_FILE, records)
-        return
+    """Persist profile, chat/session state and assessment history in separate PostgreSQL tables."""
     conn = _postgres_connect()
     try:
         with conn, conn.cursor() as cur:
-            # Serialize whole-store read/modify/write operations across workers.
             cur.execute("SELECT pg_advisory_xact_lock(hashtext('gutgpt_customer_store'))")
-            keep_ids = []
             for record in records:
                 cid = str(record["customer_id"])
-                keep_ids.append(cid)
                 created_at = _to_utc_datetime(record.get("created_at")) or datetime.now(timezone.utc)
-                updated_at = _to_utc_datetime(record.get("updated_at"))
+                updated_at = _to_utc_datetime(record.get("updated_at")) or datetime.now(timezone.utc)
                 expires_at = _to_utc_datetime(record.get("guest_token_expires_at"))
-                payload = dict(record)
-                payload.pop("final_symptom_summary", None)
+                location = str(record.get("location", record.get("city", "")))
                 cur.execute("""
-                    INSERT INTO customers (customer_id, registration_session_id, name, age, contact, location,
-                        consent_to_store, guest_token_jti_hash, guest_token_expires_at, created_at, updated_at,
-                        likely_assessment, record_json)
-                    VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb)
+                    INSERT INTO customers (customer_id, name, age, contact, location, created_at, updated_at, likely_assessment)
+                    VALUES (%s,%s,%s,%s,%s,%s,%s,%s)
                     ON CONFLICT (customer_id) DO UPDATE SET
-                        registration_session_id=EXCLUDED.registration_session_id,
                         name=EXCLUDED.name, age=EXCLUDED.age, contact=EXCLUDED.contact,
-                        location=EXCLUDED.location, consent_to_store=EXCLUDED.consent_to_store,
+                        location=EXCLUDED.location, updated_at=EXCLUDED.updated_at,
+                        likely_assessment=COALESCE(EXCLUDED.likely_assessment, customers.likely_assessment)
+                """, (cid, str(record.get("name", "Customer")), int(record.get("age") or 1),
+                      str(record.get("contact", "")), location, created_at, updated_at, record.get("likely_assessment")))
+                bound_sessions = record.get("bound_session_ids", [])
+                if not isinstance(bound_sessions, list):
+                    bound_sessions = []
+                session_id = record.get("session_id")
+                if session_id and session_id not in bound_sessions:
+                    bound_sessions.append(session_id)
+                # Preserve other evolving session metadata in the dedicated state table.
+                chat_state = {k: v for k, v in record.items() if k not in {
+                    "customer_id", "name", "age", "contact", "location", "city", "created_at", "updated_at",
+                    "likely_assessment", "assessments", "session_id", "consent_to_store", "guest_token_jti_hash",
+                    "guest_token_expires_at", "bound_session_ids", "active_checkpoint", "chat_history", "final_symptom_summary"
+                }}
+                cur.execute("""
+                    INSERT INTO customer_chat_state (
+                        customer_id, registration_session_id, consent_to_store, guest_token_jti_hash,
+                        guest_token_expires_at, bound_session_ids, last_session_id, active_checkpoint,
+                        chat_state, chat_history, updated_at
+                    ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s::jsonb,%s::jsonb,%s::jsonb,%s)
+                    ON CONFLICT (customer_id) DO UPDATE SET
+                        registration_session_id=COALESCE(customer_chat_state.registration_session_id, EXCLUDED.registration_session_id),
+                        consent_to_store=EXCLUDED.consent_to_store,
                         guest_token_jti_hash=EXCLUDED.guest_token_jti_hash,
                         guest_token_expires_at=EXCLUDED.guest_token_expires_at,
-                        updated_at=EXCLUDED.updated_at, likely_assessment=EXCLUDED.likely_assessment,
-                        record_json=EXCLUDED.record_json
-                """, (cid, record.get("session_id"), record.get("name", "Customer"), int(record.get("age") or 1),
-                      str(record.get("contact", "")), str(record.get("location", record.get("city", ""))),
-                      bool(record.get("consent_to_store")), record.get("guest_token_jti_hash"), expires_at,
-                      created_at, updated_at, record.get("likely_assessment"), json.dumps(payload, ensure_ascii=False, default=str)))
+                        bound_session_ids=ARRAY(SELECT DISTINCT unnest(customer_chat_state.bound_session_ids || EXCLUDED.bound_session_ids)),
+                        last_session_id=COALESCE(EXCLUDED.last_session_id, customer_chat_state.last_session_id),
+                        active_checkpoint=EXCLUDED.active_checkpoint,
+                        chat_state=customer_chat_state.chat_state || EXCLUDED.chat_state,
+                        chat_history=EXCLUDED.chat_history,
+                        updated_at=EXCLUDED.updated_at
+                """, (cid, record.get("session_id"), bool(record.get("consent_to_store")),
+                      record.get("guest_token_jti_hash"), expires_at, bound_sessions, session_id,
+                      json.dumps(record.get("active_checkpoint"), ensure_ascii=False, default=str) if record.get("active_checkpoint") is not None else None,
+                      json.dumps(chat_state, ensure_ascii=False, default=str),
+                      json.dumps(record.get("chat_history", []), ensure_ascii=False, default=str), updated_at))
                 for item in record.get("assessments", []) if isinstance(record.get("assessments", []), list) else []:
                     if not isinstance(item, dict) or not item.get("session_id"):
                         continue
                     completed = _to_utc_datetime(item.get("completed_at")) or datetime.now(timezone.utc)
                     cur.execute("""
-                        INSERT INTO customer_assessments (assessment_id, customer_id, session_id, assessment, completed_at)
-                        VALUES (%s,%s,%s,%s,%s)
+                        INSERT INTO customer_assessments (assessment_id, customer_id, session_id, assessment, status, started_at, updated_at, completed_at)
+                        VALUES (%s,%s,%s,%s,'completed',%s,%s,%s)
                         ON CONFLICT (session_id) DO UPDATE SET assessment=EXCLUDED.assessment,
-                            customer_id=EXCLUDED.customer_id, completed_at=EXCLUDED.completed_at
+                            customer_id=EXCLUDED.customer_id, status='completed', updated_at=EXCLUDED.updated_at,
+                            completed_at=EXCLUDED.completed_at
                     """, (str(item.get("assessment_id") or uuid.uuid4()), cid, str(item["session_id"]),
-                          str(item.get("assessment", "Insufficient information")), completed))
-            # Do not delete rows absent from this in-memory snapshot: another worker may have
-            # registered a customer after the snapshot was read. This API has no customer-delete route.
+                          str(item.get("assessment", "Insufficient information")), completed, completed, completed))
+    except HTTPException:
+        raise
     except Exception as exc:
         logger.exception("Could not write customer records to PostgreSQL")
         raise HTTPException(status_code=503, detail="Customer records could not be saved.") from exc
@@ -605,11 +770,10 @@ def _write_customer_records(records: list[dict]) -> None:
         conn.close()
 
 
-def _persist_assessment_checkpoint(session_id: str, completed: bool = False) -> None:
-    """Durably checkpoint an in-progress session after each chat turn.
+def _persist_assessment_checkpoint(session_id: str, completed: bool = False, turn_id: str | None = None) -> None:
+    """Persist a per-assessment checkpoint and newly appended messages in PostgreSQL.
 
-    Uses the same configured customer store as registration (PostgreSQL or the
-    explicitly configured JSON development store). No diagnosis logic is run here.
+    The rule engine remains the source of truth; this function only stores its state.
     """
     customer_id = SESSION_CUSTOMER_IDS.get(session_id)
     if not customer_id:
@@ -618,55 +782,186 @@ def _persist_assessment_checkpoint(session_id: str, completed: bool = False) -> 
         state = conversation_manager.sessions.get(session_id)
         if state is None:
             return
+        history = list(HISTORY.get(session_id, []))
         checkpoint = {
             "state": asdict(state),
-            "history": list(HISTORY.get(session_id, [])),
             "updated_at": datetime.now(timezone.utc).isoformat(),
             "active": not bool(completed or state.diagnosis_complete or state.ended),
         }
-    with CUSTOMER_LOCK:
-        records = _read_customer_records()
-        record = next((r for r in records if r.get("customer_id") == customer_id), None)
-        if record is None:
-            logger.error("Checkpoint skipped: customer record missing session=%s", session_id[:8])
-            return
-        record["active_checkpoint"] = checkpoint if checkpoint["active"] else None
-        record["updated_at"] = datetime.now(INDIA_TZ).isoformat()
-        _write_customer_records(records)
+    turn_id = str(turn_id or uuid.uuid4().hex)
+    conn = _postgres_connect()
+    assessment_id = SESSION_ASSESSMENT_IDS.get(session_id)
+    try:
+        with conn, conn.cursor() as cur:
+            # Serialize writes for the same customer so parallel tabs cannot create
+            # competing active assessments or interleave sequence numbers.
+            cur.execute("SELECT pg_advisory_xact_lock(hashtext(%s))", (f"gutgpt_assessment:{customer_id}",))
+            if assessment_id:
+                cur.execute("SELECT assessment_id FROM customer_assessments WHERE assessment_id=%s AND customer_id=%s FOR UPDATE", (assessment_id, customer_id))
+                if cur.fetchone() is None:
+                    cur.execute("""
+                        INSERT INTO customer_assessments (assessment_id, customer_id, session_id, status, started_at, updated_at)
+                        VALUES (%s,%s,%s,'active',NOW(),NOW()) ON CONFLICT (assessment_id) DO NOTHING
+                    """, (assessment_id, customer_id, session_id))
+            else:
+                cur.execute("SELECT active_assessment_id FROM customer_chat_state WHERE customer_id=%s FOR UPDATE", (customer_id,))
+                active_row = cur.fetchone()
+                active_id = active_row["active_assessment_id"] if active_row else None
+                if active_id:
+                    cur.execute("SELECT assessment_id FROM customer_assessments WHERE assessment_id=%s AND customer_id=%s AND status='active'", (active_id, customer_id))
+                    active_exists = cur.fetchone()
+                else:
+                    active_exists = None
+                if active_exists:
+                    assessment_id = active_id
+                else:
+                    assessment_id = str(uuid.uuid4())
+                    cur.execute("""
+                        INSERT INTO customer_assessments (assessment_id, customer_id, session_id, status, started_at, updated_at)
+                        VALUES (%s,%s,%s,'active',NOW(),NOW())
+                    """, (assessment_id, customer_id, session_id))
+            cur.execute("""
+                UPDATE customer_assessments SET session_id=COALESCE(session_id,%s), updated_at=NOW()
+                WHERE assessment_id=%s AND customer_id=%s
+            """, (session_id, assessment_id, customer_id))
+            cur.execute("""
+                UPDATE customer_chat_state SET active_assessment_id=%s, last_session_id=%s, updated_at=NOW()
+                WHERE customer_id=%s
+            """, (assessment_id, session_id, customer_id))
+            # Lock the assessment row before allocating message sequence numbers.
+            cur.execute("SELECT status FROM customer_assessments WHERE assessment_id=%s FOR UPDATE", (assessment_id,))
+            cur.fetchone()
+            cur.execute("SELECT COALESCE(MAX(sequence_no),0) AS max_seq FROM assessment_messages WHERE assessment_id=%s", (assessment_id,))
+            sequence_no = int(cur.fetchone()["max_seq"])
+            # Each /api/chat turn appends exactly a user message and an assistant reply.
+            # Persist only this turn, not the bounded in-memory history snapshot.
+            for item in history[-2:]:
+                if not isinstance(item, dict) or item.get("role") not in ("user", "assistant") or not isinstance(item.get("content"), str):
+                    continue
+                cur.execute("""
+                    INSERT INTO assessment_messages (assessment_id, sequence_no, turn_id, role, content)
+                    VALUES (%s,%s,%s,%s,%s)
+                    ON CONFLICT (assessment_id, turn_id, role) DO NOTHING
+                """, (assessment_id, sequence_no + 1, turn_id, item["role"], item["content"]))
+                if cur.rowcount:
+                    sequence_no += 1
+            cur.execute("""
+                INSERT INTO assessment_state (assessment_id, checkpoint, checkpoint_version, updated_at)
+                VALUES (%s,%s::jsonb,1,NOW())
+                ON CONFLICT (assessment_id) DO UPDATE SET
+                    checkpoint=EXCLUDED.checkpoint, checkpoint_version=EXCLUDED.checkpoint_version, updated_at=NOW()
+            """, (assessment_id, json.dumps(checkpoint, ensure_ascii=False, default=str)))
+            cur.execute("""
+                UPDATE customer_assessments SET status=%s, updated_at=NOW(),
+                    completed_at=CASE WHEN %s THEN COALESCE(completed_at,NOW()) ELSE completed_at END
+                WHERE assessment_id=%s AND customer_id=%s
+            """, ("completed" if not checkpoint["active"] else "active", not checkpoint["active"], assessment_id, customer_id))
+            # Keep the old columns empty for compatibility; new message/checkpoint
+            # data lives only in assessment_messages and assessment_state.
+            cur.execute("""
+                UPDATE customer_chat_state SET active_checkpoint=NULL, chat_history='[]'::jsonb, updated_at=NOW()
+                WHERE customer_id=%s
+            """, (customer_id,))
+        SESSION_ASSESSMENT_IDS[session_id] = assessment_id
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("Normalized assessment checkpoint persistence failed session=%s", session_id[:8])
+        raise HTTPException(status_code=503, detail="Assessment progress could not be saved.") from exc
+    finally:
+        conn.close()
+
 
 
 def _restore_assessment_checkpoint(customer_id: str, new_session_id: str) -> dict | None:
-    """Restore the most recent unfinished assessment for this authenticated customer."""
-    with CUSTOMER_LOCK:
-        records = _read_customer_records()
-        record = next((r for r in records if r.get("customer_id") == customer_id), None)
-        checkpoint = (record or {}).get("active_checkpoint")
+    """Restore the latest unfinished assessment, including its normalized message log."""
+    checkpoint = None
+    assessment_id = None
+    updated_at = None
+    active_assessment_found = False
+    conn = _postgres_connect()
+    try:
+        with conn, conn.cursor() as cur:
+            cur.execute("""
+                SELECT a.assessment_id, st.checkpoint, st.updated_at
+                FROM customer_assessments a
+                LEFT JOIN assessment_state st ON st.assessment_id=a.assessment_id
+                WHERE a.customer_id=%s AND a.status='active'
+                  AND (st.assessment_id IS NULL OR COALESCE((st.checkpoint->>'active')::boolean, FALSE)=TRUE)
+                ORDER BY a.updated_at DESC LIMIT 1
+                FOR UPDATE OF a
+            """, (customer_id,))
+            row = cur.fetchone()
+            if row:
+                active_assessment_found = True
+                assessment_id, checkpoint, updated_at = row["assessment_id"], row["checkpoint"], row["updated_at"]
+                cur.execute("""
+                    UPDATE customer_chat_state SET active_assessment_id=%s, last_session_id=%s, updated_at=NOW()
+                    WHERE customer_id=%s
+                """, (assessment_id, new_session_id, customer_id))
+                cur.execute("""
+                    SELECT role, content FROM (
+                        SELECT sequence_no, role, content FROM assessment_messages
+                        WHERE assessment_id=%s ORDER BY sequence_no DESC LIMIT %s
+                    ) recent ORDER BY sequence_no ASC
+                """, (assessment_id, MAX_HISTORY_MESSAGES))
+                message_rows = cur.fetchall()
+            else:
+                message_rows = []
+    except HTTPException:
+        raise
+    except Exception:
+        logger.exception("Normalized assessment restore lookup failed customer=%s", customer_id[:8])
+        raise
+    finally:
+        conn.close()
+
+    if active_assessment_found and not isinstance(checkpoint, dict):
+        # The assessment is known to be active, but its durable checkpoint is absent.
+        # Never misreport this as NO_ACTIVE_ASSESSMENT: the widget must pause safely.
+        logger.error("Active assessment has no checkpoint customer=%s assessment=%s", customer_id[:8], assessment_id)
+        return {"status": "ASSESSMENT_CHECKPOINT_UNAVAILABLE", "messages": [], "assessment_id": assessment_id}
+
+    if not isinstance(checkpoint, dict):
+        # Backwards compatibility for a checkpoint created before normalized storage.
+        # This path is only for legacy records, not an active normalized assessment.
+        with CUSTOMER_LOCK:
+            records = _read_customer_records()
+            record = next((r for r in records if r.get("customer_id") == customer_id), None)
+            checkpoint = (record or {}).get("active_checkpoint")
         if not isinstance(checkpoint, dict) or not checkpoint.get("active"):
             return None
-        payload = checkpoint.get("state")
-        if not isinstance(payload, dict) or not isinstance(payload.get("symptom_state"), dict):
-            logger.warning("Ignoring malformed assessment checkpoint customer=%s", customer_id[:8])
-            return None
-        try:
-            payload = dict(payload)
-            payload["symptom_state"] = SymptomState(**payload["symptom_state"])
-            restored_state = SessionState(**payload)
-            restored_history = checkpoint.get("history", [])
-            if not isinstance(restored_history, list):
-                restored_history = []
-            restored_history = [m for m in restored_history if isinstance(m, dict) and m.get("role") in ("user", "assistant") and isinstance(m.get("content"), str)][-MAX_HISTORY_MESSAGES:]
-        except (TypeError, ValueError) as exc:
-            logger.warning("Ignoring incompatible assessment checkpoint: %s", exc)
-            return None
-        with conversation_manager._lock:
-            conversation_manager.sessions[new_session_id] = restored_state
-            conversation_manager.last_access[new_session_id] = time.monotonic()
-            conversation_manager._session_locks.setdefault(new_session_id, RLock())
-        with _SESSION_LOCK:
-            HISTORY[new_session_id] = restored_history
-            HISTORY_LAST_ACCESS[new_session_id] = time.monotonic()
-        return {"status": "RESUMED", "messages": restored_history, "updated_at": checkpoint.get("updated_at")}
+        history = checkpoint.get("history", [])
+    else:
+        history = [{"role": r["role"], "content": r["content"]} for r in message_rows]
 
+    payload = checkpoint.get("state")
+    if not isinstance(payload, dict) or not isinstance(payload.get("symptom_state"), dict):
+        logger.warning("Ignoring malformed assessment checkpoint customer=%s", customer_id[:8])
+        return {"status": "ASSESSMENT_CHECKPOINT_INVALID", "messages": [], "assessment_id": assessment_id} if active_assessment_found else None
+    try:
+        payload = dict(payload)
+        payload["symptom_state"] = SymptomState(**payload["symptom_state"])
+        restored_state = SessionState(**payload)
+        if not isinstance(history, list):
+            history = []
+        restored_history = [m for m in history if isinstance(m, dict) and m.get("role") in ("user", "assistant") and isinstance(m.get("content"), str)][-MAX_HISTORY_MESSAGES:]
+    except (TypeError, ValueError) as exc:
+        logger.warning("Ignoring incompatible assessment checkpoint: %s", exc)
+        return None
+    with conversation_manager._lock:
+        conversation_manager.sessions[new_session_id] = restored_state
+        conversation_manager.last_access[new_session_id] = time.monotonic()
+        conversation_manager._session_locks.setdefault(new_session_id, RLock())
+    with _SESSION_LOCK:
+        HISTORY[new_session_id] = restored_history
+        HISTORY_LAST_ACCESS[new_session_id] = time.monotonic()
+    with CUSTOMER_LOCK:
+        SESSION_CUSTOMER_IDS[new_session_id] = customer_id
+        REGISTERED_CUSTOMER_SESSIONS.add(new_session_id)
+    if assessment_id:
+        SESSION_ASSESSMENT_IDS[new_session_id] = assessment_id
+    return {"status": "RESUMED", "messages": restored_history, "updated_at": updated_at or checkpoint.get("updated_at"), "assessment_id": assessment_id}
 
 def _persist_completed_assessment(session_id: str, result: dict) -> None:
     """Store only the likely assessment value on the matching customer row."""
@@ -715,8 +1010,9 @@ def _persist_completed_assessment(session_id: str, result: dict) -> None:
             None,
         )
         if existing is None:
+            assessment_id = SESSION_ASSESSMENT_IDS.setdefault(session_id, str(uuid.uuid4()))
             history.append({
-                "assessment_id": str(uuid.uuid4()),
+                "assessment_id": assessment_id,
                 "session_id": session_id,
                 "assessment": str(likely_assessment),
                 "completed_at": now,
@@ -724,13 +1020,14 @@ def _persist_completed_assessment(session_id: str, result: dict) -> None:
         else:
             # Repair/update a legacy or partial record without creating a duplicate.
             existing["assessment"] = str(likely_assessment)
-            existing.setdefault("assessment_id", str(uuid.uuid4()))
+            assessment_id = SESSION_ASSESSMENT_IDS.setdefault(session_id, str(existing.get("assessment_id") or uuid.uuid4()))
+            existing["assessment_id"] = assessment_id
             existing.setdefault("completed_at", now)
         # Keep the dashboard's Assessment column useful by showing the latest result.
         customer["likely_assessment"] = str(likely_assessment)
         customer.pop("final_symptom_summary", None)
         _write_customer_records(records)
-    logger.info("Assessment history saved on customer JSON customer_id=%s session=%s",
+    logger.info("Assessment history saved in PostgreSQL customer_id=%s session=%s",
                 customer["customer_id"], session_id[:8])
 
 
@@ -781,59 +1078,44 @@ def _should_cleanup_rate_limits() -> bool:
 
 def _enforce_rate_limit(request: Request, *, scope: str, identity: str,
                         limit: int, window_seconds: int) -> None:
-    """Enforce a fixed-window limit, shared through PostgreSQL when configured.
+    """Enforce a fixed-window rate limit using PostgreSQL only.
 
     The raw identity is never persisted: keys are SHA-256 hashes. PostgreSQL
     errors fail closed rather than silently disabling protection in DB mode.
     """
     raw_key = f"{scope}:{identity}"
     rate_key = hashlib.sha256(raw_key.encode("utf-8")).hexdigest()
-    if DATABASE_URL:
-        conn = _postgres_connect()
-        if conn is None:
-            raise HTTPException(status_code=503, detail="Request protection is temporarily unavailable.")
-        try:
-            with conn, conn.cursor() as cur:
-                cur.execute("""
-                    INSERT INTO api_rate_limits (rate_key, window_started_at, request_count, updated_at)
-                    VALUES (%s, NOW(), 1, NOW())
-                    ON CONFLICT (rate_key) DO UPDATE SET
-                        request_count = CASE
-                            WHEN api_rate_limits.window_started_at <= NOW() - (%s * INTERVAL '1 second') THEN 1
-                            ELSE api_rate_limits.request_count + 1
-                        END,
-                        window_started_at = CASE
-                            WHEN api_rate_limits.window_started_at <= NOW() - (%s * INTERVAL '1 second') THEN NOW()
-                            ELSE api_rate_limits.window_started_at
-                        END,
-                        updated_at = NOW()
-                    RETURNING request_count, GREATEST(0, CEIL(EXTRACT(EPOCH FROM
-                        (window_started_at + (%s * INTERVAL '1 second') - NOW()))))::integer AS retry_after
-                """, (rate_key, window_seconds, window_seconds, window_seconds))
-                row = cur.fetchone()
-                count = int(row["request_count"] if isinstance(row, dict) else row[0])
-                retry_after = int(row["retry_after"] if isinstance(row, dict) else row[1])
-                # Deterministic housekeeping avoids random latency spikes and
-                # cleans stale rows at the first request and periodically thereafter.
-                if _should_cleanup_rate_limits():
-                    cur.execute("DELETE FROM api_rate_limits WHERE updated_at < NOW() - INTERVAL '2 days'")
-        finally:
-            conn.close()
-    else:
-        # Development fallback: per-process only. Production should configure
-        # DATABASE_URL to enable shared enforcement across instances/workers.
-        now = time.monotonic()
-        with _RATE_LIMIT_LOCK:
-            bucket = _RATE_LIMIT_BUCKETS.get(rate_key)
-            if bucket is None or now - bucket[0] >= window_seconds:
-                bucket = (now, 0)
-            count = bucket[1] + 1
-            _RATE_LIMIT_BUCKETS[rate_key] = (bucket[0], count)
-            if len(_RATE_LIMIT_BUCKETS) > _RATE_LIMIT_LOCAL_MAX_KEYS:
-                oldest = sorted(_RATE_LIMIT_BUCKETS.items(), key=lambda item: item[1][0])
-                for old_key, _ in oldest[:len(_RATE_LIMIT_BUCKETS) - _RATE_LIMIT_LOCAL_MAX_KEYS]:
-                    _RATE_LIMIT_BUCKETS.pop(old_key, None)
-            retry_after = max(1, int(window_seconds - (now - bucket[0])))
+    conn = _postgres_connect()
+    try:
+        with conn, conn.cursor() as cur:
+            cur.execute("""
+                INSERT INTO api_rate_limits (rate_key, window_started_at, request_count, updated_at)
+                VALUES (%s, NOW(), 1, NOW())
+                ON CONFLICT (rate_key) DO UPDATE SET
+                    request_count = CASE
+                        WHEN api_rate_limits.window_started_at <= NOW() - (%s * INTERVAL '1 second') THEN 1
+                        ELSE api_rate_limits.request_count + 1
+                    END,
+                    window_started_at = CASE
+                        WHEN api_rate_limits.window_started_at <= NOW() - (%s * INTERVAL '1 second') THEN NOW()
+                        ELSE api_rate_limits.window_started_at
+                    END,
+                    updated_at = NOW()
+                RETURNING request_count, GREATEST(0, CEIL(EXTRACT(EPOCH FROM
+                    (window_started_at + (%s * INTERVAL '1 second') - NOW()))))::integer AS retry_after
+            """, (rate_key, window_seconds, window_seconds, window_seconds))
+            row = cur.fetchone()
+            count = int(row["request_count"] if isinstance(row, dict) else row[0])
+            retry_after = int(row["retry_after"] if isinstance(row, dict) else row[1])
+            if _should_cleanup_rate_limits():
+                cur.execute("DELETE FROM api_rate_limits WHERE updated_at < NOW() - INTERVAL '2 days'")
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("PostgreSQL rate-limit check failed")
+        raise HTTPException(status_code=503, detail="Request protection is temporarily unavailable.") from exc
+    finally:
+        conn.close()
     if count > limit:
         raise HTTPException(
             status_code=429,
@@ -1040,7 +1322,7 @@ def admin_dashboard():
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>GutGPT Admin</title><style>
 :root{color-scheme:light dark}body{font:16px system-ui,sans-serif;max-width:1400px;margin:32px auto;padding:0 16px}h1{margin-bottom:4px}.muted{opacity:.75}form,.toolbar{display:flex;gap:10px;flex-wrap:wrap;margin:18px 0}input,button{font:inherit;padding:10px;border-radius:8px;border:1px solid #888}input{min-width:250px;flex:1}button{cursor:pointer}table{width:100%;border-collapse:collapse;margin-top:16px}th,td{text-align:left;padding:10px;border-bottom:1px solid #8886;overflow-wrap:anywhere;vertical-align:top;min-width:120px}th{position:sticky;top:0;background:Canvas}.status{margin:12px 0}.hidden{display:none}.tablewrap{overflow:auto;margin-bottom:28px}@media(max-width:600px){body{margin-top:18px}th,td{padding:7px;font-size:14px}}
-</style></head><body><h1>GutGPT Admin</h1><p class="muted">Sign in with GUTGPT_ADMIN_TOKEN configured in Render. Customer and assessment information is sensitive.</p>
+</style></head><body><h1>GutGPT Admin</h1><p class="muted">Sign in with GUTGPT_ADMIN_TOKEN configured on the server. Customer and assessment information is sensitive.</p>
 <form id="login"><label for="token">Admin token</label><input id="token" type="password" autocomplete="current-password" required placeholder="Enter admin token"><button type="submit">Sign in</button></form>
 <div id="panel" class="hidden"><h2>Customers</h2><p id="summary" class="status"></p><div class="toolbar"><button id="refresh">Refresh records</button><button id="download">Download customer JSON</button><button id="logout">Sign out</button></div><div class="tablewrap"><table><thead><tr><th>Name</th><th>Age</th><th>Contact</th><th>Location</th><th>Assessment</th><th>Registered at (IST)</th><th>Session ID</th></tr></thead><tbody id="rows"></tbody></table></div></div>
 <p id="status" class="status" role="status" aria-live="polite"></p>
@@ -1208,7 +1490,8 @@ def resume_customer_assessment(req: CustomerRestoreRequest, request: Request = N
     if not customer_id or req.session_id not in REGISTERED_CUSTOMER_SESSIONS:
         raise HTTPException(status_code=403, detail="CUSTOMER_REGISTRATION_REQUIRED")
     resumed = _restore_assessment_checkpoint(customer_id, req.session_id)
-    return resumed or {"status": "NO_ACTIVE_ASSESSMENT", "messages": []}
+    # Only an explicit absence of an active assessment permits a fresh assessment.
+    return resumed if resumed is not None else {"status": "NO_ACTIVE_ASSESSMENT", "messages": []}
 
 
 @app.post("/api/chat", response_model=ChatResponse)
@@ -1222,6 +1505,7 @@ def chat(req: ChatRequest, request: Request = None):
         _enforce_rate_limit(request, scope="chat-session", identity=req.session_id, limit=30, window_seconds=60)
         _enforce_rate_limit(request, scope="chat-ip", identity=_request_client_key(request), limit=120, window_seconds=60)
     request_id = uuid.uuid4().hex[:8]
+    turn_id = uuid.uuid4().hex
     total_start = time.perf_counter()
     message = req.message.strip()
     logger.info(
@@ -1336,7 +1620,7 @@ def chat(req: ChatRequest, request: Request = None):
         completed_turn = status in ("DIAGNOSIS", "RECOMMENDATION_FOUND", "AMBIGUOUS", "DIAGNOSIS_COMPLETE", "RECOMMENDATION_COMPLETE", "SESSION_ENDED") or (
             status == "SAFETY_REVIEW" and (result.get("screening") or {}).get("action") == "urgent_medical_evaluation"
         )
-        _persist_assessment_checkpoint(req.session_id, completed=completed_turn)
+        _persist_assessment_checkpoint(req.session_id, completed=completed_turn, turn_id=turn_id)
     except Exception:
         # Do not silently claim a successful durable save. The reply remains
         # available, but logs make the checkpoint failure observable.

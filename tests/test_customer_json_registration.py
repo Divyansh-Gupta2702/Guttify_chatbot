@@ -12,6 +12,10 @@ import app as gutgpt_app
 def configured_test_jwt_secret(monkeypatch):
     # These tests explicitly exercise the JSON backend, regardless of a developer's or CI runner's DATABASE_URL environment variable.
     monkeypatch.setattr(gutgpt_app, "DATABASE_URL", "")
+    # Unit tests inject a fake storage adapter; production code has no JSON-file fallback.
+    store = []
+    monkeypatch.setattr(gutgpt_app, "_read_customer_records", lambda: store)
+    monkeypatch.setattr(gutgpt_app, "_write_customer_records", lambda records: store.__setitem__(slice(None), records))
     monkeypatch.setenv("JWT_SECRET_KEY", "test-only-secret-that-is-at-least-32-bytes-long")
     monkeypatch.setenv("JWT_ISSUER", "gutgpt-api")
     monkeypatch.setenv("JWT_AUDIENCE", "gutgpt-guest-session")
@@ -22,8 +26,6 @@ def make_session():
 
 
 def test_customer_registration_persists_json_and_is_idempotent(tmp_path, monkeypatch):
-    data_file = tmp_path / "customer_data.json"
-    monkeypatch.setattr(gutgpt_app, "CUSTOMER_DATA_FILE", data_file)
     session_id = make_session()
     payload = gutgpt_app.CustomerRegistrationRequest(
         session_id=session_id,
@@ -36,7 +38,7 @@ def test_customer_registration_persists_json_and_is_idempotent(tmp_path, monkeyp
 
     first = gutgpt_app.register_customer(payload)
     second = gutgpt_app.register_customer(payload)
-    records = json.loads(data_file.read_text(encoding="utf-8"))
+    records = gutgpt_app._read_customer_records()
 
     assert first["status"] == "REGISTERED"
     assert second["customer_id"] == first["customer_id"]
@@ -80,8 +82,6 @@ def test_chat_is_blocked_until_customer_registration():
 
 
 def test_returning_customer_restores_with_guest_token_and_fresh_diagnostic_state(tmp_path, monkeypatch):
-    data_file = tmp_path / "customer_data.json"
-    monkeypatch.setattr(gutgpt_app, "CUSTOMER_DATA_FILE", data_file)
     first_session = make_session()
     try:
         registered = gutgpt_app.register_customer(gutgpt_app.CustomerRegistrationRequest(
@@ -89,7 +89,7 @@ def test_returning_customer_restores_with_guest_token_and_fresh_diagnostic_state
             contact="919876543211", city="Delhi", consent=True,
         ))
         assert registered["guest_token"]
-        records = json.loads(data_file.read_text(encoding="utf-8"))
+        records = gutgpt_app._read_customer_records()
         assert "guest_token_jti_hash" in records[0]
         assert "guest_token_hash" not in records[0]
         assert registered["guest_token"] not in records[0].values()
@@ -120,7 +120,6 @@ def test_returning_customer_restores_with_guest_token_and_fresh_diagnostic_state
 
 
 def test_customer_restore_rejects_invalid_guest_token(tmp_path, monkeypatch):
-    monkeypatch.setattr(gutgpt_app, "CUSTOMER_DATA_FILE", tmp_path / "customer_data.json")
     sid = make_session()
     try:
         with pytest.raises(HTTPException) as error:
@@ -136,7 +135,6 @@ def test_customer_restore_rejects_invalid_guest_token(tmp_path, monkeypatch):
 
 
 def test_registration_rejects_invalid_contact_format(tmp_path, monkeypatch):
-    monkeypatch.setattr(gutgpt_app, "CUSTOMER_DATA_FILE", tmp_path / "customer_data.json")
     sid = make_session()
     try:
         req = gutgpt_app.CustomerRegistrationRequest(
@@ -154,7 +152,6 @@ def test_registration_rejects_invalid_contact_format(tmp_path, monkeypatch):
 
 
 def test_guest_jwt_tampering_and_wrong_audience_are_rejected(tmp_path, monkeypatch):
-    monkeypatch.setattr(gutgpt_app, "CUSTOMER_DATA_FILE", tmp_path / "customer_data.json")
     sid = make_session()
     try:
         registered = gutgpt_app.register_customer(gutgpt_app.CustomerRegistrationRequest(
@@ -185,7 +182,6 @@ def test_guest_jwt_tampering_and_wrong_audience_are_rejected(tmp_path, monkeypat
 
 
 def test_registration_rotation_revokes_previous_jwt(tmp_path, monkeypatch):
-    monkeypatch.setattr(gutgpt_app, "CUSTOMER_DATA_FILE", tmp_path / "customer_data.json")
     sid = make_session()
     try:
         req = gutgpt_app.CustomerRegistrationRequest(

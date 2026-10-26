@@ -170,44 +170,27 @@ collecting or storing personal contact information.
 After a completed screening/diagnosis result (including a product recommendation), GutGPT appends a customer-support message with `guttify01@gmail.com` and `+91 9818693589`. The footer is not added to intermediate questions, greetings, safety-review messages, or subsequent acknowledgements.
 
 
-## Customer registration and JSON storage (v18.3)
+## Customer registration and admin inspection (v18.3)
 
-- The Shopify widget asks for the customer's name, age, contact number or email, and city before enabling the assessment chat.
-- The customer must tick the consent checkbox before submission.
-- The backend saves each registration to `customer_data.json` in the application directory. The file is initialized as an empty JSON array and is excluded from Git by `.gitignore` because it contains personal information.
-- The `/api/chat` endpoint rejects messages for sessions that have not completed registration.
+- The Shopify widget collects the customer's name, age, contact number, city, and consent before enabling assessment chat.
+- Registration and assessment/checkpoint records are stored in PostgreSQL only. The backend refuses to start if `DATABASE_URL` is missing.
 - Registration retries for the same session are idempotent and do not create duplicate records.
+- `/api/chat` rejects sessions that have not completed registration.
 
-**Storage limitation:** JSON-file storage is intended for this requested initial version. On hosting platforms with an ephemeral filesystem (including typical Render deployments without a persistent disk), records can be lost on redeploy/restart. It is also not suitable for multiple backend workers sharing one file. Use a persistent disk or a database before relying on this for production customer records. Restrict access to the file and follow the applicable privacy/data-retention requirements.
+Admin dashboard and authenticated endpoints:
+- Open `/admin` on your configured backend and enter `GUTGPT_ADMIN_TOKEN` to inspect customer records.
+- `GET /api/admin/customers` returns a JSON response containing customer records.
+- `GET /api/admin/customers/download` exports records as JSON. This is an export response, not a JSON-file storage backend.
 
-
-## Testing customer records on Render (admin-only)
-
-For temporary testing, set a strong random `GUTGPT_ADMIN_TOKEN` in the Render service's Environment settings, then redeploy. Do not commit the token to Git or put it in the Shopify widget.
-
-Browser dashboard:
-- Open `https://YOUR-SERVICE.onrender.com/admin` after deployment. Enter the `GUTGPT_ADMIN_TOKEN` value to view customer records in a table, refresh the list, or download the JSON file. The token is sent in an Authorization header and is not placed in the URL.
-
-Authenticated endpoints:
-- `GET /api/admin/customers` — returns a JSON list and count.
-- `GET /api/admin/customers/download` — downloads `customer_data.json`.
-
-Send the token only in the HTTP `Authorization` header as `Bearer YOUR_TOKEN`. Do not append it to the URL. Example from a trusted terminal:
-
-```bash
-curl -H "Authorization: Bearer $GUTGPT_ADMIN_TOKEN" https://YOUR-SERVICE.onrender.com/api/admin/customers
-curl -L -H "Authorization: Bearer $GUTGPT_ADMIN_TOKEN" https://YOUR-SERVICE.onrender.com/api/admin/customers/download -o customer_data.json
-```
-
-These endpoints are disabled with HTTP 503 until `GUTGPT_ADMIN_TOKEN` is configured, and reject requests without a valid token. The JSON file is stored on the service filesystem; on Render Free that filesystem is ephemeral, so records can disappear after restarts/redeploys. Use dummy data for testing and never expose these endpoints without authentication.
+Send the admin token only in the HTTP `Authorization` header as `Bearer YOUR_TOKEN`; never append it to a URL. Customer and assessment information is sensitive. Restrict admin access and follow applicable privacy and data-retention requirements.
 
 ## Passwordless guest JWT sessions (30-day expiry)
 
 After successful registration, the backend issues a signed HS256 guest-access JWT with a 30-day lifetime. Claims include `sub` (backend-generated customer ID), `typ=guest_access`, `iss`, `aud`, `iat`, `nbf`, `exp`, and a unique `jti`. The backend stores only a hash of the JTI for revocation and checks that hash against the customer record during restoration. A customer ID by itself is never accepted as proof of identity.
 
-Required Render environment variables:
+Required environment variables:
 
-- `JWT_SECRET_KEY`: a unique, cryptographically random secret of at least 32 UTF-8 bytes. Generate one with `python -c "import secrets; print(secrets.token_urlsafe(48))"`. Store it only in Render environment settings; do not commit it.
+- `JWT_SECRET_KEY`: a unique, cryptographically random secret of at least 32 UTF-8 bytes. Generate one with `python -c "import secrets; print(secrets.token_urlsafe(48))"`. Store it only in the hosting environment settings; do not commit it.
 - `JWT_ISSUER`: normally `gutgpt-api`.
 - `JWT_AUDIENCE`: normally `gutgpt-guest-session`.
 - Keep `ALLOWED_ORIGINS` set to the exact Shopify storefront origin(s), without a wildcard.
@@ -216,16 +199,26 @@ Required Render environment variables:
 
 For a smooth upgrade, the restore endpoint accepts an unexpired legacy token from a prior release once, then upgrades it to a signed JWT in the HttpOnly cookie. The frontend clears the old tab-scoped token after successful restoration. Legacy tokens that have expired or whose customer records were lost cannot be upgraded and require registration again. The JWT expires 30 days after issue; this is not a sliding expiration.
 
-## Assessment summary fields (temporary JSON mode)
+## PostgreSQL-only persistence
 
-When the deterministic flow completes an assessment, GutGPT updates only `likely_assessment` on the matching customer record in `customer_data.json`. The admin dashboard labels this column **Assessment**. No symptom-summary field or separate assessment file/table is used. Intermediate questions do not overwrite the assessment value.
+PostgreSQL is mandatory for customer registration, customer assessment/checkpoint persistence, and shared API rate limiting. The service refuses to start if `DATABASE_URL` is missing or PostgreSQL is unavailable. Customer data is not stored in a JSON file, and the `customers` table has only these profile columns: `customer_id`, `name`, `age`, `contact`, `location`, `created_at`, `updated_at`, and `likely_assessment`. The separate `customer_chat_state` table stores registration/session bindings, consent, guest-token metadata, and other authentication/session metadata. Per-assessment chat history and resumable checkpoints are stored in `assessment_messages` and `assessment_state`, linked directly to `customer_assessments`, which is the single canonical assessment and lifecycle table. `customer_chat_state.active_assessment_id` identifies the customer’s currently resumable assessment; the browser session ID is not modeled in a redundant binding table. On startup, legacy `record_json` data is migrated before that column and other legacy columns are removed from `customers`.
 
-- Default file: `customer_data.json` beside `app.py`; optionally set `CUSTOMER_DATA_FILE` to another path.
-- Admin dashboard: open `/admin`, enter `GUTGPT_ADMIN_TOKEN`, and view customer registration details and the two assessment fields in one table.
-- Authenticated endpoints: `GET /api/admin/customers` and `GET /api/admin/customers/download`.
-- Customer JSON download includes the single likely assessment value. The dashboard labels `city` as Location.
-- The file contains personal and health-related information. Restrict access, do not commit real data, and follow applicable privacy and retention requirements.
+For Docker Compose, set a strong `POSTGRES_PASSWORD` in `.env`. The Compose configuration supplies the backend with the internal PostgreSQL service URL and persists database files in the named `gutgpt_postgres_data` volume. Do not delete that volume when rebuilding or updating the backend: it may contain customer and assessment records. Back up the database before schema or deployment changes.
 
-**Temporary-storage warning:** This version intentionally uses JSON files and ignores `DATABASE_URL`. On Render Free, local files may disappear after restarts, redeploys, or instance replacement, and separate instances do not share files. Use dummy data for testing only. For reliable production storage, move to a persistent disk or managed database.
+Admin download endpoints may still return JSON as an export format; that is an API response, not a JSON storage backend. The product catalog file (for example `products.json`) is static application content and is not customer-record storage.
 
-See `JSON_TEMPORARY_STORAGE.md` for deployment setup and limitations. The diagnosis engine, NLU, question flow, safety checks, and recommendation rules have not been changed.
+The database tables are separated by purpose:
+
+- `customers`: `customer_id`, `name`, `age`, `contact`, `location`, `created_at`, `updated_at`, `likely_assessment` only.
+- `customer_chat_state`: customer/session binding, consent, guest-token hash/expiry, bound session IDs, last session, and other session metadata. Legacy `active_checkpoint` and `chat_history` columns are retained for compatibility but are cleared after normalized persistence.
+- `customer_assessments`: one row per assessment, including ownership, lifecycle status, timestamps, and the completed assessment label when available.
+- `assessment_messages`: individual user/assistant messages ordered by sequence number and grouped by assessment.
+- `assessment_state`: the latest serialized rule-engine/session checkpoint for each assessment.
+- `customer_assessments`: compatibility summary for completed assessment outcomes.
+- `api_rate_limits`: shared rate-limit counters.
+
+The startup migration is designed to copy old `record_json` profile/session/checkpoint fields and embedded assessment history into the dedicated tables before dropping the legacy column. Back up your PostgreSQL database before deploying the schema migration, and verify a returning customer's restore flow after startup.
+
+The diagnosis engine, NLU, question flow, safety checks, and recommendation rules are unchanged by the PostgreSQL-only storage configuration.
+
+See `CUSTOMER_CHAT_STATE_MIGRATION.md` for the final schema and migration behavior.

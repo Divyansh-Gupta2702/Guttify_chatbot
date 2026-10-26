@@ -55,8 +55,8 @@ def _fake_request(host="127.0.0.1"):
 
 def test_admin_token_must_be_at_least_32_bytes(monkeypatch):
     monkeypatch.setenv("GUTGPT_ADMIN_TOKEN", "too-short")
-    monkeypatch.setattr(gutgpt_app, "DATABASE_URL", "")
-    gutgpt_app._RATE_LIMIT_BUCKETS.clear()
+    # Isolate token-strength validation from the PostgreSQL-backed rate limiter.
+    monkeypatch.setattr(gutgpt_app, "_enforce_rate_limit", lambda *args, **kwargs: None)
     with pytest.raises(gutgpt_app.HTTPException) as exc:
         gutgpt_app._require_admin("Bearer too-short", _fake_request())
     assert exc.value.status_code == 503
@@ -65,21 +65,18 @@ def test_admin_token_must_be_at_least_32_bytes(monkeypatch):
 def test_admin_token_accepts_matching_strong_secret(monkeypatch):
     token = "0123456789abcdef0123456789abcdef"
     monkeypatch.setenv("GUTGPT_ADMIN_TOKEN", token)
-    monkeypatch.setattr(gutgpt_app, "DATABASE_URL", "")
-    gutgpt_app._RATE_LIMIT_BUCKETS.clear()
+    # Isolate token matching from the PostgreSQL-backed rate limiter.
+    monkeypatch.setattr(gutgpt_app, "_enforce_rate_limit", lambda *args, **kwargs: None)
     gutgpt_app._require_admin(f"Bearer {token}", _fake_request())
 
 
-def test_local_rate_limiter_returns_429_after_limit(monkeypatch):
+def test_rate_limiter_fails_closed_when_postgres_is_unconfigured(monkeypatch):
     monkeypatch.setattr(gutgpt_app, "DATABASE_URL", "")
-    gutgpt_app._RATE_LIMIT_BUCKETS.clear()
-    request = _fake_request()
-    gutgpt_app._enforce_rate_limit(request, scope="test", identity="client-a", limit=2, window_seconds=60)
-    gutgpt_app._enforce_rate_limit(request, scope="test", identity="client-a", limit=2, window_seconds=60)
     with pytest.raises(gutgpt_app.HTTPException) as exc:
-        gutgpt_app._enforce_rate_limit(request, scope="test", identity="client-a", limit=2, window_seconds=60)
-    assert exc.value.status_code == 429
-    assert int(exc.value.headers["Retry-After"]) > 0
+        gutgpt_app._enforce_rate_limit(
+            _fake_request(), scope="test", identity="client-a", limit=2, window_seconds=60
+        )
+    assert exc.value.status_code == 503
 
 
 

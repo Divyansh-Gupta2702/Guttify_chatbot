@@ -518,72 +518,136 @@
   }
 
   async function initSession() {
-    // Always create fresh diagnostic state, then restore only the customer
-    // profile using its opaque credential. Never restore prior answers.
+    // Do not accept chat input until customer restoration and assessment resume
+    // have both completed. A resume failure is not the same as no active assessment.
     sessionId = null;
     status.textContent = "Connecting…";
+    customerRegistered = false;
+    intake.hidden = false;
+    messages.hidden = true;
+    form.hidden = true;
+    input.disabled = true;
     let resumeFailed = false;
+
     try {
       const data = await fetchJson("/api/session", { method: "POST" });
-      if (typeof data.session_id !== "string" || !data.session_id) throw new Error("INVALID_SESSION");
+      if (typeof data.session_id !== "string" || !data.session_id) {
+        throw new Error("INVALID_SESSION");
+      }
       sessionId = data.session_id;
-      customerRegistered = false;
-      intake.hidden = false;
-      messages.hidden = true;
-      form.hidden = true;
 
-      {
-        const guestToken = getLegacyGuestToken();
-        try {
-          const restored = await fetchJson("/api/customer/restore", {
-            method: "POST", headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ session_id: sessionId, guest_token: guestToken }),
-          });
-          if (restored.status === "RESTORED") {
-            // Successful restoration confirms the server set/refreshed the
-            // HttpOnly cookie; discard any old tab-scoped migration token.
-            clearLegacyGuestToken();
-            customerRegistered = true;
-            intake.hidden = true;
-            messages.hidden = false;
-            form.hidden = false;
-            let resume = { status: "NO_ACTIVE_ASSESSMENT", messages: [] };
-            try {
-              resume = await fetchJson("/api/customer/resume", {
-                method: "POST", headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ session_id: sessionId }),
-              });
-            } catch (resumeError) {
-              console.error("GutGPT assessment resume failed", resumeError);
-              resumeFailed = true;
-            }
-            const safeName = String(restored.customer?.name || "there").replace(/[<>]/g, "");
-            if (resume.status === "RESUMED" && Array.isArray(resume.messages) && resume.messages.length) {
-              addMessage("Welcome back, " + safeName + "! I've restored your unfinished assessment so you can continue.", "bot");
-              for (const item of resume.messages) {
-                if (item && (item.role === "user" || item.role === "assistant") && typeof item.content === "string") {
-                  addMessage(item.content, item.role === "assistant" ? "bot" : "user");
-                }
-              }
-            } else {
-              addMessage("Welcome back, " + safeName + "! Your profile is restored. You can start a new assessment.", "bot");
-            }
-          }
-        } catch (restoreError) {
-          // Only invalidate a credential that the server explicitly rejects.
-          if (restoreError?.status === 401) {
-            clearLegacyGuestToken();
-          } else {
-            throw restoreError;
+      const guestToken = getLegacyGuestToken();
+      let restored;
+      try {
+        restored = await fetchJson("/api/customer/restore", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ session_id: sessionId, guest_token: guestToken }),
+        });
+      } catch (restoreError) {
+        // Only clear a credential when the server explicitly rejects it.
+        if (restoreError?.status === 401) {
+          clearLegacyGuestToken();
+          status.textContent = "";
+          intake.hidden = false;
+          messages.hidden = true;
+          form.hidden = true;
+          input.disabled = true;
+          return;
+        }
+        throw restoreError;
+      }
+
+      if (!restored || restored.status !== "RESTORED") {
+        // Do not infer that registration is needed from an unexpected response.
+        throw new Error("CUSTOMER_RESTORE_INVALID_RESPONSE");
+      }
+
+      clearLegacyGuestToken();
+      customerRegistered = true;
+      intake.hidden = true;
+      messages.hidden = false;
+      form.hidden = true;
+      input.disabled = true;
+
+      let resume;
+      try {
+        resume = await fetchJson("/api/customer/resume", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ session_id: sessionId }),
+        });
+      } catch (resumeError) {
+        console.error("GutGPT assessment resume failed", resumeError);
+        resumeFailed = true;
+      }
+
+      const safeName = String(restored.customer?.name || "there").replace(/[<>]/g, "");
+      if (resumeFailed || !resume || !["RESUMED", "NO_ACTIVE_ASSESSMENT"].includes(resume.status)) {
+        // Fail closed: do not expose the answer form or create a new assessment.
+        form.hidden = true;
+        input.disabled = true;
+        addMessage(
+          "Welcome back, " + safeName + ". I restored your profile, but couldn't recover your assessment progress. Your assessment has not been restarted. Please refresh to retry.",
+          "bot"
+        );
+        status.textContent = "Saved assessment progress could not be recovered. Chat is paused to protect your existing assessment.";
+        return;
+      }
+
+      if (resume.status === "RESUMED") {
+        if (!(resume.status === "RESUMED" && Array.isArray(resume.messages)) || typeof resume.assessment_id !== "string" || !resume.assessment_id) {
+          console.error("GutGPT resume response is missing assessment data");
+          form.hidden = true;
+          input.disabled = true;
+          addMessage(
+            "Welcome back, " + safeName + ". The server response did not contain valid assessment details. Your assessment has not been restarted. Please refresh to retry.",
+            "bot"
+          );
+          status.textContent = "Assessment restoration is incomplete. Chat is paused.";
+          return;
+        }
+
+        addMessage("Welcome back, " + safeName + "! I've restored your unfinished assessment so you can continue.", "bot");
+        for (const item of resume.messages) {
+          if (item && (item.role === "user" || item.role === "assistant") && typeof item.content === "string") {
+            addMessage(item.content, item.role === "assistant" ? "bot" : "user");
           }
         }
+        // An empty transcript is still a resumed assessment if the backend has
+        // returned its canonical assessment ID; do not silently start over.
+        form.hidden = false;
+        input.disabled = false;
+        status.textContent = "";
+        input.focus();
+        return;
       }
-      if (typeof resumeFailed === "undefined" || !resumeFailed) status.textContent = "";
-      else status.textContent = "Your profile loaded, but saved assessment progress could not be recovered. Please retry before starting over.";
+
+      else if (resume.status === "NO_ACTIVE_ASSESSMENT") {
+        // Only this explicit backend status permits the new-assessment welcome.
+        addMessage("Welcome back, " + safeName + "! Your profile is restored. You can start a new assessment.", "bot");
+        form.hidden = false;
+        input.disabled = false;
+        status.textContent = "";
+        input.focus();
+        return;
+      }
+
+      // Unknown status is an error, not proof that no assessment exists.
+      console.error("Unexpected GutGPT resume status", resume.status);
+      form.hidden = true;
+      input.disabled = true;
+      addMessage(
+        "Welcome back, " + safeName + ". I couldn't verify your saved assessment status. Your assessment has not been restarted. Please refresh to retry.",
+        "bot"
+      );
+      status.textContent = "Assessment status could not be verified. Chat is paused.";
     } catch (error) {
       console.error("GutGPT session initialization failed", error);
       status.textContent = "";
-      intakeError.textContent = "I couldn't connect to GutGPT right now. Please refresh the page and try again.";
+      input.disabled = true;
+      form.hidden = true;
+      intakeError.textContent = "I couldn't safely restore your GutGPT session right now. Please refresh and try again.";
       intakeError.hidden = false;
     }
   }

@@ -11,11 +11,15 @@ import app as gutgpt_app
 @pytest.fixture(autouse=True)
 def use_json_backend(monkeypatch, tmp_path):
     monkeypatch.setattr(gutgpt_app, "DATABASE_URL", "")
-    monkeypatch.setattr(gutgpt_app, "CUSTOMER_DATA_FILE", tmp_path / "customers.json")
+    store = []
+    monkeypatch.setattr(gutgpt_app, "_read_customer_records", lambda: store)
+    monkeypatch.setattr(gutgpt_app, "_write_customer_records", lambda records: store.__setitem__(slice(None), records))
     monkeypatch.setenv("GUTGPT_ADMIN_TOKEN", "test-admin-token-with-at-least-32-bytes-long")
     monkeypatch.setenv("JWT_SECRET_KEY", "test-only-secret-that-is-at-least-32-bytes-long")
-    gutgpt_app._RATE_LIMIT_BUCKETS.clear()
     monkeypatch.setattr(gutgpt_app, "_RATE_LIMIT_CLEANUP_LAST", None)
+    # These tests exercise export/record logic; rate-limit storage is tested
+    # separately and intentionally requires PostgreSQL in production.
+    monkeypatch.setattr(gutgpt_app, "_enforce_rate_limit", lambda *args, **kwargs: None)
 
 
 def _request():
@@ -28,7 +32,7 @@ def _request():
 
 
 def test_admin_json_export_is_valid_json_with_real_trailing_newline():
-    gutgpt_app._write_json_records(gutgpt_app.CUSTOMER_DATA_FILE, [{"name": "Test", "contact": "1234567890"}])
+    gutgpt_app._write_customer_records([{"name": "Test", "contact": "1234567890"}])
     response = gutgpt_app.admin_download_customers(
         _request(), authorization="Bearer test-admin-token-with-at-least-32-bytes-long"
     )
