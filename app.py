@@ -756,9 +756,13 @@ def _write_customer_records(records: list[dict]) -> None:
                     cur.execute("""
                         INSERT INTO customer_assessments (assessment_id, customer_id, session_id, assessment, status, started_at, updated_at, completed_at)
                         VALUES (%s,%s,%s,%s,'completed',%s,%s,%s)
-                        ON CONFLICT (session_id) DO UPDATE SET assessment=EXCLUDED.assessment,
-                            customer_id=EXCLUDED.customer_id, status='completed', updated_at=EXCLUDED.updated_at,
-                            completed_at=EXCLUDED.completed_at
+                        ON CONFLICT (session_id) DO UPDATE SET
+                            assessment=EXCLUDED.assessment,
+                            customer_id=EXCLUDED.customer_id,
+                            -- The legacy history writer must not override normalized
+                            -- assessment lifecycle state. _persist_assessment_checkpoint()
+                            -- owns status/completed_at based on assessment_state.checkpoint.
+                            updated_at=GREATEST(customer_assessments.updated_at, EXCLUDED.updated_at)
                     """, (str(item.get("assessment_id") or uuid.uuid4()), cid, str(item["session_id"]),
                           str(item.get("assessment", "Insufficient information")), completed, completed, completed))
     except HTTPException:
@@ -948,6 +952,15 @@ def _restore_assessment_checkpoint(customer_id: str, new_session_id: str) -> dic
         restored_history = [m for m in history if isinstance(m, dict) and m.get("role") in ("user", "assistant") and isinstance(m.get("content"), str)][-MAX_HISTORY_MESSAGES:]
     except (TypeError, ValueError) as exc:
         logger.warning("Ignoring incompatible assessment checkpoint: %s", exc)
+        # If the database already confirmed an active assessment, a state
+        # reconstruction failure is NOT evidence that no assessment exists.
+        # Tell the caller to pause safely instead of inviting a fresh assessment.
+        if active_assessment_found:
+            return {
+                "status": "ASSESSMENT_CHECKPOINT_INVALID",
+                "messages": [],
+                "assessment_id": assessment_id,
+            }
         return None
     with conversation_manager._lock:
         conversation_manager.sessions[new_session_id] = restored_state

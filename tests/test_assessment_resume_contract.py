@@ -25,3 +25,15 @@ def test_widget_does_not_treat_resume_failure_as_a_fresh_assessment():
 def test_resumed_assessment_can_restore_even_if_transcript_is_empty():
     source = (ROOT / "gutgpt-widget.js").read_text(encoding="utf-8")
     assert 'resume.status === "RESUMED" && Array.isArray(resume.messages)' in source
+
+
+def test_incompatible_active_checkpoint_is_not_reported_as_no_active():
+    source = (ROOT / "app.py").read_text(encoding="utf-8")
+    start = source.index("def _restore_assessment_checkpoint")
+    end = source.index("def _persist_completed_assessment", start)
+    restore = source[start:end]
+    incompatible = restore.index("except (TypeError, ValueError) as exc:")
+    branch = restore[incompatible:]
+    assert "if active_assessment_found:" in branch
+    assert '"status": "ASSESSMENT_CHECKPOINT_INVALID"' in branch
+    assert "return None" in branch

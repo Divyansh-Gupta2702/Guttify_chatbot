@@ -15,3 +15,10 @@
 
 ## Not claimed
 The full suite and PostgreSQL integration behavior have not been verified here. Run the full suite in the project's configured virtual environment against the intended test database before deployment.
+
+
+## Exact follow-up fix: incompatible active checkpoint
+- Fixed `_restore_assessment_checkpoint()`: when a database-confirmed active assessment's checkpoint cannot be reconstructed (`TypeError`/`ValueError`), it now returns `ASSESSMENT_CHECKPOINT_INVALID` with the assessment ID instead of `None`.
+- `None` remains possible only when there is no known active normalized assessment and the legacy fallback does not yield a resumable checkpoint.
+- Added a static regression guard for this exact exception path.
+- This is a source-level fix; PostgreSQL integration and live widget behavior still need to be tested against the configured test database.
