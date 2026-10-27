@@ -419,6 +419,7 @@
   applyLanguage();
 
   let sessionId = null;
+  const SESSION_STORAGE_KEY = "gutgpt_session_id_v1";
   let customerRegistered = false;
   const GUEST_TOKEN_STORAGE_KEY = "gutgpt_guest_token_v1";
   // Guest JWTs are now held in a persistent HttpOnly cookie by the API.
@@ -566,11 +567,18 @@
     let resumeFailed = false;
 
     try {
-      const data = await fetchJson("/api/session", { method: "POST" });
-      if (typeof data.session_id !== "string" || !data.session_id) {
-        throw new Error("INVALID_SESSION");
+      // Reuse the browser's current session on refresh. A new session is only
+      // created when there is no stored session or the backend explicitly says
+      // that the stored session no longer exists (HTTP 410).
+      let storedSessionId = "";
+      try { storedSessionId = window.sessionStorage.getItem(SESSION_STORAGE_KEY) || ""; } catch (_) {}
+      if (storedSessionId) {
+        sessionId = storedSessionId;
+      } else {
+        const created = await fetchJson("/api/session", { method: "POST" });
+        if (typeof created.session_id !== "string" || !created.session_id) throw new Error("INVALID_SESSION");
+        sessionId = created.session_id;
       }
-      sessionId = data.session_id;
 
       const guestToken = getLegacyGuestToken();
       let restored;
@@ -581,18 +589,33 @@
           body: JSON.stringify({ session_id: sessionId, guest_token: guestToken }),
         });
       } catch (restoreError) {
-        // Only clear a credential when the server explicitly rejects it.
-        if (restoreError?.status === 401) {
-          clearLegacyGuestToken();
-          status.textContent = "";
-          intake.hidden = false;
-          messages.hidden = true;
-          form.hidden = true;
-          input.disabled = true;
-          return;
+        // A 410 is authoritative evidence that this in-memory session expired
+        // or was lost (for example after a server restart). Network/429/5xx
+        // errors must not discard the existing identifier or create a session.
+        if (storedSessionId && restoreError?.status === 410) {
+          const created = await fetchJson("/api/session", { method: "POST" });
+          if (typeof created.session_id !== "string" || !created.session_id) throw new Error("INVALID_SESSION");
+          sessionId = created.session_id;
+          restored = await fetchJson("/api/customer/restore", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ session_id: sessionId, guest_token: guestToken }),
+          });
+        } else {
+          // Only clear a credential when the server explicitly rejects it.
+          if (restoreError?.status === 401) {
+            clearLegacyGuestToken();
+            status.textContent = "";
+            intake.hidden = false;
+            messages.hidden = true;
+            form.hidden = true;
+            input.disabled = true;
+            return;
+          }
+          throw restoreError;
         }
-        throw restoreError;
       }
+      try { window.sessionStorage.setItem(SESSION_STORAGE_KEY, sessionId); } catch (_) {}
 
       if (!restored || restored.status !== "RESTORED") {
         // Do not infer that registration is needed from an unexpected response.
@@ -747,6 +770,27 @@
     }
   });
 
+  async function startNextAssessmentSession() {
+    // Called only after the backend confirms the current assessment completed.
+    // Keep the visible transcript, but route subsequent messages through a fresh
+    // session so the rule engine's terminal state cannot leak into the next assessment.
+    const created = await fetchJson("/api/session", { method: "POST" });
+    if (typeof created.session_id !== "string" || !created.session_id) throw new Error("INVALID_SESSION");
+    const nextSessionId = created.session_id;
+    const guestToken = getLegacyGuestToken();
+    const restored = await fetchJson("/api/customer/restore", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ session_id: nextSessionId, guest_token: guestToken }),
+    });
+    if (!restored || restored.status !== "RESTORED") throw new Error("CUSTOMER_RESTORE_INVALID_RESPONSE");
+    // Adopt the ID only after identity restoration succeeds.
+    sessionId = nextSessionId;
+    try { window.sessionStorage.setItem(SESSION_STORAGE_KEY, sessionId); } catch (_) {}
+    customerRegistered = true;
+    ended = false;
+  }
+
   async function sendMessage(retryingExpiredSession = false) {
     if (busy || ended || !sessionId || !customerRegistered) return;
     let retryMessage = null;
@@ -780,7 +824,7 @@
       }
 
       thinking.remove();
-      addMessage(
+      const botReply = addMessage(
         data.reply,
         "bot",
         data.status === "SAFETY_REVIEW" ? "error" : ""
@@ -796,6 +840,38 @@
       if (data.status === "SESSION_ENDED") {
         ended = true;
         status.textContent = "";
+      }
+
+      // A completed diagnosis belongs to the old session. Persist it there,
+      // then establish exactly one clean session for the next assessment.
+      if (data.assessment_complete === true || ["DIAGNOSIS", "RECOMMENDATION_FOUND", "AMBIGUOUS", "DIAGNOSIS_COMPLETE", "RECOMMENDATION_COMPLETE"].includes(data.status)) {
+        try {
+          await startNextAssessmentSession();
+          status.textContent = "Ready for a new assessment.";
+          // Recovery for a widget that was already sitting in a completed
+          // session before this patch: retry the user's symptom exactly once
+          // on the newly authenticated session instead of making them resend it.
+          if (data.status === "DIAGNOSIS_COMPLETE") {
+            const retryId = (globalThis.crypto && typeof globalThis.crypto.randomUUID === "function")
+              ? globalThis.crypto.randomUUID()
+              : ("msg-" + Date.now().toString(36) + "-" + Math.random().toString(36).slice(2));
+            const retried = await fetchJson("/api/chat", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ session_id: sessionId, message, language, message_id: retryId }),
+            });
+            if (typeof retried.reply === "string") {
+              botReply.remove();
+              addMessage(retried.reply, "bot", retried.status === "SAFETY_REVIEW" ? "error" : "");
+              if (["RECOMMENDATION_FOUND", "AMBIGUOUS"].includes(retried.status)) addProducts(retried.recommendations);
+            }
+          }
+        } catch (transitionError) {
+          // Keep the old ID if transition failed; never invent a successful
+          // transition or clear the existing session on a temporary failure.
+          console.error("GutGPT post-assessment session transition failed", transitionError);
+          status.textContent = "Assessment saved. Could not start a new session yet; please retry shortly.";
+        }
       }
     } catch (error) {
       console.error("GutGPT chat request failed", error);

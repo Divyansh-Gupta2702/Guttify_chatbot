@@ -1168,6 +1168,9 @@ class ChatResponse(BaseModel):
     reply: str
     status: str
     recommendations: list[dict] = Field(default_factory=list)
+    # True when the current assessment has reached a terminal outcome, including
+    # urgent red-flag safety outcomes that must not continue in this session.
+    assessment_complete: bool = False
 
 
 def _request_client_key(request: Request) -> str:
@@ -1834,10 +1837,20 @@ def _chat_impl(req: ChatRequest, request: Request = None):
     total_ms = (time.perf_counter() - total_start) * 1000
     logger.info("[PERF][%s] TOTAL backend chat: %.2f ms", request_id, total_ms)
 
+    urgent_safety_outcome = bool(
+        result
+        and status == "SAFETY_REVIEW"
+        and (result.get("screening") or {}).get("action") == "urgent_medical_evaluation"
+    )
+    assessment_complete = bool(
+        status in ("DIAGNOSIS", "RECOMMENDATION_FOUND", "AMBIGUOUS", "DIAGNOSIS_COMPLETE", "RECOMMENDATION_COMPLETE")
+        or urgent_safety_outcome
+    )
     response = ChatResponse(
         reply=reply,
         status=status,
         recommendations=(result.get("recommendations") if result else None) or [],
+        assessment_complete=assessment_complete,
     )
     _complete_chat_idempotency(req.session_id, req.message_id, response.model_dump())
     return response
