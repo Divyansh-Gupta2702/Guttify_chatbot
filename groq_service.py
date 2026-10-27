@@ -52,16 +52,15 @@ def message_call_budget(request_id: str, max_calls: int | None = None) -> Iterat
         _budget.reset(token)
 
 
-def configured_message_budget(*, needs_translation: bool = False) -> int:
-    """Return a bounded per-message budget that permits a translation round trip.
+def configured_message_budget() -> int:
+    """Return the bounded per-message Groq call budget.
 
-    A non-English turn can legitimately need one input and one output translation.
-    An environment value of 1 must not silently disable the output translation;
-    shared PostgreSQL RPM/TPM/concurrency limits remain the cross-request guard.
+    GutGPT is English-only: no input or output translation calls are made, so
+    one budget covers the turn (NLU model resolution when the contextual
+    resolver requires it; the deterministic reply path uses none). The
+    configured floor of one call remains available for essential NLU.
     """
-    configured = max(1, int(os.getenv("GROQ_MAX_CALLS_PER_MESSAGE", "2")))
-    minimum = 2 if needs_translation else 1
-    return max(configured, minimum)
+    return max(1, int(os.getenv("GROQ_MAX_CALLS_PER_MESSAGE", "2")))
 
 
 def _reserve_budget(request_id: str) -> str:

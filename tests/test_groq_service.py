@@ -72,24 +72,31 @@ def test_message_budget_is_isolated_between_messages(monkeypatch):
     assert one.calls == two.calls == 1
 
 
-def test_default_message_budget_allows_bilingual_round_trip_but_stays_bounded(monkeypatch):
+def test_default_message_budget_allows_one_english_call_but_stays_bounded(monkeypatch):
     import groq_service
     monkeypatch.delenv("GROQ_MAX_CALLS_PER_MESSAGE", raising=False)
     monkeypatch.setattr(groq_service, "_shared_capacity_reserve", lambda prompt, request_id: None)
     from groq_service import message_call_budget, GroqBudgetExceeded
-    clients = [Client(), Client(), Client()]
-    with message_call_budget("bilingual-round-trip"):
-        invoke_groq(clients[0], "input translation", reason="translation")
-        invoke_groq(clients[1], "output translation", reason="translation")
+    clients = [Client(), Client()]
+    # GutGPT is English-only: no input/output translation calls exist, so a
+    # single per-message budget covers the turn (essential NLU only).
+    with message_call_budget("english-turn", max_calls=1):
+        invoke_groq(clients[0], "contextual nlu resolution", reason="nlu_extraction")
         with pytest.raises(GroqBudgetExceeded):
-            invoke_groq(clients[2], "unexpected third call", reason="nlu")
-    assert [client.calls for client in clients] == [1, 1, 0]
+            invoke_groq(clients[1], "unexpected second call", reason="reply")
+    assert [client.calls for client in clients] == [1, 0]
 
 
-def test_configured_budget_guarantees_translation_round_trip_even_with_old_cap(monkeypatch):
+def test_configured_budget_has_minimum_of_one(monkeypatch):
     import groq_service
     monkeypatch.setenv("GROQ_MAX_CALLS_PER_MESSAGE", "1")
-    assert groq_service.configured_message_budget(needs_translation=True) == 2
-    assert groq_service.configured_message_budget(needs_translation=False) == 1
+    try:
+        assert groq_service.configured_message_budget() == 1
+    finally:
+        monkeypatch.delenv("GROQ_MAX_CALLS_PER_MESSAGE", raising=False)
+    assert groq_service.configured_message_budget() == 2  # default
     monkeypatch.setenv("GROQ_MAX_CALLS_PER_MESSAGE", "4")
-    assert groq_service.configured_message_budget(needs_translation=True) == 4
+    try:
+        assert groq_service.configured_message_budget() == 4
+    finally:
+        monkeypatch.delenv("GROQ_MAX_CALLS_PER_MESSAGE", raising=False)

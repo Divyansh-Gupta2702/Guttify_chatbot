@@ -55,9 +55,82 @@ QUESTION_FLOW_SCHEMA_VERSION = "v18.1"
 
 from support_footer import append_human_support_footer
 from groq_service import message_call_budget, configured_message_budget, GroqBudgetExceeded, GroqCircuitOpen, GroqBusyError
-from multilingual import normalize_language, detect_input_language, translate_to_english, translate_from_english, translation_error_message, TranslationUnavailableError
 MAX_MESSAGE_LENGTH = max(256, min(10000, int(os.getenv("MAX_MESSAGE_LENGTH", "4000"))))
 MAX_HISTORY_MESSAGES = 100
+
+# GutGPT communicates exclusively in English. There is no language detection,
+# no automatic translation, and no multilingual response rendering. Messages
+# that are clearly not in English (Hindi, Hinglish, other scripts, or
+# non-English confirmation words) receive a fixed English notice and are never
+# run through the clinical engine, so a non-English "yes"/"no" can never
+# advance an assessment as though it were English.
+ENGLISH_ONLY_FALLBACK = (
+    "I can assist you in English only. Please describe your symptoms in English so I can help you."
+)
+NON_ENGLISH_STATUS = "NON_ENGLISH"
+
+# Non-Latin scripts are never part of an English GutGPT message.
+_NON_LATIN_SCRIPT_RANGES = (
+    (0x0900, 0x097F),  # Devanagari (Hindi, Marathi, Sanskrit, ...)
+    (0x0980, 0x09FF),  # Bengali
+    (0x0A00, 0x0A7F),  # Gurmukhi (Punjabi)
+    (0x0A80, 0x0AFF),  # Gujarati
+    (0x0B00, 0x0B7F),  # Odia
+    (0x0B80, 0x0BFF),  # Tamil
+    (0x0C00, 0x0C7F),  # Telugu
+    (0x0C80, 0x0CFF),  # Kannada
+    (0x0D00, 0x0D7F),  # Malayalam
+)
+
+# Conservative Roman-script Hindi/Hinglish marker words. Ordinary English
+# words are deliberately excluded (for example "gas", "hi", "me", "no",
+# "daily", "ok") so English messages with product names, medical terms,
+# abbreviations or spelling mistakes are never mistaken for another language.
+_HINDI_HINGLISH_MARKERS = {
+    "haan", "han", "haa", "ji", "nahi", "nahin", "nhi", "nah",
+    "bilkul", "kya", "kaise", "kab", "kyun", "kitna", "kitni",
+    "raat", "subah", "shaam", "sham", "dopahar", "hafta", "mahina", "mahino",
+    "saal", "din", "kal", "aaj", "mujhe", "mujhko", "mera", "meri", "mere",
+    "mein", "se", "ko", "ka", "ki", "ke", "aur", "lekin", "par", "abhi",
+    "dard", "jalan", "phoolna", "kabz", "dast", "patla", "potty", "khoon",
+    "ulti", "matli", "zyada", "thoda", "bahut", "kam", "baar", "hoga", "hogi",
+    "sakta", "sakti", "sakte", "chahiye", "batao", "batayein", "matlab",
+    "kabhi", "roz", "hoti", "hote", "hota", "hai", "hain", "ho", "raha",
+    "rahi", "rahe", "fulna", "takleef", "pareshani", "qabz", "dakaar",
+    "khana", "khane", "baad", "pehle",
+}
+
+# Short Roman-script answers that are Hinglish/Hindi rather than English.
+# English "yes"/"no" are intentionally absent: they remain valid confirmations.
+_NON_ENGLISH_SHORT_ANSWERS = {"haan", "han", "haa", "ji", "bilkul", "nahi", "nahin", "nhi", "nah"}
+
+
+def _is_non_english(text: str) -> bool:
+    """Return True when a message is clearly not English.
+
+    Detection is conservative and English-biased: non-Latin script is always
+    non-English, and Roman-script text is flagged only when it contains
+    Hindi/Hinglish marker words. Short messages (three tokens or fewer) need
+    one marker; longer messages need two, so a lone English word that happens
+    to resemble a marker (for example "gas") never triggers the fallback.
+    """
+    if not text:
+        return False
+    for ch in text:
+        code = ord(ch)
+        for lo, hi in _NON_LATIN_SCRIPT_RANGES:
+            if lo <= code <= hi:
+                return True
+    normalized = re.sub(r"[^a-z0-9\s']", " ", text.lower())
+    tokens = normalized.split()
+    joined = " ".join(tokens)
+    if joined in _NON_ENGLISH_SHORT_ANSWERS:
+        return True
+    marker_count = sum(1 for token in tokens if token in _HINDI_HINGLISH_MARKERS)
+    if len(tokens) <= 3:
+        return marker_count >= 1
+    return marker_count >= 2
+
 DATABASE_URL = os.getenv("DATABASE_URL", "").strip()
 GUEST_TOKEN_TTL_SECONDS = 30 * 24 * 60 * 60
 GUEST_COOKIE_NAME = "gutgpt_guest_token"
@@ -1085,6 +1158,8 @@ class ChatRequest(BaseModel):
     # Keep Pydantic above the production UX limit so we can return a friendly
     # application-level message instead of an opaque 422 validation error.
     message: str = Field(min_length=1, max_length=MAX_MESSAGE_LENGTH)
+    # Accepted for backward-compatible widget payloads; GutGPT is English-only
+    # and this value never changes how a message is processed or answered.
     language: str = Field(default="en", max_length=16)
     message_id: str = Field(default="", max_length=128)
 
@@ -1615,23 +1690,36 @@ def _chat_impl(req: ChatRequest, request: Request = None):
     turn_id = uuid.uuid4().hex
     total_start = time.perf_counter()
     original_message = req.message.strip()
-    # Detect language for each message so users can freely alternate between
-    # English and Roman-script Hinglish without changing a widget setting.
-    language = detect_input_language(original_message, req.language)
-    try:
-        message = translate_to_english(original_message, language)
-    except TranslationUnavailableError as exc:
-        logger.warning("Input translation unavailable language=%s session=%s", language, req.session_id[:8])
-        raise HTTPException(status_code=503, detail="Translation is temporarily unavailable. Please retry your message.") from exc
+    # Pydantic rejects an empty string before reaching here, but keep the
+    # guard because whitespace-only input becomes empty after stripping.
+    if not original_message:
+        raise HTTPException(status_code=400, detail="Message cannot be empty.")
+
     logger.info(
         "[PERF][%s] REQUEST received session=%s message_len=%d",
-        request_id, req.session_id[:8], len(message)
+        request_id, req.session_id[:8], len(original_message)
     )
     _cleanup_sessions()
-    if not message:
-        # Pydantic rejects an empty string before reaching here, but keep the
-        # guard because whitespace-only input becomes empty after stripping.
-        raise HTTPException(status_code=400, detail="Message cannot be empty.")
+
+    logic_start = time.perf_counter()
+    # GutGPT communicates exclusively in English. The message is processed as
+    # English exactly as written; it is never translated. Clearly non-English
+    # input (Hindi, Hinglish, other scripts, non-English confirmation words)
+    # receives a fixed English notice and never enters the clinical engine, so
+    # it cannot change assessment state or be mistaken for an English yes/no.
+    if _is_non_english(original_message):
+        reply = ENGLISH_ONLY_FALLBACK
+        status = NON_ENGLISH_STATUS
+        result = None
+    else:
+        message = original_message
+        result = conversation_manager.handle_message(req.session_id, message)
+        logic_ms = (time.perf_counter() - logic_start) * 1000
+        status = result["status"]
+        logger.info(
+            "[PERF][%s] Rule engine handle_message: %.2f ms status=%s",
+            request_id, logic_ms, status
+        )
 
     # Never silently turn an expired/unknown session into a brand-new chat.
     # The widget can explicitly create a new session when this happens.
@@ -1660,72 +1748,50 @@ def _chat_impl(req: ChatRequest, request: Request = None):
     history_ms = (time.perf_counter() - history_start) * 1000
     logger.info("[PERF][%s] Session/history lookup: %.2f ms", request_id, history_ms)
 
-    logic_start = time.perf_counter()
-    result = conversation_manager.handle_message(req.session_id, message)
-    logic_ms = (time.perf_counter() - logic_start) * 1000
-    status = result["status"]
-    logger.info(
-        "[PERF][%s] Rule engine handle_message: %.2f ms status=%s",
-        request_id, logic_ms, status
-    )
+    # Non-English turns already have their English-only fallback reply and
+    # skip the rule-engine reply selection entirely (result is None).
+    if result is not None:
+        if status in (
+            "GIBBERISH",
+            "IRRELEVANT",
+            "SAFETY_REVIEW",
+            "SCREENING_REVIEW",
+            "SUMMARY_REVIEW",
+            "ASK",
+            "NO_MATCH",
+            "GREETING",
+            "ACKNOWLEDGEMENT",
+            "DIAGNOSIS_COMPLETE",
+            "RECOMMENDATION_COMPLETE",
+            "SESSION_ENDED",
+        ):
+            reply = result["message"]
 
-    if status in (
-        "GIBBERISH",
-        "IRRELEVANT",
-        "SAFETY_REVIEW",
-        "SCREENING_REVIEW",
-        "SUMMARY_REVIEW",
-        "ASK",
-        "NO_MATCH",
-        "GREETING",
-        "ACKNOWLEDGEMENT",
-        "DIAGNOSIS_COMPLETE",
-        "RECOMMENDATION_COMPLETE",
-        "SESSION_ENDED",
-    ):
-        reply = result["message"]
+        elif status == "DIAGNOSIS":
+            # The diagnosis has already been selected by the deterministic rule
+            # engine. Do not send this request through the LLM; doing so adds a
+            # network round trip without adding diagnostic value.
+            reply = _deterministic_screening_reply(result.get("screening"))
 
-    elif status == "DIAGNOSIS":
-        # The diagnosis has already been selected by the deterministic rule
-        # engine. Do not send this request through the LLM; doing so adds a
-        # network round trip without adding diagnostic value.
-        reply = _deterministic_screening_reply(result.get("screening"))
+        elif status == "PRODUCT_INFO_FOUND":
+            # Product data is already structured and validated. Answer directly
+            # from that data instead of waiting for an LLM generation call.
+            reply = _deterministic_product_reply(result["product"], message)
 
-    elif status == "PRODUCT_INFO_FOUND":
-        # Product data is already structured and validated. Answer directly
-        # from that data instead of waiting for an LLM generation call.
-        reply = _deterministic_product_reply(result["product"], message)
+        elif status in ("RECOMMENDATION_FOUND", "AMBIGUOUS"):
+            # Preserve the exact rule-engine recommendation. The LLM is not used
+            # to rewrite or reinterpret the approved diagnosis/product routing.
+            products = result.get("recommendations") or []
+            reply = _deterministic_screening_reply(result.get("screening"), products)
 
-    elif status in ("RECOMMENDATION_FOUND", "AMBIGUOUS"):
-        # Preserve the exact rule-engine recommendation. The LLM is not used
-        # to rewrite or reinterpret the approved diagnosis/product routing.
-        products = result.get("recommendations") or []
-        reply = _deterministic_screening_reply(result.get("screening"), products)
-
-    else:
-        reply = "Sorry, something went wrong. Could you rephrase that?"
+        else:
+            reply = "Sorry, something went wrong. Could you rephrase that?"
 
     # Add contact details only when the assessment has actually produced a
     # completed diagnosis/screening result. Do not append to intermediate
     # questions, safety reviews, greetings, or later acknowledgements.
     if status in ("DIAGNOSIS", "RECOMMENDATION_FOUND", "AMBIGUOUS"):
         reply = append_human_support_footer(reply)
-
-    if language != "en":
-        try:
-            reply = translate_from_english(reply, language)
-        except TranslationUnavailableError:
-            # The rule engine has already processed the answer. Do not turn a
-            # translation-only failure into HTTP 503 after state has changed:
-            # that can make the widget retry an already-applied assessment turn.
-            # Keep the exact rule-engine response visible in English, with a
-            # localized notice explaining the temporary translation limitation.
-            logger.warning(
-                "Output translation unavailable; using bilingual safe fallback language=%s session=%s status=%s",
-                language, req.session_id[:8], status,
-            )
-            notice = translation_error_message(language)
-            reply = f"{notice}\n\n{reply}"
 
     # Persist urgent safety outcomes as well as completed routine assessments.
     if status in ("DIAGNOSIS", "RECOMMENDATION_FOUND", "AMBIGUOUS") or (
@@ -1771,7 +1837,7 @@ def _chat_impl(req: ChatRequest, request: Request = None):
     response = ChatResponse(
         reply=reply,
         status=status,
-        recommendations=result.get("recommendations") or [],
+        recommendations=(result.get("recommendations") if result else None) or [],
     )
     _complete_chat_idempotency(req.session_id, req.message_id, response.model_dump())
     return response
@@ -1781,11 +1847,10 @@ def _chat_impl(req: ChatRequest, request: Request = None):
 def chat(req: ChatRequest, request: Request = None):
     """Apply one shared Groq-call budget to the entire incoming chat turn."""
     request_id = uuid.uuid4().hex[:8]
-    # Bidirectional translation needs up to two calls. Honor larger configured
-    # budgets, but guarantee the minimum required round-trip budget for a
-    # non-English/Hinglish turn even if an old deployment still sets the cap to 1.
-    detected_language = detect_input_language(req.message.strip(), req.language)
-    budget = configured_message_budget(needs_translation=(detected_language != "en"))
+    # GutGPT is English-only: no input or output translation calls are made, so
+    # a single per-message budget covers the turn (NLU model resolution when the
+    # contextual resolver requires it; the deterministic reply path uses none).
+    budget = configured_message_budget()
     try:
         with message_call_budget(request_id, max_calls=budget):
             return _chat_impl(req, request)

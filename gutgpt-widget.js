@@ -335,7 +335,6 @@
           <p>Guttify's gut-health assistant</p>
         </div>
         <div class="head-actions">
-          <span class="language-hint" aria-label="Language detection">English / Hinglish</span>
           <button class="close" type="button" aria-label="Close GutGPT">×</button>
         </div>
       </header>
@@ -381,8 +380,8 @@
   const input = $(".composer input");
   const sendButton = $(".send");
   const status = $(".status");
-  // Language is detected per message by the backend. Customers can type English
-  // or Roman-script Hinglish without changing a widget setting.
+  // GutGPT is English-only. The widget always sends English and never
+  // translates user messages or bot responses.
   const language = "en";
 
   const UI_TEXT = {
@@ -398,19 +397,6 @@
       save: "Save details and continue", restored: (name) => `Welcome back, ${name}! Your profile is restored. You can start a new assessment.`,
       resumed: (name) => `Welcome back, ${name}! I've restored your unfinished assessment so you can continue.`,
       retryAssessment: "I couldn't recover your assessment progress. Your assessment has not been restarted. Please retry."
-    },
-    "hi-latn": {
-      greeting: (name) => `Namaste ${name}! Main GutGPT hoon. Apne pet ya digestion se judi pareshani batayein.`,
-      placeholder: "Aapko kya pareshani ho rahi hai, batayein…",
-      aria: "GutGPT ko message bhejein",
-      saving: "Aapki details save ho rahi hain…",
-      validation: "Kripya sabhi fields bharein aur details save karne ki sahmati dein.",
-      retry: "Abhi aapka GutGPT session shuru nahi ho paya. Kripya dobara try karein.",
-      intakeTitle: "Shuru karne se pehle", intakeCopy: "GutGPT assessment shuru karne ke liye kuch details share karein.",
-      labels: ["Poora naam", "Age", "Contact number", "Location"], consent: "Main is assessment ke liye apni details save karne ki sahmati deta/deti hoon.",
-      save: "Details save karein aur aage badhein", restored: (name) => `Welcome back, ${name}! Aapki profile restore ho gayi hai. Aap naya assessment shuru kar sakte hain.`,
-      resumed: (name) => `Welcome back, ${name}! Aapka adhura assessment restore ho gaya hai.`,
-      retryAssessment: "Aapki assessment progress recover nahi ho saki. Assessment restart nahi kiya gaya. Kripya dobara try karein.",
     }
   };
   function currentText() { return UI_TEXT[language] || UI_TEXT.en; }
