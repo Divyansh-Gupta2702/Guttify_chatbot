@@ -574,52 +574,58 @@
     let resumeFailed = false;
 
     try {
-      // Reuse the browser's current session on refresh. A new session is only
-      // created when there is no stored session or the backend explicitly says
-      // that the stored session no longer exists (HTTP 410).
+      // Prefer restoring an existing browser session before considering creation.
+      // A new session is permitted only when no stored session exists or the
+      // backend explicitly confirms that the stored session expired (HTTP 410).
       const existingSessionId = getStoredSessionId();
-      if (existingSessionId) {
-        sessionId = existingSessionId;
-      } else {
-        const created = await fetchJson("/api/session", { method: "POST" });
-        if (typeof created.session_id !== "string" || !created.session_id) throw new Error("INVALID_SESSION");
-        sessionId = created.session_id;
-      }
-
       const guestToken = getLegacyGuestToken();
       let restored;
-      try {
-        restored = await fetchJson("/api/customer/restore", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ session_id: sessionId, guest_token: guestToken }),
-        });
-      } catch (restoreError) {
-        // A 410 is authoritative evidence that this in-memory session expired
-        // or was lost (for example after a server restart). Network errors, rate limits, server errors and DB failures are not
-        // authoritative expiry signals and must not discard the existing identifier or create a session.
-        if (existingSessionId && restoreError?.status === 410) {
-          const created = await fetchJson("/api/session", { method: "POST" });
-          if (typeof created.session_id !== "string" || !created.session_id) throw new Error("INVALID_SESSION");
-          sessionId = created.session_id;
+
+      if (existingSessionId) {
+        sessionId = existingSessionId;
+        try {
           restored = await fetchJson("/api/customer/restore", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ session_id: sessionId, guest_token: guestToken }),
           });
-        } else {
-          // Only clear a credential when the server explicitly rejects it.
-          if (restoreError?.status === 401) {
-            clearLegacyGuestToken();
-            status.textContent = "";
-            intake.hidden = false;
-            messages.hidden = true;
-            form.hidden = true;
-            input.disabled = true;
-            return;
+        } catch (restoreError) {
+          // Network errors, rate limits, server errors and DB failures are not
+          // authoritative proof of expiry. Do not replace the stored session
+          // unless the backend explicitly returns HTTP 410 for that session.
+          if (existingSessionId && restoreError?.status === 410) {
+            const created = await fetchJson("/api/session", { method: "POST" });
+            if (typeof created.session_id !== "string" || !created.session_id) throw new Error("INVALID_SESSION");
+            sessionId = created.session_id;
+            restored = await fetchJson("/api/customer/restore", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ session_id: sessionId, guest_token: guestToken }),
+            });
+          } else {
+            // Only clear a credential when the server explicitly rejects it.
+            if (restoreError?.status === 401) {
+              clearLegacyGuestToken();
+              status.textContent = "";
+              intake.hidden = false;
+              messages.hidden = true;
+              form.hidden = true;
+              input.disabled = true;
+              return;
+            }
+            throw restoreError;
           }
-          throw restoreError;
         }
+      } else {
+        // First visit: there is no existing session to restore, so create one.
+        const created = await fetchJson("/api/session", { method: "POST" });
+        if (typeof created.session_id !== "string" || !created.session_id) throw new Error("INVALID_SESSION");
+        sessionId = created.session_id;
+        restored = await fetchJson("/api/customer/restore", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ session_id: sessionId, guest_token: guestToken }),
+        });
       }
       setStoredSessionId(sessionId);
 
