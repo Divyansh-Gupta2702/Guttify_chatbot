@@ -6,8 +6,10 @@ back to the user's selected language.
 """
 import os
 from functools import lru_cache
+import re
 
 from langchain_groq import ChatGroq
+from groq_service import invoke_groq
 
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
 GROQ_MODEL = os.environ.get("GROQ_TRANSLATION_MODEL", "openai/gpt-oss-20b")
@@ -18,7 +20,7 @@ class TranslationUnavailableError(RuntimeError):
 
 
 TRANSLATION_ERROR_MESSAGES = {
-    "hi": "अभी आपकी चुनी हुई भाषा में उत्तर तैयार नहीं हो पा रहा है। कृपया थोड़ी देर बाद फिर प्रयास करें।",
+    "hi-latn": "Abhi jawab taiyar nahi ho pa raha hai. Kripya thodi der baad dobara try karein.",
     "bn": "এই মুহূর্তে আপনার নির্বাচিত ভাষায় উত্তর তৈরি করা যাচ্ছে না। অনুগ্রহ করে একটু পরে আবার চেষ্টা করুন।",
     "mr": "सध्या तुमच्या निवडलेल्या भाषेत उत्तर तयार करता येत नाही. कृपया थोड्या वेळाने पुन्हा प्रयत्न करा.",
     "ta": "தற்போது நீங்கள் தேர்ந்தெடுத்த மொழியில் பதிலை உருவாக்க முடியவில்லை. சிறிது நேரம் கழித்து மீண்டும் முயற்சிக்கவும்.",
@@ -36,7 +38,7 @@ def translation_error_message(language: str) -> str:
 
 SUPPORTED_LANGUAGES = {
     "en": "English",
-    "hi": "Hindi",
+    "hi-latn": "Hinglish",
     "bn": "Bengali",
     "mr": "Marathi",
     "ta": "Tamil",
@@ -50,8 +52,69 @@ SUPPORTED_LANGUAGES = {
 
 
 def normalize_language(language: str | None) -> str:
-    value = (language or "en").strip().lower()
+    value = (language or "en").strip().lower().replace("_", "-")
+    aliases = {"hinglish": "hi-latn", "hi-latn-in": "hi-latn", "auto": "en", "hindi": "en", "hi": "en"}
+    value = aliases.get(value, value)
     return value if value in SUPPORTED_LANGUAGES else "en"
+
+
+# Common Roman-script Hindi words and phrases used in everyday Hinglish symptom
+# descriptions. Detection is intentionally conservative: a few English words such
+# as "gas" or "hai" alone should not flip a message into Hinglish.
+_HINGLISH_MARKERS = {
+    "mujhe", "mujhko", "mera", "meri", "mere", "mein", "me", "pet",
+    "dard", "ho", "raha", "rahi", "rahe", "hai", "hain", "hota",
+    "hoti", "hote", "nahi", "nahin", "ni", "kya", "kaise", "kab",
+    "kyun", "kitna", "kitni", "se", "ko", "ka", "ki", "ke", "aur",
+    "lekin", "par", "abhi", "kal", "aaj", "din", "hafte", "mahine",
+    "subah", "raat", "khana", "khane", "baad", "pehle", "jalan",
+    "gas", "fulna", "phoolna", "kabz", "dast", "motion", "motions",
+    "patla", "potty", "khoon", "toilet", "ulti", "matli", "acidity",
+    "zyada", "thoda", "bahut", "kam", "baar", "bar", "hoga", "hogi",
+    "sakta", "sakti", "sakte", "chahiye", "batao", "batayein", "please",
+    "haan", "han", "haa", "ji", "bilkul", "nah", "matlab", "kabhi",
+    "roz", "daily", "dopahar", "shaam", "sham", "hafta", "mahina",
+    "mahino", "saal", "dakaar", "takleef", "pareshani", "qabz",
+}
+
+
+def detect_input_language(text: str, requested_language: str | None = "en") -> str:
+    """Detect English vs Roman-script Hinglish for each individual message.
+
+    Explicit Hinglish remains supported for API clients, but the Shopify widget
+    can always send English and let this detector choose the response language.
+    Devanagari Hindi is intentionally not a selectable/output language.
+    """
+    requested = normalize_language(requested_language)
+    if requested == "hi-latn":
+        return "hi-latn"
+    normalized = re.sub(r"[^a-z0-9\s']", " ", (text or "").lower())
+    tokens = set(normalized.split())
+    marker_count = len(tokens & _HINGLISH_MARKERS)
+    # A phrase like "pet dard" or "mujhe gas hai" is a strong signal;
+    # otherwise require multiple markers to avoid false positives in English.
+    # Short contextual answers are common in Hinglish and may contain only one
+    # marker (e.g. "haan", "ji", "raat ko", "do din se"). Detect these before
+    # the conservative general rule so the NLU receives translated input.
+    short_answer_patterns = (
+        r"^(?:haan|han|haa|ji|bilkul|nahi|nahin|ni|nah|matlab|kabhi|kabhi\s*kabhi)$",
+        r"^(?:subah|dopahar|shaam|sham|raat|raat\s*ko|subah\s*ko|khane\s*ke\s*baad|khana\s*khane\s*ke\s*baad)$",
+        r"^(?:\d+\s*)?(?:din|dino|hafte|hafta|mahine|mahina|mahino|saal)\s*(?:se|tak)?$",
+        r"^(?:roz|daily|har\s*roz|zyada|bahut|thoda|kam)$",
+    )
+    if any(re.fullmatch(pattern, normalized.strip()) for pattern in short_answer_patterns):
+        return "hi-latn"
+    strong_phrases = (
+        r"\bpet\s+(?:me|mein|ka|ki|ke)?\s*(?:dard|gas|jalan|ful|phool)",
+        r"\bmujhe\s+.{0,30}\b(?:hai|hain|ho|raha|rahi|rahe)\b",
+        r"\b(?:nahi|nahin)\s+(?:hai|hain|ho|hota|hoti)\b",
+        r"\b(?:kabz|dast|potty|khoon|ulti|matli)\b",
+    )
+    if any(re.search(pattern, normalized) for pattern in strong_phrases):
+        return "hi-latn"
+    if marker_count >= 2:
+        return "hi-latn"
+    return "en"
 
 
 @lru_cache(maxsize=1)
@@ -61,7 +124,7 @@ def _llm():
     return ChatGroq(
         model=GROQ_MODEL,
         temperature=0,
-        max_tokens=int(os.environ.get("GROQ_TRANSLATION_MAX_TOKENS", "1200")),
+        max_tokens=int(os.environ.get("GROQ_TRANSLATION_MAX_TOKENS", "500")),
         timeout=float(os.environ.get("GROQ_TRANSLATION_TIMEOUT_SECONDS", "25")),
         max_retries=int(os.environ.get("GROQ_TRANSLATION_MAX_RETRIES", "0")),
         api_key=GROQ_API_KEY,
@@ -69,7 +132,7 @@ def _llm():
 
 
 def _invoke(prompt: str) -> str:
-    response = _llm().invoke(prompt)
+    response = invoke_groq(_llm(), prompt, reason="translation")
     content = getattr(response, "content", response)
     if isinstance(content, list):
         content = "".join(
@@ -79,15 +142,57 @@ def _invoke(prompt: str) -> str:
     return str(content).strip()
 
 
+# Deterministic translations for common short Hinglish answers. These must be
+# handled before the Groq call so simple contextual answers still work during
+# provider rate limits. The question resolver remains responsible for applying
+# the normalized answer to the active field.
+_HINGLISH_SHORT_ANSWERS = {
+    "nahi": "no",
+    "nahin": "no",
+    "nhi": "no",
+    "ni": "no",
+    "nah": "no",
+    "nahi hai": "no",
+    "nahin hai": "no",
+    "nhi hai": "no",
+    "haan": "yes",
+    "han": "yes",
+    "haa": "yes",
+    "ji": "yes",
+    "haan ji": "yes",
+    "bilkul": "yes",
+    "bilkul nahi": "no",
+    "kabhi kabhi": "sometimes",
+    "kabhi": "sometimes",
+    "raat ko": "at night",
+    "raat mein": "at night",
+    "subah": "in the morning",
+    "subah ko": "in the morning",
+    "shaam ko": "in the evening",
+    "sham ko": "in the evening",
+}
+
 def translate_to_english(text: str, language: str) -> str:
     language = normalize_language(language)
     if language == "en" or not text.strip():
         return text
 
+    # Short contextual replies are common in Hinglish. Normalize these locally
+    # before translation so a Groq 429/empty response cannot turn "nahi" into an
+    # unresolved safety answer. Keep this exact-match only to avoid altering
+    # longer sentences or changing clinical meaning.
+    if language == "hi-latn":
+        normalized_short = re.sub(r"\\s+", " ", text.strip().lower()).strip(" .,!?:;")
+        if normalized_short in _HINGLISH_SHORT_ANSWERS:
+            return _HINGLISH_SHORT_ANSWERS[normalized_short]
+
     language_name = SUPPORTED_LANGUAGES[language]
+    source_instruction = (
+        "Hinglish written in Roman script (Hindi-English mix)" if language == "hi-latn" else language_name
+    )
     try:
         translated = _invoke(f"""
-Translate the user's message from {language_name} to clear, natural English.
+Translate the user's message from {source_instruction} to clear, natural English.
 This translation will be used by a deterministic gut-health symptom parser.
 Preserve the exact meaning of symptoms, yes/no answers, numbers, durations,
 severity scores, medicine names, and body-part references.
@@ -147,6 +252,9 @@ def _looks_translated(text: str, source: str, language: str) -> bool:
 def _translation_prompt(text: str, language: str) -> str:
     language_name = SUPPORTED_LANGUAGES[language]
     target_instruction = (
+        "Write the entire user-facing response in natural conversational Hinglish, using Hindi-English "
+        "mix in Roman script (Latin letters), as commonly used in India. Do not use Devanagari."
+        if language == "hi-latn" else
         f"Write the entire user-facing response in natural, easy-to-understand {language_name}. "
         "Use the native script for normal words and sentences."
     )
@@ -185,25 +293,9 @@ def translate_from_english(text: str, language: str) -> str:
     except Exception:
         translated = ""
 
-    # Retry once with an even more explicit instruction. This prevents a model
-    # that ignored the target-language instruction from silently returning the
-    # English diagnosis.
-    retry_prompt = f"""
-Translate this GutGPT response into {SUPPORTED_LANGUAGES[language]}.
-THIS IS A TRANSLATION TASK. YOUR ANSWER MUST NOT BE IN ENGLISH.
-Use the native {SUPPORTED_LANGUAGES[language]} script for the sentences.
-Keep product names and URLs unchanged. Preserve the exact medical meaning and formatting.
-Output ONLY the translation.
-
-SOURCE:
-{text}
-"""
-    try:
-        translated = _invoke(retry_prompt)
-        if _looks_translated(translated, text, language):
-            return translated
-    except Exception:
-        pass
+    # Do not make a second provider call to repair a translation. Repeated
+    # calls amplified rate limits during provider degradation; fail closed with
+    # the existing controlled translation-unavailable behavior instead.
 
     # Never silently return English to a non-English user. A translated
     # diagnosis is required for the final website; surface a controlled

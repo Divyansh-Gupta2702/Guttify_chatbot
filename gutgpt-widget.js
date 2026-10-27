@@ -138,7 +138,6 @@
       }
 
       .head-actions { display: flex; align-items: center; gap: 7px; }
-
       .close {
         border: 0;
         background: transparent;
@@ -336,6 +335,7 @@
           <p>Guttify's gut-health assistant</p>
         </div>
         <div class="head-actions">
+          <span class="language-hint" aria-label="Language detection">English / Hinglish</span>
           <button class="close" type="button" aria-label="Close GutGPT">×</button>
         </div>
       </header>
@@ -381,6 +381,56 @@
   const input = $(".composer input");
   const sendButton = $(".send");
   const status = $(".status");
+  // Language is detected per message by the backend. Customers can type English
+  // or Roman-script Hinglish without changing a widget setting.
+  const language = "en";
+
+  const UI_TEXT = {
+    en: {
+      greeting: (name) => `Hi ${name}! I'm GutGPT, Guttify's gut-health assessment assistant. Tell me what you're experiencing.`,
+      placeholder: "Tell me what you're experiencing…",
+      aria: "Message GutGPT",
+      saving: "Saving your details…",
+      validation: "Please complete every field and agree to the storage notice.",
+      retry: "I couldn't safely restore your GutGPT session right now. Please retry.",
+      intakeTitle: "Before we begin", intakeCopy: "Please share a few details so GutGPT can start your gut-health assessment.",
+      labels: ["Full name", "Age", "Contact number", "Location"], consent: "I agree to have these details stored to support this assessment.",
+      save: "Save details and continue", restored: (name) => `Welcome back, ${name}! Your profile is restored. You can start a new assessment.`,
+      resumed: (name) => `Welcome back, ${name}! I've restored your unfinished assessment so you can continue.`,
+      retryAssessment: "I couldn't recover your assessment progress. Your assessment has not been restarted. Please retry."
+    },
+    "hi-latn": {
+      greeting: (name) => `Namaste ${name}! Main GutGPT hoon. Apne pet ya digestion se judi pareshani batayein.`,
+      placeholder: "Aapko kya pareshani ho rahi hai, batayein…",
+      aria: "GutGPT ko message bhejein",
+      saving: "Aapki details save ho rahi hain…",
+      validation: "Kripya sabhi fields bharein aur details save karne ki sahmati dein.",
+      retry: "Abhi aapka GutGPT session shuru nahi ho paya. Kripya dobara try karein.",
+      intakeTitle: "Shuru karne se pehle", intakeCopy: "GutGPT assessment shuru karne ke liye kuch details share karein.",
+      labels: ["Poora naam", "Age", "Contact number", "Location"], consent: "Main is assessment ke liye apni details save karne ki sahmati deta/deti hoon.",
+      save: "Details save karein aur aage badhein", restored: (name) => `Welcome back, ${name}! Aapki profile restore ho gayi hai. Aap naya assessment shuru kar sakte hain.`,
+      resumed: (name) => `Welcome back, ${name}! Aapka adhura assessment restore ho gaya hai.`,
+      retryAssessment: "Aapki assessment progress recover nahi ho saki. Assessment restart nahi kiya gaya. Kripya dobara try karein.",
+    }
+  };
+  function currentText() { return UI_TEXT[language] || UI_TEXT.en; }
+  function applyLanguage() {
+    const t = currentText();
+    input.placeholder = t.placeholder;
+    input.setAttribute("aria-label", t.aria);
+    const title = $(".intake-title"), copy = $(".intake-copy");
+    if (title) title.textContent = t.intakeTitle;
+    if (copy) copy.textContent = t.intakeCopy;
+    const labels = intakeForm.querySelectorAll("label:not(.consent-row)");
+    labels.forEach((label, index) => {
+      const textNode = Array.from(label.childNodes).find(node => node.nodeType === Node.TEXT_NODE);
+      if (textNode && t.labels[index]) textNode.textContent = t.labels[index];
+    });
+    const consent = intakeForm.querySelector(".consent-row span");
+    if (consent) consent.textContent = t.consent;
+    if (intakeSubmit) intakeSubmit.textContent = t.save;
+  }
+  applyLanguage();
 
   let sessionId = null;
   let customerRegistered = false;
@@ -588,7 +638,7 @@
         form.hidden = true;
         input.disabled = true;
         addMessage(
-          "Welcome back, " + safeName + ". I restored your profile, but couldn't recover your assessment progress. Your assessment has not been restarted. Please refresh to retry.",
+          currentText().retryAssessment,
           "bot"
         );
         status.textContent = "Saved assessment progress could not be recovered. Chat is paused to protect your existing assessment.";
@@ -608,7 +658,7 @@
           return;
         }
 
-        addMessage("Welcome back, " + safeName + "! I've restored your unfinished assessment so you can continue.", "bot");
+        addMessage(currentText().resumed(safeName), "bot");
         for (const item of resume.messages) {
           if (item && (item.role === "user" || item.role === "assistant") && typeof item.content === "string") {
             addMessage(item.content, item.role === "assistant" ? "bot" : "user");
@@ -625,7 +675,7 @@
 
       else if (resume.status === "NO_ACTIVE_ASSESSMENT") {
         // Only this explicit backend status permits the new-assessment welcome.
-        addMessage("Welcome back, " + safeName + "! Your profile is restored. You can start a new assessment.", "bot");
+        addMessage(currentText().restored(safeName), "bot");
         form.hidden = false;
         input.disabled = false;
         status.textContent = "";
@@ -647,7 +697,7 @@
       status.textContent = "";
       input.disabled = true;
       form.hidden = true;
-      intakeError.textContent = "I couldn't safely restore your GutGPT session right now. Please refresh and try again.";
+      intakeError.textContent = currentText().retry;
       intakeError.hidden = false;
     }
   }
@@ -668,14 +718,14 @@
       consent: formData.get("consent") === "on",
     };
     if (!customer.name || !Number.isInteger(customer.age) || customer.age < 1 || customer.age > 120 || !/^[0-9]{7,15}$/.test(customer.contact) || !customer.city || !customer.consent) {
-      intakeError.textContent = "Please complete every field and agree to the storage notice.";
+      intakeError.textContent = currentText().validation;
       intakeError.hidden = false;
       return;
     }
     busy = true;
     intakeSubmit.disabled = true;
     intakeError.hidden = true;
-    status.textContent = "Saving your details…";
+    status.textContent = currentText().saving;
     try {
       const data = await fetchJson("/api/customer", {
         method: "POST",
@@ -688,7 +738,11 @@
       intake.hidden = true;
       messages.hidden = false;
       form.hidden = false;
-      addMessage("Hi " + customer.name.replace(/[<>]/g, "") + "! I'm GutGPT, Guttify's gut-health assessment assistant. Tell me what you're experiencing.", "bot");
+      input.disabled = false;
+      sendButton.disabled = false;
+      status.textContent = "";
+      addMessage(currentText().greeting(customer.name.replace(/[<>]/g, "")), "bot");
+      applyLanguage();
       input.focus();
     } catch (error) {
       console.error("GutGPT customer registration failed", error);
@@ -713,6 +767,9 @@
 
     const message = input.value.trim();
     if (!message) return;
+    const messageId = (globalThis.crypto && typeof globalThis.crypto.randomUUID === "function")
+      ? globalThis.crypto.randomUUID()
+      : ("msg-" + Date.now().toString(36) + "-" + Math.random().toString(36).slice(2));
 
     addMessage(message, "user");
     input.value = "";
@@ -727,6 +784,8 @@
         body: JSON.stringify({
           session_id: sessionId,
           message,
+          language,
+          message_id: messageId,
         }),
       });
 

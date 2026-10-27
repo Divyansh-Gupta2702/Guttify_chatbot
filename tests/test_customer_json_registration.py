@@ -207,3 +207,43 @@ def test_registration_rotation_revokes_previous_jwt(tmp_path, monkeypatch):
                 gutgpt_app.HISTORY.pop(cleanup_sid, None)
                 gutgpt_app.HISTORY_LAST_ACCESS.pop(cleanup_sid, None)
                 gutgpt_app.conversation_manager.remove(cleanup_sid)
+
+
+def test_customer_restore_tries_valid_cookie_when_body_token_is_stale(monkeypatch):
+    from fastapi import Response
+    from starlette.requests import Request
+
+    monkeypatch.setattr(gutgpt_app, "_enforce_rate_limit", lambda *args, **kwargs: None)
+    first_session = make_session()
+    fresh_session = None
+    try:
+        registered = gutgpt_app.register_customer(gutgpt_app.CustomerRegistrationRequest(
+            session_id=first_session, name="Cookie Fallback Customer", age=28,
+            contact="919876543219", city="Delhi", consent=True,
+        ))
+        fresh_session = make_session()
+        cookie_header = f"{gutgpt_app.GUEST_COOKIE_NAME}={registered['guest_token']}".encode()
+        request = Request({
+            "type": "http", "http_version": "1.1", "method": "POST",
+            "scheme": "https", "path": "/api/customer/restore",
+            "raw_path": b"/api/customer/restore", "query_string": b"",
+            "headers": [(b"cookie", cookie_header)],
+            "client": ("127.0.0.1", 12345), "server": ("testserver", 443),
+        })
+        response = Response()
+        restored = gutgpt_app.restore_customer(
+            gutgpt_app.CustomerRestoreRequest(
+                session_id=fresh_session, guest_token="stale.invalid.jwt"
+            ), request=request, response=response,
+        )
+        assert restored["status"] == "RESTORED"
+        assert restored["customer"]["name"] == "Cookie Fallback Customer"
+        assert fresh_session in gutgpt_app.REGISTERED_CUSTOMER_SESSIONS
+    finally:
+        for cleanup_sid in (first_session, fresh_session):
+            if cleanup_sid:
+                gutgpt_app.REGISTERED_CUSTOMER_SESSIONS.discard(cleanup_sid)
+                gutgpt_app.SESSION_CUSTOMER_IDS.pop(cleanup_sid, None)
+                gutgpt_app.HISTORY.pop(cleanup_sid, None)
+                gutgpt_app.HISTORY_LAST_ACCESS.pop(cleanup_sid, None)
+                gutgpt_app.conversation_manager.remove(cleanup_sid)

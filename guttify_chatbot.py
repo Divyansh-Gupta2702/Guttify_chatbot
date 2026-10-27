@@ -8,6 +8,7 @@ import re
 from langchain_core.prompts import PromptTemplate
 from langchain_groq import ChatGroq
 from recommendation_engine import products as ALL_PRODUCTS
+from groq_service import invoke_groq
 
 _ALL_PRODUCT_NAMES = [p.get("product_name", "") for p in ALL_PRODUCTS if p.get("product_name")]
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
@@ -91,7 +92,7 @@ def load_llm():
         raise RuntimeError(
             "GROQ_API_KEY is not set. Get a key at https://console.groq.com and set it as an environment variable."
         )
-    return ChatGroq(model=GROQ_MODEL, temperature=0.1, max_tokens=700, api_key=GROQ_API_KEY)
+    return ChatGroq(model=GROQ_MODEL, temperature=0.1, max_tokens=500, timeout=float(os.getenv("GROQ_RESPONSE_TIMEOUT_SECONDS", "12")), max_retries=0, api_key=GROQ_API_KEY)
 
 
 def _bullets(items):
@@ -242,7 +243,7 @@ APPROVED PRODUCT DATA:
 {product_info}
 """
         try:
-            candidate = llm.invoke(product_prompt).content
+            candidate = invoke_groq(llm, product_prompt, reason="legacy_product_response").content
             if not _mentions_unapproved_product(candidate, product):
                 return candidate
         except Exception:
@@ -263,7 +264,7 @@ APPROVED PRODUCT DATA:
         if attempt:
             prompt_text += "\n\nCorrection: stay strictly within the supplied screening result and approved product."
         try:
-            candidate = llm.invoke(prompt_text).content
+            candidate = invoke_groq(llm, prompt_text, reason="legacy_response").content
             if not product or (not _mentions_unapproved_product(candidate, product) and _all_approved_links_mentioned(candidate, product)):
                 return candidate
         except Exception:

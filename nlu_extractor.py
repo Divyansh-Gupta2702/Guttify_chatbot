@@ -20,6 +20,7 @@ from typing import Any
 
 from intent_parser import extract_food_trigger, extract_stool_form
 from question_schema import resolve_against_active_question, validate_question_resolution
+from groq_service import invoke_groq
 
 
 logger = logging.getLogger("gutgpt.nlu")
@@ -270,7 +271,9 @@ def _get_llm():
         return ChatGroq(
             model=model,
             temperature=0,
-            max_tokens=500,
+            max_tokens=int(os.getenv("GROQ_NLU_MAX_TOKENS", "500")),
+            timeout=float(os.getenv("GROQ_NLU_TIMEOUT_SECONDS", "12")),
+            max_retries=0,
             api_key=key,
         )
     except Exception:
@@ -329,7 +332,7 @@ Return exactly one JSON object with these keys:
 """
     try:
         logger.info("[NLU][MODEL_CALL] called=true")
-        response = llm.invoke(prompt)
+        response = invoke_groq(llm, prompt, reason="nlu_extraction")
         content = getattr(response, "content", "")
         if isinstance(content, list):
             # Chat-models may expose structured content blocks instead of one

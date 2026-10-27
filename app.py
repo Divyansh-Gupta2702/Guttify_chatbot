@@ -54,6 +54,8 @@ VERSION_FILE = BASE_DIR / "VERSION.txt"
 QUESTION_FLOW_SCHEMA_VERSION = "v18.1"
 
 from support_footer import append_human_support_footer
+from groq_service import message_call_budget, configured_message_budget, GroqBudgetExceeded, GroqCircuitOpen, GroqBusyError
+from multilingual import normalize_language, detect_input_language, translate_to_english, translate_from_english, translation_error_message, TranslationUnavailableError
 MAX_MESSAGE_LENGTH = max(256, min(10000, int(os.getenv("MAX_MESSAGE_LENGTH", "4000"))))
 MAX_HISTORY_MESSAGES = 100
 DATABASE_URL = os.getenv("DATABASE_URL", "").strip()
@@ -497,6 +499,26 @@ def _init_postgres() -> None:
                 )
             """)
             cur.execute("CREATE INDEX IF NOT EXISTS idx_api_rate_limits_updated_at ON api_rate_limits(updated_at)")
+            cur.execute("""CREATE TABLE IF NOT EXISTS chat_idempotency (
+                request_key TEXT PRIMARY KEY,
+                session_id TEXT NOT NULL,
+                status TEXT NOT NULL CHECK (status IN ('processing','complete','failed')),
+                response_json JSONB,
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )""")
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_chat_idempotency_updated_at ON chat_idempotency(updated_at)")
+            cur.execute("""CREATE TABLE IF NOT EXISTS groq_shared_usage_window (
+                singleton SMALLINT PRIMARY KEY CHECK (singleton = 1),
+                window_started_at TIMESTAMPTZ NOT NULL,
+                request_count INTEGER NOT NULL DEFAULT 0,
+                reserved_tokens BIGINT NOT NULL DEFAULT 0,
+                cooldown_until TIMESTAMPTZ
+            )""")
+            cur.execute("""CREATE TABLE IF NOT EXISTS groq_shared_leases (
+                lease_id TEXT PRIMARY KEY,
+                expires_at TIMESTAMPTZ NOT NULL
+            )""")
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_groq_shared_leases_expiry ON groq_shared_leases(expires_at)")
             # Drop any legacy FK definitions and recreate the expected customer FK.
             cur.execute("""
                 DO $$ DECLARE constraint_row RECORD; BEGIN
@@ -1063,6 +1085,8 @@ class ChatRequest(BaseModel):
     # Keep Pydantic above the production UX limit so we can return a friendly
     # application-level message instead of an opaque 422 validation error.
     message: str = Field(min_length=1, max_length=MAX_MESSAGE_LENGTH)
+    language: str = Field(default="en", max_length=16)
+    message_id: str = Field(default="", max_length=128)
 
 
 class ChatResponse(BaseModel):
@@ -1390,46 +1414,62 @@ def restore_customer(req: CustomerRestoreRequest, request: Request = None, respo
         if req.session_id not in HISTORY or req.session_id not in conversation_manager.sessions:
             raise HTTPException(status_code=410, detail="SESSION_EXPIRED")
 
-    # Prefer the HttpOnly cookie. The request-body token is a temporary
-    # migration path for older browser clients and direct API callers.
-    supplied_token = (request.cookies.get(GUEST_COOKIE_NAME, "") if request is not None else "") or req.guest_token
-    if not supplied_token:
+    # A widget may temporarily hold a newer body token while the browser still
+    # sends an older HttpOnly cookie (or vice versa). Validate both credentials
+    # against the signed JWT and persisted customer record; never trust either
+    # token merely because it was supplied by the client.
+    cookie_token = request.cookies.get(GUEST_COOKIE_NAME, "") if request is not None else ""
+    token_candidates = []
+    for candidate in (req.guest_token, cookie_token):
+        if candidate and candidate not in token_candidates:
+            token_candidates.append(candidate)
+    if not token_candidates:
         _delete_guest_cookie(response, request)
         raise HTTPException(status_code=401, detail="GUEST_SESSION_INVALID. Please register again.")
 
     now = datetime.now(timezone.utc)
     claims = None
-    try:
-        claims = _decode_guest_jwt(supplied_token)
-    except HTTPException as token_error:
-        # A three-segment value is JWT-shaped. Do not hide a JWT validation
-        # failure by treating it as a legacy opaque credential.
-        if token_error.status_code != 401:
-            raise
-        if supplied_token.count(".") == 2:
-            logger.warning("Guest restore rejected reason=jwt_validation_failed session=%s", req.session_id[:8])
-            raise
-        # Compatibility path for older releases that stored opaque tokens.
-        logger.info("Guest restore using legacy credential path session=%s", req.session_id[:8])
-
+    supplied_token = ""
+    record = None
+    last_rejection_reason = "guest_credential_not_found"
     with CUSTOMER_LOCK:
         records = _read_customer_records()
-        record = None
-        if claims is not None:
-            supplied_jti_hash = hashlib.sha256(claims["jti"].encode("utf-8")).hexdigest()
-            record = next((item for item in records
-                           if item.get("customer_id") == claims.get("sub")
-                           and item.get("guest_token_jti_hash")
-                           and hmac.compare_digest(item["guest_token_jti_hash"], supplied_jti_hash)), None)
-        else:
-            legacy_hash = hashlib.sha256(supplied_token.encode("utf-8")).hexdigest()
-            record = next((item for item in records
-                           if item.get("guest_token_hash")
-                           and hmac.compare_digest(item["guest_token_hash"], legacy_hash)), None)
+        for candidate in token_candidates:
+            candidate_claims = None
+            try:
+                candidate_claims = _decode_guest_jwt(candidate)
+            except HTTPException as token_error:
+                # Never reinterpret a malformed JWT as a legacy opaque token.
+                if token_error.status_code != 401:
+                    raise
+                if candidate.count(".") == 2:
+                    last_rejection_reason = "jwt_validation_failed"
+                    continue
+                logger.info("Guest restore using legacy credential path session=%s", req.session_id[:8])
+
+            if candidate_claims is not None:
+                candidate_jti_hash = hashlib.sha256(candidate_claims["jti"].encode("utf-8")).hexdigest()
+                candidate_record = next((item for item in records
+                    if item.get("customer_id") == candidate_claims.get("sub")
+                    and item.get("guest_token_jti_hash")
+                    and hmac.compare_digest(item["guest_token_jti_hash"], candidate_jti_hash)), None)
+                candidate_reason = "jwt_customer_record_mismatch"
+            else:
+                legacy_hash = hashlib.sha256(candidate.encode("utf-8")).hexdigest()
+                candidate_record = next((item for item in records
+                    if item.get("guest_token_hash")
+                    and hmac.compare_digest(item["guest_token_hash"], legacy_hash)), None)
+                candidate_reason = "legacy_credential_not_found"
+
+            if candidate_record is not None:
+                supplied_token = candidate
+                claims = candidate_claims
+                record = candidate_record
+                break
+            last_rejection_reason = candidate_reason
 
         if record is None:
-            reason = "jwt_customer_record_mismatch" if claims is not None else "legacy_credential_not_found"
-            logger.warning("Guest restore rejected reason=%s session=%s", reason, req.session_id[:8])
+            logger.warning("Guest restore rejected reason=%s session=%s", last_rejection_reason, req.session_id[:8])
             raise HTTPException(status_code=401, detail="GUEST_SESSION_INVALID. Please register again.")
         try:
             expires = datetime.fromisoformat(record.get("guest_token_expires_at", "").replace("Z", "+00:00"))
@@ -1507,8 +1547,62 @@ def resume_customer_assessment(req: CustomerRestoreRequest, request: Request = N
     return resumed if resumed is not None else {"status": "NO_ACTIVE_ASSESSMENT", "messages": []}
 
 
-@app.post("/api/chat", response_model=ChatResponse)
-def chat(req: ChatRequest, request: Request = None):
+
+def _begin_chat_idempotency(session_id: str, message_id: str) -> dict | None:
+    """Reserve a session-scoped widget message ID; return cached response on replay."""
+    if not message_id:
+        return None
+    key = hashlib.sha256(f"{session_id}:{message_id}".encode("utf-8")).hexdigest()
+    conn = _postgres_connect()
+    try:
+        with conn, conn.cursor() as cur:
+            cur.execute("SELECT pg_advisory_xact_lock(hashtext(%s))", (key,))
+            cur.execute("SELECT status, response_json, updated_at FROM chat_idempotency WHERE request_key=%s FOR UPDATE", (key,))
+            row = cur.fetchone()
+            if row:
+                status = row["status"] if isinstance(row, dict) else row[0]
+                response = row["response_json"] if isinstance(row, dict) else row[1]
+                updated = row["updated_at"] if isinstance(row, dict) else row[2]
+                if status == "complete" and response:
+                    logger.info("event=chat_idempotent_replay session=%s", session_id[:8])
+                    return response if isinstance(response, dict) else json.loads(response)
+                if status == "processing" and updated and (datetime.now(timezone.utc) - updated).total_seconds() < 120:
+                    raise HTTPException(status_code=409, detail="This message is already being processed. Please wait briefly.", headers={"Retry-After":"2"})
+                cur.execute("UPDATE chat_idempotency SET status='processing', response_json=NULL, updated_at=NOW() WHERE request_key=%s", (key,))
+            else:
+                cur.execute("INSERT INTO chat_idempotency(request_key, session_id, status) VALUES (%s,%s,'processing')", (key, session_id))
+    finally:
+        conn.close()
+    return None
+
+
+def _complete_chat_idempotency(session_id: str, message_id: str, response: dict) -> None:
+    if not message_id:
+        return
+    key = hashlib.sha256(f"{session_id}:{message_id}".encode("utf-8")).hexdigest()
+    conn = _postgres_connect()
+    try:
+        with conn, conn.cursor() as cur:
+            cur.execute("UPDATE chat_idempotency SET status='complete', response_json=%s::jsonb, updated_at=NOW() WHERE request_key=%s", (json.dumps(response, ensure_ascii=False), key))
+    finally:
+        conn.close()
+
+
+def _fail_chat_idempotency(session_id: str, message_id: str) -> None:
+    if not message_id:
+        return
+    key = hashlib.sha256(f"{session_id}:{message_id}".encode("utf-8")).hexdigest()
+    try:
+        conn = _postgres_connect()
+        try:
+            with conn, conn.cursor() as cur:
+                cur.execute("UPDATE chat_idempotency SET status='failed', updated_at=NOW() WHERE request_key=%s AND status='processing'", (key,))
+        finally:
+            conn.close()
+    except Exception:
+        logger.warning("event=chat_idempotency_fail_mark_failed")
+
+def _chat_impl(req: ChatRequest, request: Request = None):
     """Process one user message through the existing GutGPT logic.
 
     Request is optional only for existing direct Python-call tests. FastAPI
@@ -1520,7 +1614,15 @@ def chat(req: ChatRequest, request: Request = None):
     request_id = uuid.uuid4().hex[:8]
     turn_id = uuid.uuid4().hex
     total_start = time.perf_counter()
-    message = req.message.strip()
+    original_message = req.message.strip()
+    # Detect language for each message so users can freely alternate between
+    # English and Roman-script Hinglish without changing a widget setting.
+    language = detect_input_language(original_message, req.language)
+    try:
+        message = translate_to_english(original_message, language)
+    except TranslationUnavailableError as exc:
+        logger.warning("Input translation unavailable language=%s session=%s", language, req.session_id[:8])
+        raise HTTPException(status_code=503, detail="Translation is temporarily unavailable. Please retry your message.") from exc
     logger.info(
         "[PERF][%s] REQUEST received session=%s message_len=%d",
         request_id, req.session_id[:8], len(message)
@@ -1541,6 +1643,12 @@ def chat(req: ChatRequest, request: Request = None):
     with CUSTOMER_LOCK:
         if req.session_id not in REGISTERED_CUSTOMER_SESSIONS:
             raise HTTPException(status_code=403, detail="CUSTOMER_REGISTRATION_REQUIRED")
+
+    # Check idempotency only after session and customer authorization so cached
+    # responses can never bypass ownership validation.
+    cached = _begin_chat_idempotency(req.session_id, req.message_id)
+    if cached is not None:
+        return ChatResponse(**cached)
 
     history_start = time.perf_counter()
     with _SESSION_LOCK:
@@ -1603,6 +1711,22 @@ def chat(req: ChatRequest, request: Request = None):
     if status in ("DIAGNOSIS", "RECOMMENDATION_FOUND", "AMBIGUOUS"):
         reply = append_human_support_footer(reply)
 
+    if language != "en":
+        try:
+            reply = translate_from_english(reply, language)
+        except TranslationUnavailableError:
+            # The rule engine has already processed the answer. Do not turn a
+            # translation-only failure into HTTP 503 after state has changed:
+            # that can make the widget retry an already-applied assessment turn.
+            # Keep the exact rule-engine response visible in English, with a
+            # localized notice explaining the temporary translation limitation.
+            logger.warning(
+                "Output translation unavailable; using bilingual safe fallback language=%s session=%s status=%s",
+                language, req.session_id[:8], status,
+            )
+            notice = translation_error_message(language)
+            reply = f"{notice}\n\n{reply}"
+
     # Persist urgent safety outcomes as well as completed routine assessments.
     if status in ("DIAGNOSIS", "RECOMMENDATION_FOUND", "AMBIGUOUS") or (
         status == "SAFETY_REVIEW" and (result.get("screening") or {}).get("action") == "urgent_medical_evaluation"
@@ -1623,7 +1747,7 @@ def chat(req: ChatRequest, request: Request = None):
     history_start = time.perf_counter()
 
     with _SESSION_LOCK:
-        history.append({"role": "user", "content": message})
+        history.append({"role": "user", "content": original_message})
         history.append({"role": "assistant", "content": reply})
         # Keep per-session memory bounded even for a continuously active client.
         if len(history) > MAX_HISTORY_MESSAGES:
@@ -1644,11 +1768,44 @@ def chat(req: ChatRequest, request: Request = None):
     total_ms = (time.perf_counter() - total_start) * 1000
     logger.info("[PERF][%s] TOTAL backend chat: %.2f ms", request_id, total_ms)
 
-    return ChatResponse(
+    response = ChatResponse(
         reply=reply,
         status=status,
         recommendations=result.get("recommendations") or [],
     )
+    _complete_chat_idempotency(req.session_id, req.message_id, response.model_dump())
+    return response
+
+
+@app.post("/api/chat", response_model=ChatResponse)
+def chat(req: ChatRequest, request: Request = None):
+    """Apply one shared Groq-call budget to the entire incoming chat turn."""
+    request_id = uuid.uuid4().hex[:8]
+    # Bidirectional translation needs up to two calls. Honor larger configured
+    # budgets, but guarantee the minimum required round-trip budget for a
+    # non-English/Hinglish turn even if an old deployment still sets the cap to 1.
+    detected_language = detect_input_language(req.message.strip(), req.language)
+    budget = configured_message_budget(needs_translation=(detected_language != "en"))
+    try:
+        with message_call_budget(request_id, max_calls=budget):
+            return _chat_impl(req, request)
+    except Exception as exc:
+        _fail_chat_idempotency(req.session_id, req.message_id)
+        if isinstance(exc, GroqBudgetExceeded):
+            logger.warning("[GROQ][%s] per-message call budget exhausted", request_id)
+            raise HTTPException(
+                status_code=503,
+                detail="GutGPT could not safely process this message within the current model-call budget. Please try a shorter or clearer answer.",
+                headers={"Retry-After": "2"},
+            ) from exc
+        if isinstance(exc, (GroqCircuitOpen, GroqBusyError)):
+            logger.warning("[GROQ][%s] provider unavailable reason=%s", request_id, type(exc).__name__)
+            raise HTTPException(
+                status_code=503,
+                detail="GutGPT is temporarily busy. Your assessment has not been intentionally restarted; please retry shortly.",
+                headers={"Retry-After": "5"},
+            ) from exc
+        raise
 
 
 if __name__ == "__main__":
