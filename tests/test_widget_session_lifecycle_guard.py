@@ -23,7 +23,8 @@ def test_existing_session_restore_precedes_new_session_creation():
     source = _source()
     init = source[source.index("async function _initSession()"):source.index("function initSession()")]
     assert init.index("const existingSessionId = getStoredSessionId()") < init.index('fetchJson("/api/session"')
-    assert init.index("restored = await restoreForSession(sessionId)") < init.index('fetchJson("/api/session"')
+    assert init.index('fetchJson("/api/customer/restore"') < init.index("if (existingSessionId && restoreError?.status === 410)")
+    assert init.index("if (existingSessionId && restoreError?.status === 410)") < init.index('fetchJson("/api/session"')
 
 
 def test_only_authoritative_expiry_allows_session_replacement():
