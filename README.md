@@ -7,7 +7,7 @@ product data, LLM, and conversation logic remain in the Python modules.
 
 ## Architecture
 
-Shopify website → `gutgpt-widget.js` → AWS FastAPI → GutGPT logic → LLM/product data
+Shopify website → `gutgpt-widget.js` → FastAPI backend → GutGPT logic → LLM/product data
 
 
 ## Widget-only local architecture
@@ -54,16 +54,15 @@ For a separate local test page, load:
 Set `ALLOWED_ORIGINS` to the origin serving that test page when it is hosted
 separately.
 
-## AWS
+## Direct Ubuntu server deployment
 
-Run the same FastAPI application on the AWS server:
+Run the same FastAPI application on your Ubuntu server (for example, a DigitalOcean droplet):
 
 ```bash
 uvicorn app:app --host 0.0.0.0 --port 8000
 ```
 
-If the AWS runtime supplies `PORT`, the application also supports that
-environment variable.
+The application also supports the optional `PORT` environment variable.
 
 Put the public API behind HTTPS, for example:
 
@@ -106,7 +105,7 @@ Redis.
 ## Secrets
 
 Never put `GROQ_API_KEY` or any other provider credential into
-`gutgpt-widget.js`. Secrets belong only in the AWS server environment.
+`gutgpt-widget.js`. Secrets belong only in the backend server environment.
 
 ## Files
 
@@ -127,16 +126,17 @@ The important runtime files are:
 The final website deployment requires these backend environment variables:
 
 - `GROQ_API_KEY` — required by the GutGPT backend where applicable.
-- `JWT_SECRET_KEY` — required; a unique random secret of at least 32 UTF-8 bytes.
+- `JWT_SECRET_KEY` — required; a unique URL-safe secret generated from at least 32 random bytes (43 or more characters).
 - `JWT_ISSUER` — defaults to `gutgpt-api`.
 - `JWT_AUDIENCE` — defaults to `gutgpt-guest-session`.
 - `ALLOWED_ORIGINS` — comma-separated exact Shopify storefront origins. Do not leave this empty in production.
 - `SESSION_TTL_SECONDS` — optional session expiry, default `3600`.
 - `MAX_SESSIONS` — optional in-memory session cap, default `10000`.
 - `PORT` — optional server port, default `8000`.
+- `DATABASE_URL` — required PostgreSQL connection URL; for native PostgreSQL on Ubuntu the default port is usually `5432` (verify the actual server configuration).
+- `GUTGPT_ADMIN_TOKEN` — a unique random secret of at least 32 bytes for protected admin endpoints.
 
-The production app fails startup if `GROQ_API_KEY` or `ALLOWED_ORIGINS` is missing.
-Language input is restricted to the supported Indian-language codes, and translation failures are returned as a controlled `503` rather than silently returning an English diagnosis.
+The production app fails startup if required production configuration, including `GROQ_API_KEY`, `DATABASE_URL`, a valid `JWT_SECRET_KEY`, or `ALLOWED_ORIGINS`, is missing or invalid. Admin endpoints fail closed unless `GUTGPT_ADMIN_TOKEN` is configured with at least 32 bytes of random secret material. The application accepts English only; non-English input receives a fixed English notice and does not enter the clinical rule engine.
 
 Session state is bounded by TTL and maximum-session limits. The production deployment should remain single-worker unless session state is moved to a shared store such as Redis.
 

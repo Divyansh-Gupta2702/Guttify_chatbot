@@ -413,6 +413,8 @@ def _cleanup_sessions(now: float | None = None):
                 HISTORY.pop(sid, None)
                 HISTORY_LAST_ACCESS.pop(sid, None)
                 conversation_manager.remove(sid)
+                SESSION_CUSTOMER_IDS.pop(sid, None)
+                SESSION_ASSESSMENT_IDS.pop(sid, None)
                 with CUSTOMER_LOCK:
                     REGISTERED_CUSTOMER_SESSIONS.discard(sid)
 
@@ -1292,7 +1294,7 @@ def new_session(request: Request = None):
 
 @app.post("/api/customer")
 def register_customer(req: CustomerRegistrationRequest, request: Request = None, response: Response = None):
-    """Save customer details to configured PostgreSQL storage (or local JSON when DATABASE_URL is unset).
+    """Save customer details to required PostgreSQL storage; file-based fallback is disabled.
 
     FastAPI injects the request for HTTP calls. The optional default preserves
     direct-call compatibility for unit tests; all real HTTP requests still pass
@@ -1705,11 +1707,26 @@ def _chat_impl(req: ChatRequest, request: Request = None):
     _cleanup_sessions()
 
     logic_start = time.perf_counter()
+    # Validate the active session and customer registration before reserving a
+    # message ID or mutating conversation state. Cached replies must never bypass
+    # authorization, and replayed messages must never execute the rule engine.
+    with _SESSION_LOCK:
+        if req.session_id not in HISTORY or req.session_id not in conversation_manager.sessions:
+            raise HTTPException(status_code=410, detail="SESSION_EXPIRED")
+
+    with CUSTOMER_LOCK:
+        if req.session_id not in REGISTERED_CUSTOMER_SESSIONS:
+            raise HTTPException(status_code=403, detail="CUSTOMER_REGISTRATION_REQUIRED")
+
+    # Reserve/check idempotency before any NLU, rule-engine, or LLM work.
+    # A completed replay returns its original response without advancing state.
+    cached = _begin_chat_idempotency(req.session_id, req.message_id)
+    if cached is not None:
+        return ChatResponse(**cached)
+
     # GutGPT communicates exclusively in English. The message is processed as
     # English exactly as written; it is never translated. Clearly non-English
-    # input (Hindi, Hinglish, other scripts, non-English confirmation words)
-    # receives a fixed English notice and never enters the clinical engine, so
-    # it cannot change assessment state or be mistaken for an English yes/no.
+    # input receives a fixed English notice and never enters the clinical engine.
     if _is_non_english(original_message):
         reply = ENGLISH_ONLY_FALLBACK
         status = NON_ENGLISH_STATUS
@@ -1723,23 +1740,6 @@ def _chat_impl(req: ChatRequest, request: Request = None):
             "[PERF][%s] Rule engine handle_message: %.2f ms status=%s",
             request_id, logic_ms, status
         )
-
-    # Never silently turn an expired/unknown session into a brand-new chat.
-    # The widget can explicitly create a new session when this happens.
-    with _SESSION_LOCK:
-        if req.session_id not in HISTORY or req.session_id not in conversation_manager.sessions:
-            raise HTTPException(status_code=410, detail="SESSION_EXPIRED")
-
-
-    with CUSTOMER_LOCK:
-        if req.session_id not in REGISTERED_CUSTOMER_SESSIONS:
-            raise HTTPException(status_code=403, detail="CUSTOMER_REGISTRATION_REQUIRED")
-
-    # Check idempotency only after session and customer authorization so cached
-    # responses can never bypass ownership validation.
-    cached = _begin_chat_idempotency(req.session_id, req.message_id)
-    if cached is not None:
-        return ChatResponse(**cached)
 
     history_start = time.perf_counter()
     with _SESSION_LOCK:

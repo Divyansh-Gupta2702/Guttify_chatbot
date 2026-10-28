@@ -13,3 +13,7 @@ customer_data.json.tmp
 # Contains sensitive customer and health assessment data; never commit real records
 gutgpt_local_backup.dump
 db-backups
+# Never ship local backups, copied source backups, or runtime caches.
+*.dump
+*.bak
+.pytest_cache/

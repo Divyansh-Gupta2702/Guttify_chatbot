@@ -9,6 +9,11 @@ uvicorn = {extras = ["standard"], version = "*"}
 pydantic = "*"
 langchain-core = "*"
 langchain-groq = "*"
+python-dotenv = "*"
+pyjwt = "*"
+psycopg = {extras = ["binary"], version = "*"}
+tenacity = "*"
+langsmith = "*"
 
 [dev-packages]
 pytest = "*"
