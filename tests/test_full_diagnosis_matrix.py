@@ -241,3 +241,36 @@ def test_explicit_negative_fields_are_stable():
         result = evaluate(state(primary_symptom=primary, constipation_explicit=False, diarrhea_explicit=False, stool_form=2, bowel_frequency_per_week=2, bowel_frequency_per_day=4))
         assert "constipation" not in result["pattern"].lower()
         assert result["pattern"] not in {"Diarrhea pattern", "IBS-D pattern"}
+
+
+def test_anal_fissure_without_visible_bleeding_is_reachable():
+    result = evaluate(state(
+        primary_symptom="anal fissures",
+        blood_present=False,
+        sharp_pain_during_stool=True,
+        stool_form=2,
+        straining=True,
+    ))
+    assert result["pattern"] == "Possible anal fissure pattern"
+    assert result["product_allowed"] is False
+
+
+def test_anal_fissure_without_pain_or_bleeding_is_not_assumed():
+    result = evaluate(state(
+        primary_symptom="anal fissures",
+        blood_present=False,
+        sharp_pain_during_stool=False,
+    ))
+    assert result["action"] == "targeted_questions"
+    assert result["product_allowed"] is False
+
+
+def test_anal_burning_without_bleeding_has_a_supported_result():
+    result = evaluate(state(primary_symptom="anal burning", blood_present=False))
+    assert result["pattern"] == "Anal irritation/burning symptom pattern"
+
+
+def test_anal_swelling_without_bleeding_has_a_supported_result():
+    result = evaluate(state(primary_symptom="anal swelling", blood_present=False, lump_or_prolapse=True))
+    assert result["pattern"] == "Anal swelling/lump symptom pattern"
+    assert result["product_allowed"] is False

@@ -188,12 +188,56 @@ def evaluate(s):
                 "targeted_questions", False,
                 "The answers describe an anal symptom pattern, but they do not support a more specific preliminary assessment yet."
             )
+        # A fissure-compatible presentation can occur without visible bleeding.
+        # Previously this validation allowed the conversation to continue, but
+        # no later rule actually returned a fissure pattern unless blood was
+        # present; the user therefore fell through to the generic result.
+        if s.sharp_pain_during_stool is True:
+            evidence = ["sharp/tearing pain during or after stool"]
+            if s.blood_present is False:
+                evidence.append("no visible bleeding reported")
+            if s.stool_form in (1, 2) or s.straining is True:
+                evidence.append("hard stool or straining may be contributing")
+            return _result(
+                "Possible anal fissure pattern", "moderate", evidence,
+                ["anal irritation", "hemorrhoids", "other causes of anal pain"],
+                "medical_review", False,
+                "Sharp or tearing pain during or after a bowel movement can occur with an anal fissure, even when bleeding is not noticed. This is not a confirmed diagnosis; seek medical assessment if pain persists, recurs, or worsens."
+            )
 
     primary = s.primary_symptom
     symptoms = {primary, *(s.secondary_symptoms or [])}
     days = _duration_days(s.duration)
     chronic = days is not None and days >= 90
     constipation, diarrhea, c_support, d_support = _bowel_patterns(s)
+
+    # Anal irritation/swelling are supported NLU branches and must not fall
+    # through to the generic gut-symptom response when bleeding is absent.
+    if primary == "anal burning":
+        evidence = ["anal-area burning or irritation reported"]
+        if s.sharp_pain_during_stool is True:
+            evidence.append("sharp pain during/after stool")
+        if s.blood_present is False:
+            evidence.append("no bleeding reported")
+        return _result(
+            "Anal irritation/burning symptom pattern", "low", evidence,
+            ["anal fissure", "hemorrhoids", "contact irritation", "other causes of anal discomfort"],
+            "targeted_questions", False,
+            "Anal burning can have several causes. The answers do not establish a specific condition; persistent, severe, or worsening symptoms should be assessed by a clinician."
+        )
+
+    if primary == "anal swelling":
+        evidence = ["anal-area swelling or lump reported"]
+        if s.lump_or_prolapse is True:
+            evidence.append("lump/prolapse confirmed")
+        if s.blood_present is False:
+            evidence.append("no bleeding reported")
+        return _result(
+            "Anal swelling/lump symptom pattern", "low", evidence,
+            ["hemorrhoids", "perianal skin tag", "perianal abscess", "other causes of anal swelling"],
+            "medical_review", False,
+            "An anal lump or swelling cannot be reliably identified from symptoms alone. A clinician should assess it, especially if it is painful, warm, rapidly enlarging, or accompanied by fever."
+        )
 
     # Explicit piles complaint remains reachable even without bleeding.
     if primary == "piles":
