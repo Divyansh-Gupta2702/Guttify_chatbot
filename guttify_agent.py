@@ -27,7 +27,7 @@ from symptom_questionnaire import next_question
 from clinical_rule_engine import evaluate as evaluate_screening, _duration_days
 from symptom_summary import build_symptom_summary, BRISTOL_LABELS
 from safety_checker import check_safety, detect_red_flags, derive_red_flags, is_pregnancy_or_lactation
-from recommendation_engine import evaluate as evaluate_product, find_named_product, has_domain_overlap, IRRELEVANT_MESSAGE, products as ALL_PRODUCTS
+from recommendation_engine import evaluate as evaluate_product, find_named_product, has_domain_overlap, products as ALL_PRODUCTS
 from nlu_extractor import extract_natural_facts
 from question_schema import QUESTION_SCHEMA, QuestionResolution, question_has_answer, resolve_against_active_question, validate_question_resolution
 from product_concern_router import detect_product_concerns
@@ -171,6 +171,10 @@ class SessionState:
     # the clinical/product-matching pipeline. Keep the approved product here
     # so short follow-ups can stay in product-conversation mode.
     last_product: dict | None = None
+    # Keep discovery results on the session so phrases like "the first one"
+    # resolve without relying on process-global state. This is included in
+    # the existing PostgreSQL checkpoint via dataclass serialization.
+    last_products: list = field(default_factory=list)
     # Product recommendations remain blocked for the rest of this session
     # after pregnancy/lactation is disclosed.
     pregnancy_lactation_caution: bool = False
@@ -1674,6 +1678,75 @@ class ConversationManager:
 
         if is_greeting(user_message):
             return {"status": "GREETING", "message": random_greeting_response(), "recommendations": []}
+
+        # Resolve explicit product names and product-detail follow-ups before
+        # assessment continuation/relevance checks. Domain words such as
+        # "ingredients" and "instructions" must not make a valid follow-up
+        # look like a new, irrelevant standalone request.
+        named = find_named_product(user_message)
+        if named and not self._clinical_symptom_present(user_message):
+            session.last_product = named
+            # A product question can temporarily change topics during an
+            # assessment. Keep its active question and clinical state intact
+            # so the user can return to the assessment on the next turn.
+            if not session.last_question and not session.symptom_state.primary_symptom:
+                session.awaiting_close = True
+            return {"status": "PRODUCT_INFO_FOUND", "message": "", "product": named,
+                    "recommendations": [named], "screening": None}
+
+        if session.last_products and re.search(r"\b(first|1st|number one|no\. ?1)\b", normalize(user_message)):
+            session.last_product = session.last_products[0]
+            return {"status": "PRODUCT_INFO_FOUND", "message": "", "product": session.last_product,
+                    "recommendations": [session.last_product], "screening": None}
+
+        detail_followup = bool(re.search(
+            r"\b(instruction|usage|dosage|dose|take|use|ingredient|benefit|warning|precaution|side effect|more detail|tell me more|more information|elaborate|what else|how does it work)\w*\b",
+            normalize(user_message),
+        ))
+        if detail_followup and session.last_product:
+            return {"status": "PRODUCT_INFO_FOUND", "message": "", "product": session.last_product,
+                    "recommendations": [session.last_product], "screening": None}
+
+        # Product discovery is browsing, not symptom-based recommendation.
+        # Return only active records loaded from the existing catalog.
+        normalized = normalize(user_message)
+        discovery = bool(re.search(
+            r"\b(products?|what (?:do you have|do you sell|is available|can i have|can help with)|what you have|what i can have|show me|which .* available|do you have anything for)\b",
+            normalized,
+        ))
+        if discovery:
+            active_products = [p for p in ALL_PRODUCTS if p.get("status") == "active"]
+            mentioned_symptoms = [
+                symptom
+                for product in active_products
+                for symptom in product.get("symptoms", [])
+                if normalize(symptom) in normalized
+            ]
+            if mentioned_symptoms:
+                terms = set(mentioned_symptoms)
+                session.last_products = [
+                    p for p in active_products
+                    if terms.intersection(normalize(s) for s in p.get("symptoms", []))
+                ]
+            else:
+                session.last_products = active_products
+            categories = list(dict.fromkeys(p.get("category", "") for p in session.last_products if p.get("category")))
+            return {"status": "PRODUCT_DISCOVERY", "message": (
+                "Available product categories: " + ", ".join(categories) + ". Products: "
+                + "; ".join(p.get("product_name", "") for p in session.last_products)
+                + ". Would you like general digestive support, or are you experiencing a specific symptom?"
+            ), "products": session.last_products, "recommendations": []}
+
+        if re.search(r"\b(what should i (?:take|do)|what do you recommend|can you help|i need something|which one is better)\b", normalized):
+            return {"status": "ASK", "message": "Are you looking for general Guttify product information, or are you experiencing a digestive symptom?", "recommendations": []}
+
+        if re.search(r"\b(what is (?:digestion|gut health|constipation)|what causes (?:bloating|gas|acidity|heartburn|constipation)|how can i improve (?:my )?digestion)\b", normalized):
+            return {"status": "ASK", "message": "I can share general gut-health information. Are you looking for general information, or are you experiencing a digestive symptom you'd like assessed?", "recommendations": []}
+
+        # An explicit unsupported symptom should not be mistaken for a
+        # digestive assessment merely because it was passed to the bot.
+        if re.search(r"\b(headache|migraine|toothache|back pain|sprained ankle)\b", normalized) and not self._clinical_symptom_present(user_message):
+            return {"status": "IRRELEVANT", "message": "I can help with digestive health and Guttify product information. Headaches are outside my gut-health support scope. Are you experiencing a digestive concern?", "recommendations": []}
         # A pending questionnaire question owns the turn. Numeric/short answers
         # such as "34 years", "7", "no", and "2.5 litres" must never be rejected
         # by the generic gibberish detector before contextual resolution.
@@ -1987,7 +2060,11 @@ class ConversationManager:
             and nlu_intent not in {"assessment", "answer_question", "new_symptom"}
             and not session.last_question
         ):
-            return {"status": "IRRELEVANT", "message": IRRELEVANT_MESSAGE, "recommendations": []}
+            return {
+                "status": "IRRELEVANT",
+                "message": "I didn't quite understand that. Are you looking for information about a Guttify product or do you have a digestive health concern?",
+                "recommendations": [],
+            }
 
         if (
             not session.symptom_state.primary_symptom

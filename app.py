@@ -1757,6 +1757,7 @@ def _chat_impl(req: ChatRequest, request: Request = None):
         if status in (
             "GIBBERISH",
             "IRRELEVANT",
+            "PRODUCT_DISCOVERY",
             "SAFETY_REVIEW",
             "SCREENING_REVIEW",
             "SUMMARY_REVIEW",

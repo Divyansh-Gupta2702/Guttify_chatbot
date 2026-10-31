@@ -207,6 +207,16 @@ def _deterministic_product_reply(product, user_query=""):
             parts += ["", "Important warning:", f"- {product['warnings'][0]}"]
         return "\n".join(parts)
 
+    if any(term in q for term in ("instruction", "usage", "dosage", "dose", "how do i take", "how should i take", "when should i take")):
+        parts = [f"How to use {name}:"]
+        if product.get("how_to_use"):
+            parts.append(product["how_to_use"])
+        if product.get("warnings"):
+            parts += ["", "Important warnings:", "- " + "\n- ".join(product["warnings"])]
+        if product.get("product_url"):
+            parts += ["", "Product link:", product["product_url"]]
+        return "\n".join(parts)
+
     parts = [f"{name}"]
     if product.get("intended_support"):
         parts += ["", "What it supports:", "- " + "\n- ".join(product["intended_support"][:5])]
