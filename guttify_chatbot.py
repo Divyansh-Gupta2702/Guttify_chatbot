@@ -6,13 +6,12 @@ turns the structured result into a clear conversational answer.
 import os
 import re
 from langchain_core.prompts import PromptTemplate
-from langchain_groq import ChatGroq
 from recommendation_engine import products as ALL_PRODUCTS
-from groq_service import invoke_groq
+from llm_provider import create_client, invoke_provider
+
+invoke_groq = invoke_provider
 
 _ALL_PRODUCT_NAMES = [p.get("product_name", "") for p in ALL_PRODUCTS if p.get("product_name")]
-GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
-GROQ_MODEL = "openai/gpt-oss-20b"
 
 RESPONSE_PROMPT_TEMPLATE = """
 You are GutGPT, Guttify's gut-health assessment and product assistant.
@@ -88,11 +87,10 @@ response_prompt = PromptTemplate(
 
 
 def load_llm():
-    if not GROQ_API_KEY:
-        raise RuntimeError(
-            "GROQ_API_KEY is not set. Get a key at https://console.groq.com and set it as an environment variable."
-        )
-    return ChatGroq(model=GROQ_MODEL, temperature=0.1, max_tokens=500, timeout=float(os.getenv("GROQ_RESPONSE_TIMEOUT_SECONDS", "12")), max_retries=0, api_key=GROQ_API_KEY)
+    client = create_client(500, output_mode="text")
+    if client is None:
+        raise RuntimeError("The configured GutGPT language model provider is not available.")
+    return client
 
 
 def _bullets(items):

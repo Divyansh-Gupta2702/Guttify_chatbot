@@ -13,6 +13,7 @@ from threading import RLock
 import re
 import time
 import logging
+from datetime import datetime, timezone
 
 from gibberish_checker import is_gibberish, random_gibberish_response
 from greeting_checker import is_greeting, random_greeting_response
@@ -26,7 +27,10 @@ from intent_parser import (
 from symptom_questionnaire import next_question
 from clinical_rule_engine import evaluate as evaluate_screening, _duration_days
 from symptom_summary import build_symptom_summary, BRISTOL_LABELS
-from safety_checker import check_safety, detect_red_flags, derive_red_flags, is_pregnancy_or_lactation
+from safety_checker import (
+    check_safety, detect_red_flags, derive_red_flags, is_pregnancy_or_lactation,
+    pregnancy_lactation_evidence, red_flag_evidence,
+)
 from recommendation_engine import evaluate as evaluate_product, find_named_product, has_domain_overlap, products as ALL_PRODUCTS
 from nlu_extractor import extract_natural_facts
 from question_schema import QUESTION_SCHEMA, QuestionResolution, question_has_answer, resolve_against_active_question, validate_question_resolution
@@ -35,6 +39,7 @@ from conversation_intelligence import (
     OPEN_SYMPTOM_REPLY, SAFE_GENERAL_FALLBACK, SCOPE_REPLY,
     answer_general_question, classify_intent,
 )
+from feature_flags import enabled
 
 SESSION_ENDED_MESSAGE = "This conversation has already wrapped up. Please start a new chat if you'd like help with another question."
 logger = logging.getLogger("gutgpt.nlu")
@@ -182,6 +187,8 @@ class SessionState:
     # Product recommendations remain blocked for the rest of this session
     # after pregnancy/lactation is disclosed.
     pregnancy_lactation_caution: bool = False
+    pregnancy_lactation_provenance: dict | None = None
+    safety_flag_provenance: list = field(default_factory=list)
     # True only after the user explicitly opts into a digestive assessment
     # following the pregnancy/lactation product-safety notice.
     pregnancy_assessment_started: bool = False
@@ -244,6 +251,11 @@ class ConversationManager:
             if symptom != primary and symptom not in secondary:
                 secondary.append(symptom)
         data["secondary_symptoms"] = secondary
+        other_symptoms = list(data.get("other_symptoms") or [])
+        for phrase in facts.get("other_symptoms") or []:
+            if isinstance(phrase, str) and phrase.strip() and phrase.strip() not in other_symptoms:
+                other_symptoms.append(phrase.strip()[:120])
+        data["other_symptoms"] = other_symptoms[:8]
 
         def set_if(value, key):
             if value is not None:
@@ -438,6 +450,8 @@ class ConversationManager:
         symptoms volunteered in the same turn. This small deterministic layer
         also handles explicit denials so stale state cannot survive a correction.
         """
+        if not enabled("GUTGPT_MULTI_SYMPTOM_V2_ENABLED", True):
+            return
         s = session.symptom_state
         raw = str(text or "")
         lower = raw.lower().replace("’", "'")
@@ -548,23 +562,19 @@ class ConversationManager:
         # Keep per-turn extraction distinct from the accumulated session
         # symptom state. Combining them under `normalized_symptoms` made an
         # answer such as "yes" appear to have re-detected an earlier symptom.
-        logger.info(
-            "[NLU][EXTRACTED] facts=%s current_message_symptoms=%s session_symptoms=%s",
-            {k: v for k, v in facts.items() if v not in (None, [], "", False)},
-            list(dict.fromkeys(x for x in (facts.get("symptoms") or []) if isinstance(x, str))),
-            list(dict.fromkeys(
-                [x for x in [session.symptom_state.primary_symptom] if isinstance(x, str)] +
-                [x for x in (session.symptom_state.secondary_symptoms or []) if isinstance(x, str)]
-            )),
-        )
-        logger.info("[NLU][EXTRACTION] active_question=%s contextual_candidate=%s", current_question, {k:v for k,v in facts.items() if v not in (None, [], "", False)})
+        logger.info("[NLU][EXTRACTED] fact_fields=%s current_message_symptom_count=%d session_symptom_count=%d",
+                    sorted(k for k, v in facts.items() if v not in (None, [], "", False)),
+                    len(facts.get("symptoms") or []),
+                    int(bool(session.symptom_state.primary_symptom)) + len(session.symptom_state.secondary_symptoms or []))
+        logger.info("[NLU][EXTRACTION] active_question=%s contextual_candidate_fields=%s", current_question,
+                    sorted(k for k, v in facts.items() if v not in (None, [], "", False)))
         logger.info("[NLU][RESOLVER] source=%s status=%s field=%s",
                     facts.get("_resolver_source", "unknown"),
                     facts.get("_answer_status", "unresolved"),
                     current_question)
         logger.info("[NLU][MODEL_CALL] called=%s",
                     "true" if facts.get("_resolver_source") == "model" else "false")
-        logger.info("[NLU][STATE_UPDATE] newly_added=%s", changed)
+        logger.info("[NLU][STATE_UPDATE] newly_added_field_count=%d", len(changed))
         return facts
 
     def _apply_answer(self, session, text, precomputed_facts=None):
@@ -1238,7 +1248,7 @@ class ConversationManager:
                 if value not in (None, [], "", "unknown") and merged_data.get(k) != value:
                     discarded[k] = value
         if discarded:
-            logger.info("[QUESTION][DISCARDED_UNRELATED_FACTS] %s", discarded)
+            logger.info("[QUESTION][DISCARDED_UNRELATED_FACTS] field_count=%d", len(discarded))
         merged_state = SymptomState(**merged_data)
         merged_state.red_flags = derive_red_flags(merged_state)
         session.symptom_state = merged_state
@@ -1247,7 +1257,7 @@ class ConversationManager:
             if s.to_dict().get(k) != v and v not in (None, [], "unknown")
         }
         if state_changes:
-            logger.info("[QUESTION][STATE_UPDATE] %s", state_changes)
+            logger.info("[QUESTION][STATE_UPDATE] fields=%s", sorted(state_changes))
         preserved = [
             k for k, v in s.to_dict().items()
             if k not in state_changes and v not in (None, [], "", "unknown")
@@ -1266,18 +1276,12 @@ class ConversationManager:
             or contextual.get("confidence")
             or 0.0
         )
-        logger.info("[NLU][ANSWER] field=%s value=%s status=%s", field, {
-            k: getattr(session.symptom_state, k, None)
-            for k in (QUESTION_SCHEMA.get(field).fields if QUESTION_SCHEMA.get(field) else set())
-        }, answer_status)
+        logger.info("[NLU][ANSWER] field=%s status=%s", field, answer_status)
         logger.info("[NLU][CONFIDENCE] type=%s value=%.2f",
                     "deterministic" if resolver_source == "deterministic" else "model",
                     confidence)
-        logger.info("[QUESTION][RESOLUTION] field=%s value=%s status=%s confidence=%.2f",
-                    field,
-                    {k: getattr(session.symptom_state, k, None)
-                     for k in (QUESTION_SCHEMA.get(field).fields if QUESTION_SCHEMA.get(field) else set())},
-                    answer_status, confidence)
+        logger.info("[QUESTION][RESOLUTION] field=%s status=%s confidence=%.2f",
+                    field, answer_status, confidence)
         return QuestionResolution(
             field=field,
             answered=answered,
@@ -1613,7 +1617,40 @@ class ConversationManager:
         with self._lock:
             session_lock = self._session_locks.setdefault(sid, RLock())
         with session_lock:
-            return self._handle_message(sid, user_message, conversation_history)
+            result = self._handle_message(sid, user_message, conversation_history)
+            return self._attach_safety_metadata(self._get_session(sid), result)
+
+    @staticmethod
+    def _attach_safety_metadata(session, result):
+        if not isinstance(result, dict) or result.get("status") != "SAFETY_REVIEW":
+            return result
+        safety = result.setdefault("safety", {})
+        red_flag = bool(safety.get("red_flag") or session.symptom_state.red_flags)
+        reason_code = "urgent_red_flag" if red_flag else "pregnancy_lactation_product_restriction"
+        if red_flag:
+            known = {item.get("reason") for item in session.safety_flag_provenance if isinstance(item, dict)}
+            for reason in session.symptom_state.red_flags or safety.get("reasons", []):
+                if reason in known:
+                    continue
+                session.safety_flag_provenance.append({
+                    "reason": reason, "source": "confirmed_structured_answer",
+                    "evidence": {"validated_state_reason": reason},
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                    "scope": "assessment", "assessment_id": None,
+                })
+            provenance = [item for item in session.safety_flag_provenance if item.get("reason") in (session.symptom_state.red_flags or safety.get("reasons", []))]
+        else:
+            provenance = [session.pregnancy_lactation_provenance] if session.pregnancy_lactation_provenance else []
+        safety["reason_code"] = reason_code
+        safety["flag_provenance"] = provenance
+        screening = result.get("screening")
+        if isinstance(screening, dict):
+            screening["safety_reason_code"] = reason_code
+            screening["flag_provenance"] = provenance
+        logger.warning("event=safety_review reason_code=%s scope=%s sources=%s",
+                       reason_code, "assessment" if red_flag else "customer",
+                       ",".join(sorted({str(item.get("source", "unknown")) for item in provenance if isinstance(item, dict)})) or "unknown")
+        return result
 
     def _handle_message(self, sid, user_message, conversation_history=None):
         session = self._get_session(sid)
@@ -1633,12 +1670,28 @@ class ConversationManager:
         safety = check_safety(user_message)
         if is_pregnancy_or_lactation(user_message):
             session.pregnancy_lactation_caution = True
+            evidence = pregnancy_lactation_evidence(user_message)
+            if evidence and not session.pregnancy_lactation_provenance:
+                session.pregnancy_lactation_provenance = {
+                    "reason": "pregnancy_lactation_product_restriction",
+                    "source": "user_text_span", "evidence": evidence,
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                    "scope": "customer", "assessment_id": None,
+                }
 
         if safety["red_flag"]:
             # Persist the safety signal in structured session state. A later
             # downplaying message must not erase an earlier urgent disclosure.
             state_flags = list(getattr(session.symptom_state, "red_flags", []) or [])
             session.symptom_state.red_flags = list(dict.fromkeys(state_flags + list(safety.get("reasons") or [])))
+            for reason in safety.get("reasons") or []:
+                evidence = red_flag_evidence(user_message, reason)
+                if evidence and not any(item.get("reason") == reason for item in session.safety_flag_provenance):
+                    session.safety_flag_provenance.append({
+                        "reason": reason, "source": "user_text_span", "evidence": evidence,
+                        "timestamp": datetime.now(timezone.utc).isoformat(),
+                        "scope": "assessment", "assessment_id": None,
+                    })
             session.diagnosis_complete = True
             screening = {
                 "pattern": "Red-flag presentation",
@@ -1936,7 +1989,7 @@ class ConversationManager:
         route = classify_intent(
             user_message, history=conversation_history,
             pending_question=session.last_question,
-        ) if should_classify else None
+        ) if should_classify and enabled("GUTGPT_CONVERSATION_ROUTER_ENABLED", True) else None
 
         if (
             route is None and not session.last_question and not explicit_correction
@@ -2096,7 +2149,7 @@ class ConversationManager:
             session.symptom_state.red_flags = derive_red_flags(session.symptom_state)
             logger.info(
                 "[QUESTION][CONTEXTUAL_FACTS] %s",
-                resolution.values if resolution else {},
+                sorted(resolution.values) if resolution else [],
             )
             logger.info(
                 "[QUESTION][RESOLUTION] field=%s answered=%s confidence=%.2f clarification_needed=%s",
@@ -2340,7 +2393,7 @@ class ConversationManager:
                     session.symptom_state.asked_fields.append(name)
                 session.last_question = name
                 session.questions_asked += 1
-                logger.info("[QUESTION] next=%s safety_flags=%s", name, session.symptom_state.red_flags)
+                logger.info("[QUESTION] next=%s safety_flag_count=%d", name, len(session.symptom_state.red_flags or []))
                 return {"status": "ASK", "message": question_text, "recommendations": [], "safety": safety}
 
         if self._can_assess(session, screening):
@@ -2380,7 +2433,7 @@ class ConversationManager:
                     session.symptom_state.asked_fields.append(name)
                 session.last_question = name
                 session.questions_asked += 1
-                logger.info("[QUESTION] next=%s safety_flags=%s", name, session.symptom_state.red_flags)
+                logger.info("[QUESTION] next=%s safety_flag_count=%d", name, len(session.symptom_state.red_flags or []))
                 return {"status": "ASK", "message": question_text, "recommendations": [], "safety": safety}
 
         # A required question is never bypassed by the max-question fallback.

@@ -150,6 +150,39 @@ def is_pregnancy_or_lactation(text):
     return bool(re.search(r"\b(?:pregnant|pregnancy|breastfeeding|breast feeding|lactating|lactation)\b", n))
 
 
+def pregnancy_lactation_evidence(text):
+    """Return only the validated disclosure term, never the full user turn."""
+    if not is_pregnancy_or_lactation(text):
+        return None
+    match = re.search(r"\b(?:pregnant|pregnancy|breastfeeding|breast\s+feeding|lactating|lactation)\b", text or "", re.I)
+    return match.group(0) if match else None
+
+
+def red_flag_evidence(text, reason):
+    """Return a short matched phrase that deterministically supports a flag."""
+    n = re.sub(r"\s+", " ", (text or "").lower()).strip()
+    if reason == "fainting/dizziness with bleeding":
+        parts = []
+        for phrase in ("dizziness", "dizzy", "lightheaded", "fainting", "fainted", "passed out", "blood in stool", "rectal bleeding"):
+            if phrase in n and not _negative(n, phrase):
+                parts.append(phrase)
+        return parts or None
+    for label, phrases in RED_FLAG_PATTERNS:
+        if label != reason:
+            continue
+        for phrase in phrases:
+            if phrase in n and not _negative(n, phrase):
+                return phrase
+    for phrase in (
+        "blood in stool", "blood in my stool", "blood in the stool", "rectal bleeding",
+        "bleeding while pooping", "black stool", "black tarry stool", "fainted", "fainting",
+        "dizzy", "dizziness", "lightheaded", "passed out",
+    ):
+        if phrase in n and not _negative(n, phrase):
+            return phrase
+    return None
+
+
 def derive_red_flags(state):
     """Promote structured questionnaire answers into the same safety gate."""
     flags = list(state.red_flags or [])

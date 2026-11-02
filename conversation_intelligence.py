@@ -7,8 +7,11 @@ import os
 import re
 from functools import lru_cache
 
-from groq_service import invoke_groq
+from llm_provider import create_client, invoke_provider
 from nlu_extractor import _clean_json_text, _response_payload
+
+# Backwards-compatible patch point for mocked-provider tests.
+invoke_groq = invoke_provider
 
 logger = logging.getLogger("gutgpt.conversation")
 
@@ -36,24 +39,16 @@ SAFE_GENERAL_FALLBACK = (
 
 @lru_cache(maxsize=2)
 def _get_llm(max_tokens: int):
-    if not os.getenv("GROQ_API_KEY"):
-        return None
     try:
-        from langchain_groq import ChatGroq
-        model = os.getenv("GROQ_CONVERSATION_MODEL") or os.getenv("GROQ_NLU_MODEL", "openai/gpt-oss-20b")
         limit = max(100, min(320, int(max_tokens)))
-        return ChatGroq(
-            model=model, temperature=0, max_tokens=limit,
-            timeout=float(os.getenv("GROQ_CONVERSATION_TIMEOUT_SECONDS", "10")),
-            max_retries=0, api_key=os.getenv("GROQ_API_KEY"),
-        )
+        return create_client(limit, output_mode="text")
     except Exception as exc:
         logger.warning("event=conversation_model_init_failed category=%s", type(exc).__name__)
         return None
 
 
 def _history_text(history) -> str:
-    """Bound the contextual transcript sent to Groq; never log its contents."""
+    """Bound the contextual transcript sent to the model; never log its contents."""
     if not isinstance(history, list):
         return "(no prior turns)"
     recent = history[-6:]

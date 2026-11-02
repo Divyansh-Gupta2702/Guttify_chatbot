@@ -418,6 +418,9 @@ _FOOD_PATTERNS = {k: [re.compile(r"(?<!\w)" + re.escape(p) + r"(?!\w)") for p in
 class SymptomState:
     primary_symptom: str = None
     secondary_symptoms: list = field(default_factory=list)
+    # Explicit digestive complaints outside the supported rule-engine labels.
+    # Preserved for context only; never consumed as a diagnosis pattern.
+    other_symptoms: list = field(default_factory=list)
     frequency: str = None
     food_related: bool = None
     food_trigger: str = None

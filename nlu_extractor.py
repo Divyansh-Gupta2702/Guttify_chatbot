@@ -20,7 +20,11 @@ from typing import Any
 
 from intent_parser import extract_food_trigger, extract_stool_form
 from question_schema import resolve_against_active_question, validate_question_resolution
-from groq_service import invoke_groq
+from llm_provider import create_client, invoke_provider
+
+# Keep the historical symbol for callers/tests that monkeypatch the model
+# transport; provider selection itself lives exclusively in llm_provider.py.
+invoke_groq = invoke_provider
 
 
 logger = logging.getLogger("gutgpt.nlu")
@@ -50,6 +54,7 @@ SCHEMA_KEYS = {
     "aggravating_factors", "relieving_factors", "red_flags",
     "new_information", "confidence", "recent_worsening", "gas", "meal_relation", "pain_relation", "bowel_pattern",
     "water_intake", "fibre_intake", "medications", "incomplete_evacuation", "pain_related_to_bowel_movement", "reflux_present", "meal_timing", "symptom_onset_after_food", "timing_relation",
+    "other_symptoms",
 }
 
 BOOL_FIELDS = {
@@ -61,7 +66,7 @@ BOOL_FIELDS = {
 
 LIST_FIELDS = {
     "symptoms", "body_areas", "food_triggers", "aggravating_factors",
-    "relieving_factors", "red_flags", "new_information",
+    "relieving_factors", "red_flags", "new_information", "other_symptoms",
 }
 
 
@@ -138,6 +143,7 @@ def _blank_result(intent="answer_question") -> dict:
     return {
         "intent": intent,
         "symptoms": [],
+        "other_symptoms": [],
         "body_areas": [],
         "duration": None,
         "severity": None,
@@ -299,26 +305,11 @@ def _state_context(state) -> dict:
 
 @lru_cache(maxsize=1)
 def _get_llm():
-    key = os.getenv("GROQ_API_KEY")
-    if not key:
-        return None
     try:
-        from langchain_groq import ChatGroq
-    except ImportError:
-        logger.warning("[NLU] langchain-groq is unavailable; using deterministic fallback")
-        return None
-    model = os.getenv("GROQ_NLU_MODEL", "openai/gpt-oss-20b")
-    try:
-        return ChatGroq(
-            model=model,
-            temperature=0,
-            max_tokens=max(160, min(400, int(os.getenv("GROQ_NLU_MAX_TOKENS", "350")))),
-            timeout=float(os.getenv("GROQ_NLU_TIMEOUT_SECONDS", "12")),
-            max_retries=0,
-            api_key=key,
-        )
-    except Exception:
-        logger.exception("[NLU] failed to initialize extractor")
+        limit = max(160, min(400, int(os.getenv("GROQ_NLU_MAX_TOKENS", "350"))))
+        return create_client(limit, output_mode="json")
+    except Exception as exc:
+        logger.warning("[NLU] provider initialization failed category=%s; using deterministic fallback", type(exc).__name__)
         return None
 
 
@@ -358,7 +349,9 @@ Rules:
    weight_loss=false.
 7. "Mostly normal, maybe slightly harder" means hard_stools=true only if the
    user is actually reporting some hardness; preserve nuance in stool_pattern.
-8. Normalize symptom language to ONLY the allowed symptom values.
+ 8. Normalize supported symptoms to the allowed symptom values. If a clear
+    digestive complaint has no supported label, preserve its short user phrase
+    in other_symptoms; do not map it to a diagnosis or invent a synonym.
 9. "butt", "back passage", "rectum", "anal area" are body-area descriptions,
    not diagnoses.
 10. Do not diagnose. In particular, do NOT output "anal fissures" or "piles"
@@ -376,21 +369,40 @@ Return exactly one sparse JSON object using only these allowed keys:
 {sorted(SCHEMA_KEYS)}
 """
     try:
-        logger.info("[NLU][MODEL_CALL] called=true")
-        response = invoke_groq(llm, prompt, reason="nlu_extraction")
-        content, finish_reason, refusal, tool_calls = _response_payload(response)
-        logger.info("[NLU][MODEL_RESPONSE] content_available=%s finish_reason=%s refusal=%s tool_calls=%s",
-                    bool(content.strip()), finish_reason or "unknown", refusal, tool_calls)
-        cleaned = _clean_json_text(content)
-        if not cleaned:
-            category = "refusal" if refusal else "tool_call_only" if tool_calls else "empty_content"
-            logger.warning("[NLU][MODEL_PARSE] success=false category=%s fallback=deterministic", category)
-            return None
-        try:
-            raw = json.loads(cleaned)
-        except json.JSONDecodeError as parse_exc:
-            category = "truncated_or_invalid_json" if finish_reason == "length" else "invalid_json"
-            logger.warning("[NLU][MODEL_PARSE] success=false category=%s fallback=deterministic", category)
+        raw = None
+        for attempt in range(2):
+            logger.info("[NLU][MODEL_CALL] called=true retry=%s", attempt)
+            response = invoke_groq(llm, prompt, reason="nlu_extraction")
+            content, finish_reason, refusal, tool_calls = _response_payload(response)
+            usage = getattr(response, "usage_metadata", None)
+            usage = usage if isinstance(usage, dict) else {}
+            metadata = getattr(response, "response_metadata", None)
+            metadata = metadata if isinstance(metadata, dict) else {}
+            logger.info("[NLU][MODEL_RESPONSE] provider=%s content_available=%s content_length=%s finish_reason=%s refusal=%s tool_calls=%s reasoning_tokens_present=%s latency_ms=%s",
+                        os.getenv("GUTGPT_LLM_PROVIDER", "groq"), bool(content.strip()), len(content),
+                        finish_reason or "unknown", refusal, tool_calls,
+                        bool(usage.get("thinking_tokens") or usage.get("reasoning_tokens")),
+                        metadata.get("latency_ms", "unknown"))
+            cleaned = _clean_json_text(content)
+            category = None
+            if not cleaned:
+                category = "refusal" if refusal else "tool_call_only" if tool_calls else (
+                    "truncated_empty_content" if finish_reason and finish_reason.lower() in {"length", "max_tokens", "finishreason.max_tokens"} else "empty_content")
+            else:
+                try:
+                    raw = json.loads(cleaned)
+                    if not isinstance(raw, dict):
+                        raw = None
+                        category = "invalid_schema"
+                except json.JSONDecodeError:
+                    category = "truncated_or_invalid_json" if finish_reason and finish_reason.lower() in {"length", "max_tokens", "finishreason.max_tokens"} else "invalid_json"
+            if isinstance(raw, dict):
+                break
+            logger.warning("[NLU][MODEL_PARSE] success=false category=%s retry=%s fallback=deterministic",
+                           category or "invalid_json", attempt)
+            if attempt == 0 and not refusal and not tool_calls:
+                prompt += "\nSTRICT RETRY: Return one compact JSON object only. Include only 1-5 explicitly supported keys; omit unknowns. Do not add prose or markdown."
+                continue
             return None
         logger.info("[NLU][MODEL_PARSE] success=true")
         result = _validate(raw, forced_intent=forced_intent)
@@ -407,6 +419,15 @@ Return exactly one sparse JSON object using only these allowed keys:
                 x for x in result.get("symptoms", [])
                 if x not in {"anal fissures", "piles"}
             ]
+
+        # Preserve only verbatim user-supplied unknown complaint phrases. This
+        # is conversational context and is not consumed by clinical rules.
+        source_text = re.sub(r"\s+", " ", message.casefold()).strip()
+        result["other_symptoms"] = [
+            phrase for phrase in result.get("other_symptoms", [])
+            if isinstance(phrase, str) and len(phrase.strip()) <= 120
+            and re.sub(r"\s+", " ", phrase.casefold()).strip() in source_text
+        ][:5]
 
         # Ground high-impact booleans in the actual message. The model may be
         # semantically useful, but it must not manufacture a pain/bleeding/etc.
@@ -1279,7 +1300,7 @@ def _filter_unrelated_active_question_symptoms(result: dict, message: str, last_
             kept.append(symptom)
 
     if dropped:
-        logger.info("[NLU][ACTIVE_QUESTION_SYMPTOM_GUARD] question=%s kept=%s discarded=%s", last_question, kept, dropped)
+        logger.info("[NLU][ACTIVE_QUESTION_SYMPTOM_GUARD] question=%s kept_count=%d discarded_count=%d", last_question, len(kept), len(dropped))
     result["symptoms"] = list(dict.fromkeys(kept))
     return result
 
@@ -1313,8 +1334,8 @@ def extract_natural_facts(message: str, last_question: str | None, state, conver
         fallback["_resolver_source"] = "deterministic"
         fallback["confidence"] = max(float(fallback.get("confidence") or 0.0), resolution["confidence"])
         logger.info(
-            "[NLU][RESOLVER] source=deterministic status=%s field=%s values=%s",
-            resolution["status"], last_question, resolution["values"],
+            "[NLU][RESOLVER] source=deterministic status=%s field=%s value_fields=%s",
+            resolution["status"], last_question, sorted(resolution["values"]),
         )
         logger.info(
             "[NLU][CONFIDENCE] type=deterministic value=%.2f",

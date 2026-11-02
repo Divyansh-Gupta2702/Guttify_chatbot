@@ -48,6 +48,7 @@ from dataclasses import asdict
 from symptom_questionnaire import next_question
 from symptom_summary import build_symptom_summary
 from guttify_chatbot import _deterministic_product_reply, _deterministic_screening_reply
+from safety_checker import pregnancy_lactation_evidence
 BASE_DIR = Path(__file__).resolve().parent
 WIDGET_FILE = BASE_DIR / "gutgpt-widget.js"
 VERSION_FILE = BASE_DIR / "VERSION.txt"
@@ -275,7 +276,11 @@ def _decode_guest_jwt(token: str) -> dict:
 def validate_production_configuration():
     """Fail fast when required final-site configuration is missing."""
     missing = []
-    if not os.getenv("GROQ_API_KEY"):
+    provider = os.getenv("GUTGPT_LLM_PROVIDER", "groq").strip().lower()
+    if provider == "gemini":
+        if not os.getenv("GEMINI_API_KEY"):
+            missing.append("GEMINI_API_KEY")
+    elif not os.getenv("GROQ_API_KEY"):
         missing.append("GROQ_API_KEY")
     if not DATABASE_URL:
         missing.append("DATABASE_URL (PostgreSQL is required; JSON-file storage is disabled)")
@@ -871,6 +876,41 @@ def _write_customer_records(records: list[dict]) -> None:
         conn.close()
 
 
+def _persist_customer_safety_restriction(session_id: str, user_message: str) -> None:
+    """Persist a validated pregnancy/lactation product restriction in chat_state."""
+    evidence = pregnancy_lactation_evidence(user_message)
+    if not evidence:
+        return
+    customer_id = SESSION_CUSTOMER_IDS.get(session_id)
+    if not customer_id:
+        return
+    with CUSTOMER_LOCK:
+        records = _read_customer_records()
+        record = next((item for item in records if item.get("customer_id") == customer_id), None)
+        if record is None:
+            return
+        restrictions = record.get("customer_safety_restrictions")
+        restrictions = dict(restrictions) if isinstance(restrictions, dict) else {}
+        key = "pregnancy_lactation_product_restriction"
+        existing = restrictions.get(key)
+        if isinstance(existing, dict) and existing.get("active"):
+            return
+        with conversation_manager._lock:
+            state = conversation_manager.sessions.get(session_id)
+            provenance = getattr(state, "pregnancy_lactation_provenance", None) if state else None
+        restrictions[key] = {
+            "active": True,
+            "provenance": provenance or {
+                "reason": key, "source": "user_text_span", "evidence": evidence,
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "scope": "customer", "assessment_id": None,
+            },
+        }
+        record["customer_safety_restrictions"] = restrictions
+        record["updated_at"] = datetime.now(INDIA_TZ).isoformat()
+        _write_customer_records(records)
+
+
 def _persist_assessment_checkpoint(session_id: str, completed: bool = False, turn_id: str | None = None) -> None:
     """Persist a per-assessment checkpoint and newly appended messages in PostgreSQL.
 
@@ -921,6 +961,15 @@ def _persist_assessment_checkpoint(session_id: str, completed: bool = False, tur
                         INSERT INTO customer_assessments (assessment_id, customer_id, session_id, status, started_at, updated_at)
                         VALUES (%s,%s,%s,'active',NOW(),NOW())
                     """, (assessment_id, customer_id, session_id))
+            checkpoint["assessment_id"] = assessment_id
+            stored_state = checkpoint.get("state") or {}
+            for provenance in stored_state.get("safety_flag_provenance", []):
+                if isinstance(provenance, dict) and provenance.get("scope") == "assessment":
+                    provenance["assessment_id"] = assessment_id
+            safety = getattr(state, "safety_flag_provenance", []) or []
+            for provenance in safety:
+                if isinstance(provenance, dict) and provenance.get("scope") == "assessment":
+                    provenance["assessment_id"] = assessment_id
             cur.execute("""
                 UPDATE customer_assessments SET session_id=COALESCE(session_id,%s), updated_at=NOW()
                 WHERE assessment_id=%s AND customer_id=%s
@@ -1048,7 +1097,7 @@ def _restore_assessment_checkpoint(customer_id: str, new_session_id: str) -> dic
             history = []
         restored_history = [m for m in history if isinstance(m, dict) and m.get("role") in ("user", "assistant") and isinstance(m.get("content"), str)][-MAX_HISTORY_MESSAGES:]
     except (TypeError, ValueError) as exc:
-        logger.warning("Ignoring incompatible assessment checkpoint: %s", exc)
+        logger.warning("Ignoring incompatible assessment checkpoint reason=%s", type(exc).__name__)
         # If the database already confirmed an active assessment, a state
         # reconstruction failure is NOT evidence that no assessment exists.
         # Tell the caller to pause safely instead of inviting a fresh assessment.
@@ -1137,8 +1186,8 @@ def _persist_completed_assessment(session_id: str, result: dict) -> None:
         customer["likely_assessment"] = str(likely_assessment)
         customer.pop("final_symptom_summary", None)
         _write_customer_records(records)
-    logger.info("Assessment history saved in PostgreSQL customer_id=%s session=%s",
-                customer["customer_id"], session_id[:8])
+    logger.info("Assessment history saved in PostgreSQL customer=%s session=%s",
+                str(customer["customer_id"])[:8], session_id[:8])
 
 
 class CustomerRegistrationRequest(BaseModel):
@@ -1593,6 +1642,11 @@ def restore_customer(req: CustomerRestoreRequest, request: Request = None, respo
             state = conversation_manager.sessions.get(req.session_id)
             if state is not None:
                 state.symptom_state.age = record.get("age")
+                restrictions = record.get("customer_safety_restrictions") or {}
+                pregnancy_restriction = restrictions.get("pregnancy_lactation_product_restriction") if isinstance(restrictions, dict) else None
+                if isinstance(pregnancy_restriction, dict) and pregnancy_restriction.get("active"):
+                    state.pregnancy_lactation_caution = True
+                    state.pregnancy_lactation_provenance = pregnancy_restriction.get("provenance")
         HISTORY_LAST_ACCESS[req.session_id] = time.monotonic()
         logger.info("Guest profile restored session=%s", req.session_id[:8])
         result = {
@@ -1768,6 +1822,15 @@ def create_new_assessment_session(req: CustomerRestoreRequest, request: Request 
                 SESSION_CUSTOMER_IDS.pop(new_session_id, None)
                 REGISTERED_CUSTOMER_SESSIONS.discard(new_session_id)
             raise HTTPException(status_code=404, detail="CUSTOMER_RECORD_NOT_FOUND")
+        restrictions = record.get("customer_safety_restrictions") or {}
+        pregnancy_restriction = restrictions.get("pregnancy_lactation_product_restriction") if isinstance(restrictions, dict) else None
+        if isinstance(pregnancy_restriction, dict) and pregnancy_restriction.get("active"):
+            with conversation_manager._lock:
+                new_state = conversation_manager.sessions.get(new_session_id)
+                if new_state is not None:
+                    new_state.pregnancy_lactation_caution = True
+                    new_state.pregnancy_assessment_started = True
+                    new_state.pregnancy_lactation_provenance = pregnancy_restriction.get("provenance")
         # Allocate a distinct durable assessment immediately. Without this row,
         # the first message in the new session could attach to the customer's
         # previous active_assessment_id and overwrite its transcript.
@@ -1941,6 +2004,7 @@ def _chat_impl(req: ChatRequest, request: Request = None):
         result = conversation_manager.handle_message(
             req.session_id, message, conversation_history=recent_history,
         )
+        _persist_customer_safety_restriction(req.session_id, original_message)
         logic_ms = (time.perf_counter() - logic_start) * 1000
         status = result["status"]
         logger.info(
@@ -2040,6 +2104,18 @@ def _chat_impl(req: ChatRequest, request: Request = None):
         # Do not silently claim a successful durable save. The reply remains
         # available, but logs make the checkpoint failure observable.
         logger.exception("Assessment checkpoint persistence failed session=%s", req.session_id[:8])
+    if status == "SAFETY_REVIEW" and isinstance(result, dict):
+        assessment_id = SESSION_ASSESSMENT_IDS.get(req.session_id)
+        safety = result.get("safety") if isinstance(result.get("safety"), dict) else {}
+        provenance = safety.get("flag_provenance") or []
+        for item in provenance:
+            if isinstance(item, dict) and item.get("scope") == "assessment":
+                item["assessment_id"] = assessment_id
+        logger.warning("event=safety_review_provenance reason_code=%s scope=%s assessment_id=%s sources=%s",
+                       safety.get("reason_code", "unknown"),
+                       "assessment" if safety.get("red_flag") else "customer",
+                       assessment_id if safety.get("red_flag") else "persistent_customer_restriction",
+                       ",".join(sorted({str(item.get("source", "unknown")) for item in provenance if isinstance(item, dict)})) or "unknown")
     history_ms = (time.perf_counter() - history_start) * 1000
     logger.info("[PERF][%s] History append: %.2f ms", request_id, history_ms)
 

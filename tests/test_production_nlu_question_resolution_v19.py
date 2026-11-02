@@ -101,7 +101,7 @@ def test_long_natural_food_answer_preserves_trigger():
     assert facts.get("duration") == "2 weeks"
 
 
-def test_model_json_parse_failure_falls_back_once(monkeypatch):
+def test_model_json_parse_failure_uses_one_strict_retry_then_falls_back(monkeypatch):
     calls = {"n": 0}
     class FakeLLM:
         def invoke(self, prompt):
@@ -111,7 +111,7 @@ def test_model_json_parse_failure_falls_back_once(monkeypatch):
             return R()
     monkeypatch.setattr(nlu_extractor, "_get_llm", lambda: FakeLLM())
     facts = extract_natural_facts("something completely unusual and difficult to parse", "blood", SymptomState(primary_symptom="bloating"))
-    assert calls["n"] == 1
+    assert calls["n"] == 2
     assert facts["_resolver_source"] == "fallback"
 
 

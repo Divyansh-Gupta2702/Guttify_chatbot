@@ -134,6 +134,7 @@ STATE_FIELD_POLICY = {
     "recent_infection": "question_owned",
     "family_history_gi": "explicit_or_future_question",
     "body_areas": "contextual_nlu",
+    "other_symptoms": "verbatim_context_only",
     "pain_character": "contextual_nlu",
     "pain_timing": "contextual_nlu",
     "itching": "contextual_nlu",

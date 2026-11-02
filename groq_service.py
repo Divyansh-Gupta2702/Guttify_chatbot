@@ -226,8 +226,8 @@ def invoke_groq(client: Any, prompt: Any, *, reason: str, request_id: str = "unk
         in_tokens, out_tokens = _usage(response)
         _breaker_success()
         logger.info(
-            "event=groq_call request_id=%s reason=%s model=%s latency_ms=%.1f input_tokens=%s output_tokens=%s retry_count=0 result=model",
-            request_id, reason, model_name,
+            "event=llm_call provider=%s request_id=%s reason=%s model=%s latency_ms=%.1f input_tokens=%s output_tokens=%s retry_count=0 result=model",
+            getattr(client, "_gutgpt_provider", "groq"), request_id, reason, model_name,
             (time.monotonic() - started) * 1000, in_tokens, out_tokens,
         )
         return response
@@ -242,8 +242,9 @@ def invoke_groq(client: Any, prompt: Any, *, reason: str, request_id: str = "unk
                 _shared_cooldown(int(retry_after) if retry_after else 10)
             except (TypeError, ValueError):
                 _shared_cooldown(10)
-        logger.warning("event=groq_failure request_id=%s reason=%s category=%s status=%s latency_ms=%.1f retry_count=0",
-                       request_id, reason, category, status, (time.monotonic() - started) * 1000)
+        logger.warning("event=llm_failure provider=%s request_id=%s reason=%s category=%s status=%s latency_ms=%.1f retry_count=0",
+                       getattr(client, "_gutgpt_provider", "groq"), request_id, reason, category, status,
+                       (time.monotonic() - started) * 1000)
         raise
     finally:
         _SEMAPHORE.release()
