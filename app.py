@@ -1859,6 +1859,21 @@ def create_new_assessment_session(req: CustomerRestoreRequest, request: Request 
                     SET active_assessment_id=%s, last_session_id=%s, updated_at=NOW()
                     WHERE customer_id=%s
                 """, (new_assessment_id, new_session_id, customer_id))
+                # Create the initial durable checkpoint in the same transaction
+                # as the assessment row. This closes the restore-before-first-turn
+                # window without weakening the missing-checkpoint safety guard.
+                initial_checkpoint = {
+                    "state": asdict(new_state),
+                    "updated_at": datetime.now(timezone.utc).isoformat(),
+                    "active": True,
+                    "assessment_id": new_assessment_id,
+                }
+                cur.execute("""
+                    INSERT INTO assessment_state
+                        (assessment_id, checkpoint, checkpoint_version, updated_at)
+                    VALUES (%s,%s::jsonb,1,NOW())
+                    ON CONFLICT (assessment_id) DO NOTHING
+                """, (new_assessment_id, json.dumps(initial_checkpoint, ensure_ascii=False, default=str)))
         finally:
             conn.close()
         SESSION_ASSESSMENT_IDS[new_session_id] = new_assessment_id

@@ -331,3 +331,42 @@ def test_significant_rectal_bleeding_uses_existing_safety_gate():
     assert result["red_flag"] is True
     assert "significant rectal bleeding" in result["reasons"]
 
+
+
+def test_intent_classifier_uses_larger_bounded_output_budget(monkeypatch):
+    import conversation_intelligence as ci
+
+    captured = {}
+    class Response:
+        content = '{"intent":"general_knowledge_question","confidence":0.9}'
+        response_metadata = {"finish_reason": "stop"}
+
+    monkeypatch.setattr(ci, "_get_llm", lambda tokens: captured.setdefault("tokens", tokens) or object())
+    monkeypatch.setattr(ci, "invoke_groq", lambda *args, **kwargs: Response())
+    result = ci.classify_intent("What is photosynthesis?")
+    assert result["intent"] == "general_knowledge_question"
+    assert captured["tokens"] == 260
+
+
+def test_general_answer_includes_bounded_prior_context(monkeypatch):
+    import conversation_intelligence as ci
+
+    captured = {}
+    class Response:
+        content = "Bloating can happen when gas accumulates in the digestive tract."
+        response_metadata = {"finish_reason": "stop"}
+
+    monkeypatch.setattr(ci, "_get_llm", lambda _tokens: object())
+    def invoke(_llm, prompt, **_kwargs):
+        captured["prompt"] = prompt
+        return Response()
+    monkeypatch.setattr(ci, "invoke_groq", invoke)
+    history = [
+        {"role": "user", "content": "What causes bloating?"},
+        {"role": "assistant", "content": "Bloating can have several causes."},
+    ]
+    answer = ci.answer_general_question("Why does that happen?", history=history)
+    assert "Why does that happen?" not in answer
+    assert "What causes bloating?" in captured["prompt"]
+    assert "Why does that happen?" in captured["prompt"]
+    assert "UNTRUSTED DATA" in captured["prompt"]

@@ -37,3 +37,18 @@ def test_incompatible_active_checkpoint_is_not_reported_as_no_active():
     assert "if active_assessment_found:" in branch
     assert '"status": "ASSESSMENT_CHECKPOINT_INVALID"' in branch
     assert "return None" in branch
+
+
+def test_new_assessment_initial_checkpoint_is_created_in_same_transaction():
+    source = (ROOT / "app.py").read_text(encoding="utf-8")
+    start = source.index("def create_new_assessment_session")
+    end = source.index('@app.post("/api/customer/resume")', start)
+    endpoint = source[start:end]
+    assessment_insert = endpoint.index("INSERT INTO customer_assessments")
+    checkpoint_insert = endpoint.index("INSERT INTO assessment_state")
+    transaction_start = endpoint.rfind("with conn, conn.cursor() as cur", 0, assessment_insert)
+    transaction_end = endpoint.index("finally:", checkpoint_insert)
+    assert transaction_start >= 0
+    assert assessment_insert < checkpoint_insert < transaction_end
+    assert '"state": asdict(new_state)' in endpoint
+    assert '"active": True' in endpoint
