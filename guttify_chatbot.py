@@ -245,11 +245,6 @@ Do NOT recommend a different Guttify product.
 Do NOT invent ingredients, benefits, dosage, warnings, links, or other product facts.
 If the user asks for ingredients, give the ingredients from the supplied data directly.
 Keep the answer concise and focused on what the user asked.
-Format the answer for a chat widget using short sections and bullet points:
-- Put each section heading on its own line and wrap it in **bold**.
-- Use one bullet per ingredient, benefit/support point, instruction, or warning.
-- Do not combine multiple items into a long comma-separated or semicolon-separated paragraph.
-- Use only facts present in the approved product data. If a requested field is absent, say it is not listed.
 
 CURRENT USER QUESTION:
 {user_query}

@@ -35,9 +35,6 @@ def test_general_gut_product_discovery_uses_active_catalog_without_diagnosis():
         p["product_name"] for p in products if p.get("status") == "active"
     }
     assert "specific symptom" in result["message"]
-    assert "**Available product categories**" in result["message"]
-    assert "**Available products**" in result["message"]
-    assert "\n- " in result["message"]
     assert not manager.sessions["browse-products"].symptom_state.primary_symptom
 
 

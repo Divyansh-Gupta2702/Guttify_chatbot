@@ -178,6 +178,9 @@ class SessionState:
     # Product recommendations remain blocked for the rest of this session
     # after pregnancy/lactation is disclosed.
     pregnancy_lactation_caution: bool = False
+    # True only after the user explicitly opts into a digestive assessment
+    # following the pregnancy/lactation product-safety notice.
+    pregnancy_assessment_started: bool = False
     # Conversation-level guard against repeating the same clarification forever.
     clarification_question: str | None = None
     clarification_response: str | None = None
@@ -1421,6 +1424,39 @@ class ConversationManager:
         })
 
     @staticmethod
+    def _is_explicit_assessment_start(text):
+        """Recognize an explicit request to begin a fresh digestive assessment."""
+        normalized = normalize(text)
+        return bool(re.search(
+            r"\b(?:start|begin|restart)\s+(?:a\s+)?(?:new\s+)?(?:gut[- ]health\s+|digestive\s+)?assessment\b"
+            r"|\b(?:i want|i would like|please)\s+to\s+(?:start|begin)\s+(?:a\s+)?(?:new\s+)?(?:gut[- ]health\s+|digestive\s+)?assessment\b"
+            r"|\bstart\s+over\s+with\s+(?:my\s+)?(?:gut|digestive)\s+assessment\b",
+            normalized,
+        ))
+
+    @staticmethod
+    def _reset_assessment_state(session):
+        """Reset clinical progress while retaining the session-wide pregnancy product caution."""
+        session.symptom_state = SymptomState()
+        session.questions_asked = 0
+        session.last_question = None
+        session.awaiting_close = False
+        session.ended = False
+        session.diagnosis_complete = False
+        session.screening = None
+        session.product_candidates = []
+        session.product_concern_question_asked = False
+        session.last_product = None
+        session.last_products = []
+        session.clarification_question = None
+        session.clarification_response = None
+        session.clarification_count = 0
+        session.awaiting_summary_confirmation = False
+        session.summary_correction_mode = False
+        session.summary_reviewed = False
+        session.pregnancy_assessment_started = True
+
+    @staticmethod
     def _is_summary_confirmation(text):
         return normalize(text) in {"yes", "yes correct", "correct", "looks correct", "that's correct", "that is correct", "confirm", "confirmed", "continue"}
 
@@ -1491,6 +1527,19 @@ class ConversationManager:
     @staticmethod
     def _remember_recommendation(session, result):
         """Record a recommendation only after all active questions are resolved."""
+        if session.pregnancy_lactation_caution:
+            return {
+                "status": "SAFETY_REVIEW",
+                "message": "Your digestive assessment can continue, but because pregnancy or breastfeeding was mentioned, I won't recommend a Guttify product. Please discuss suitable options with your healthcare professional.",
+                "recommendations": [],
+                "safety": {
+                    "safe_to_recommend": False,
+                    "requires_doctor": False,
+                    "red_flag": False,
+                    "reasons": ["pregnancy/lactation product caution"],
+                },
+                "screening": result.get("screening") or session.screening,
+            }
         if session.last_question and not question_has_answer(session.symptom_state, session.last_question):
             logger.error(
                 "[QUESTION][INVARIANT_VIOLATION] recommendation_blocked field=%s",
@@ -1573,13 +1622,27 @@ class ConversationManager:
             session.diagnosis_complete = True
             return {"status": "SAFETY_REVIEW", "message": safety["message"], "recommendations": [], "safety": safety, "screening": screening}
 
-        if session.pregnancy_lactation_caution:
+        if session.pregnancy_lactation_caution and not session.pregnancy_assessment_started:
+            if self._is_explicit_assessment_start(user_message):
+                self._reset_assessment_state(session)
+                logger.info("[ASSESSMENT][EXPLICIT_RESTART] pregnancy_caution=true; product_recommendations=blocked")
+                return {
+                    "status": "ASK",
+                    "message": "Of course. I can assess your digestive symptoms, but I still won't recommend Guttify products because pregnancy or breastfeeding was mentioned. What digestive symptom are you experiencing?",
+                    "recommendations": [],
+                    "safety": {
+                        "safe_to_recommend": False,
+                        "requires_doctor": False,
+                        "red_flag": False,
+                        "reasons": ["pregnancy/lactation product caution"],
+                    },
+                }
             caution = {
                 "safe_to_recommend": False,
                 "requires_doctor": False,
                 "red_flag": False,
                 "reasons": ["pregnancy/lactation product caution"],
-                "message": "Because pregnancy or breastfeeding was mentioned, I won't recommend a Guttify product without appropriate professional guidance.",
+                "message": "Because pregnancy or breastfeeding was mentioned, I won't recommend a Guttify product without appropriate professional guidance. If you'd still like a digestive symptom assessment, say 'start a digestive assessment'.",
             }
             return {"status": "SAFETY_REVIEW", "message": caution["message"], "recommendations": [], "safety": caution, "screening": session.screening}
 
@@ -1731,26 +1794,11 @@ class ConversationManager:
             else:
                 session.last_products = active_products
             categories = list(dict.fromkeys(p.get("category", "") for p in session.last_products if p.get("category")))
-            product_names = [
-                p.get("product_name", "").strip()
-                for p in session.last_products
-                if p.get("product_name")
-            ]
-            message_lines = [
-                "**Available product categories**",
-                *[f"- {category}" for category in categories],
-                "",
-                "**Available products**",
-                *[f"- {name}" for name in product_names],
-                "",
-                "Would you like general digestive support, or are you experiencing a specific symptom?",
-            ]
-            return {
-                "status": "PRODUCT_DISCOVERY",
-                "message": "\n".join(message_lines),
-                "products": session.last_products,
-                "recommendations": [],
-            }
+            return {"status": "PRODUCT_DISCOVERY", "message": (
+                "Available product categories: " + ", ".join(categories) + ". Products: "
+                + "; ".join(p.get("product_name", "") for p in session.last_products)
+                + ". Would you like general digestive support, or are you experiencing a specific symptom?"
+            ), "products": session.last_products, "recommendations": []}
 
         if re.search(r"\b(what should i (?:take|do)|what do you recommend|can you help|i need something|which one is better)\b", normalized):
             return {"status": "ASK", "message": "Are you looking for general Guttify product information, or are you experiencing a digestive symptom?", "recommendations": []}
