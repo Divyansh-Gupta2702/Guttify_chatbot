@@ -188,6 +188,74 @@
         gap: 10px;
       }
 
+      .assessment-actions {
+        padding: 0 16px 8px;
+        display: flex;
+        justify-content: space-between;
+        gap: 8px;
+        flex-wrap: wrap;
+      }
+      .history-button {
+        border: 1px solid #d8cce2;
+        border-radius: 999px;
+        padding: 7px 12px;
+        color: #51415e;
+        background: #fff;
+        font: 600 12px/1.2 inherit;
+        cursor: pointer;
+      }
+      .assessment-history, .history-detail {
+        margin: 0 12px 10px;
+        padding: 12px;
+        border: 1px solid #e8deed;
+        border-radius: 12px;
+        background: #fff;
+        max-height: 260px;
+        overflow-y: auto;
+      }
+      .assessment-history[hidden], .history-detail[hidden] { display: none !important; }
+      .history-heading { margin: 0 0 10px; font-size: 13px; font-weight: 700; color: #342b3b; }
+      .history-item { padding: 9px 0; border-top: 1px solid #eee8f1; display: grid; gap: 5px; }
+      .history-item:first-of-type { border-top: 0; }
+      .history-meta { color: #766b7d; font-size: 11px; }
+      .history-view, .history-back {
+        justify-self: start;
+        border: 0;
+        border-radius: 7px;
+        padding: 6px 10px;
+        color: #fff;
+        background: #7135ce;
+        font: 600 11px/1.2 inherit;
+        cursor: pointer;
+      }
+      .history-summary {
+        margin: 10px 0 12px;
+        padding: 10px;
+        border-radius: 9px;
+        background: #faf7fc;
+        color: #342b3b;
+        font-size: 12px;
+        line-height: 1.5;
+        white-space: pre-wrap;
+        overflow-wrap: anywhere;
+      }
+      .history-transcript { display: grid; gap: 8px; }
+      .history-message { white-space: pre-wrap; overflow-wrap: anywhere; padding: 8px 10px; border-radius: 10px; font-size: 12px; }
+      .history-message.user { margin-left: 18%; background: #7135ce; color: #fff; }
+      .history-message.assistant { margin-right: 8%; background: #f5f1f7; color: #342b3b; }
+      .history-empty { color: #766b7d; font-size: 12px; }
+      .assessment-actions[hidden] { display: none !important; }
+      .new-assessment-button {
+        border: 1px solid #8b65a7;
+        border-radius: 999px;
+        padding: 7px 12px;
+        color: #6020cf;
+        background: #fff;
+        font: 600 12px/1.2 inherit;
+        cursor: pointer;
+      }
+      .new-assessment-button:disabled { opacity: .55; cursor: wait; }
+
       .msg {
         max-width: 88%;
         padding: 10px 12px;
@@ -353,6 +421,21 @@
         </form>
       </section>
       <main class="messages" aria-live="polite" aria-label="GutGPT conversation" hidden></main>
+      <div class="assessment-actions" hidden>
+        <button class="history-button" type="button">Assessment History</button>
+        <button class="new-assessment-button" type="button">＋ Start a New Assessment</button>
+      </div>
+      <section class="assessment-history" aria-label="Assessment history" hidden>
+        <h3 class="history-heading">Your previous assessments</h3>
+        <div class="history-list"></div>
+      </section>
+      <section class="history-detail" aria-label="Previous assessment details" hidden>
+        <button class="history-back" type="button">← Back to current chat</button>
+        <h3 class="history-heading history-detail-title"></h3>
+        <div class="history-summary"></div>
+        <h4 class="history-heading">Full conversation</h4>
+        <div class="history-transcript"></div>
+      </section>
       <div class="status" aria-live="polite"></div>
 
       <form class="composer" autocomplete="off" hidden>
@@ -372,6 +455,16 @@
   const launcher = $(".launcher");
   const panel = $(".panel");
   const messages = $(".messages");
+  const assessmentActions = $(".assessment-actions");
+  const newAssessmentButton = $(".new-assessment-button");
+  const historyButton = $(".history-button");
+  const assessmentHistory = $(".assessment-history");
+  const historyList = $(".history-list");
+  const historyDetail = $(".history-detail");
+  const historyDetailTitle = $(".history-detail-title");
+  const historySummary = $(".history-summary");
+  const historyTranscript = $(".history-transcript");
+  const historyBack = $(".history-back");
   const intake = $(".customer-intake");
   const intakeForm = $(".intake-form");
   const intakeSubmit = $(".intake-submit");
@@ -638,6 +731,7 @@
       customerRegistered = true;
       intake.hidden = true;
       messages.hidden = false;
+      assessmentActions.hidden = false;
       form.hidden = true;
       input.disabled = true;
 
@@ -785,6 +879,167 @@
       busy = false;
       intakeSubmit.disabled = false;
       status.textContent = "";
+    }
+  });
+
+  function formatHistoryDate(value) {
+    if (!value) return "Date unavailable";
+    const date = new Date(value);
+    return Number.isNaN(date.getTime()) ? "Date unavailable" : date.toLocaleString();
+  }
+
+  async function loadAssessmentHistory() {
+    if (!sessionId || !customerRegistered) throw new Error("CUSTOMER_SESSION_REQUIRED");
+    const data = await fetchJson("/api/customer/assessments", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ session_id: sessionId }),
+    });
+    if (data.status !== "OK" || !Array.isArray(data.assessments)) {
+      throw new Error("ASSESSMENT_HISTORY_INVALID_RESPONSE");
+    }
+    historyList.replaceChildren();
+    if (data.assessments.length === 0) {
+      const empty = document.createElement("p");
+      empty.className = "history-empty";
+      empty.textContent = "No previous assessments yet. Your completed and in-progress assessments will appear here.";
+      historyList.appendChild(empty);
+      return;
+    }
+
+    for (const item of data.assessments) {
+      const row = document.createElement("article");
+      row.className = "history-item";
+      const title = document.createElement("strong");
+      title.textContent = item.summary || "Gut-health assessment";
+      const meta = document.createElement("span");
+      meta.className = "history-meta";
+      const statusLabel = String(item.status || "saved").replaceAll("_", " ");
+      meta.textContent = `${statusLabel} · ${formatHistoryDate(item.started_at)}`;
+      const view = document.createElement("button");
+      view.type = "button";
+      view.className = "history-view";
+      view.textContent = "View summary & conversation";
+      view.addEventListener("click", () => viewAssessmentHistoryItem(item.assessment_id));
+      row.append(title, meta, view);
+      historyList.appendChild(row);
+    }
+  }
+
+  async function viewAssessmentHistoryItem(assessmentId) {
+    if (!sessionId || !assessmentId) return;
+    status.textContent = "Loading saved assessment…";
+    historyButton.disabled = true;
+    newAssessmentButton.disabled = true;
+    try {
+      const data = await fetchJson("/api/customer/assessments/detail", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ session_id: sessionId, assessment_id: assessmentId }),
+      });
+      if (data.status !== "OK" || !data.assessment || !Array.isArray(data.messages)) {
+        throw new Error("ASSESSMENT_DETAIL_INVALID_RESPONSE");
+      }
+
+      historyDetailTitle.textContent = `${data.assessment.summary || "Gut-health assessment"} · ${String(data.assessment.status || "saved").replaceAll("_", " ")}`;
+      historySummary.textContent = data.symptom_summary || "No symptom summary was saved for this assessment.";
+      historyTranscript.replaceChildren();
+      if (data.messages.length === 0) {
+        const empty = document.createElement("p");
+        empty.className = "history-empty";
+        empty.textContent = "No conversation messages were saved for this assessment.";
+        historyTranscript.appendChild(empty);
+      } else {
+        for (const message of data.messages) {
+          const bubble = document.createElement("div");
+          bubble.className = `history-message ${message.role === "user" ? "user" : "assistant"}`;
+          bubble.textContent = message.content || "";
+          historyTranscript.appendChild(bubble);
+        }
+      }
+
+      messages.hidden = true;
+      form.hidden = true;
+      assessmentHistory.hidden = true;
+      historyDetail.hidden = false;
+      status.textContent = "";
+    } catch (error) {
+      console.error("GutGPT assessment history detail failed", error);
+      status.textContent = "I couldn't load that saved assessment. Please try again.";
+    } finally {
+      historyButton.disabled = false;
+      newAssessmentButton.disabled = false;
+    }
+  }
+
+  historyButton.addEventListener("click", async () => {
+    if (historyButton.disabled || !sessionId || !customerRegistered) return;
+    const shouldOpen = assessmentHistory.hidden;
+    historyDetail.hidden = true;
+    if (!shouldOpen) {
+      assessmentHistory.hidden = true;
+      return;
+    }
+    historyButton.disabled = true;
+    status.textContent = "Loading assessment history…";
+    try {
+      await loadAssessmentHistory();
+      assessmentHistory.hidden = false;
+      status.textContent = "";
+    } catch (error) {
+      console.error("GutGPT assessment history load failed", error);
+      status.textContent = "Assessment history is temporarily unavailable. Please try again.";
+    } finally {
+      historyButton.disabled = false;
+    }
+  });
+
+  historyBack.addEventListener("click", () => {
+    historyDetail.hidden = true;
+    assessmentHistory.hidden = true;
+    messages.hidden = false;
+    form.hidden = false;
+    input.disabled = busy || ended;
+    messages.scrollTop = messages.scrollHeight;
+  });
+
+  newAssessmentButton.addEventListener("click", async () => {
+    if (busy || !sessionId || !customerRegistered) return;
+    newAssessmentButton.disabled = true;
+    input.disabled = true;
+    status.textContent = "Starting a new assessment…";
+    try {
+      const created = await fetchJson("/api/session/new-assessment", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ session_id: sessionId }),
+      });
+      if (created?.status !== "CREATED" || typeof created.session_id !== "string" || !created.session_id) {
+        throw new Error("NEW_ASSESSMENT_INVALID_RESPONSE");
+      }
+
+      // Adopt the new session only after the server confirms creation.
+      sessionId = created.session_id;
+      setStoredSessionId(sessionId);
+      ended = false;
+      assessmentHistory.hidden = true;
+      historyDetail.hidden = true;
+      messages.hidden = false;
+      messages.replaceChildren();
+      addMessage(
+        "Your previous assessment has been preserved. Let's begin a new assessment. What digestive concern would you like help with?",
+        "bot"
+      );
+      form.hidden = false;
+      input.disabled = false;
+      status.textContent = "";
+      input.focus();
+    } catch (error) {
+      console.error("GutGPT new assessment creation failed", error);
+      input.disabled = false;
+      status.textContent = "I couldn't start a new assessment. Your previous assessment is safe; please try again.";
+    } finally {
+      newAssessmentButton.disabled = false;
     }
   });
 

@@ -1155,6 +1155,11 @@ class CustomerRestoreRequest(BaseModel):
     guest_token: str = Field(default="", max_length=2048)
 
 
+class AssessmentHistoryDetailRequest(BaseModel):
+    session_id: str = Field(min_length=1, max_length=128)
+    assessment_id: str = Field(min_length=1, max_length=128)
+
+
 class ChatRequest(BaseModel):
     session_id: str = Field(min_length=1, max_length=128)
     # Keep Pydantic above the production UX limit so we can return a friendly
@@ -1608,6 +1613,204 @@ def restore_customer(req: CustomerRestoreRequest, request: Request = None, respo
             result["guest_token"] = rotated_token
             result["token_expires_at"] = record["guest_token_expires_at"]
         return result
+
+
+@app.post("/api/customer/assessments")
+def list_customer_assessments(req: CustomerRestoreRequest, request: Request = None):
+    """List assessment summaries belonging only to the authenticated customer."""
+    if request is not None:
+        _enforce_rate_limit(request, scope="assessment-history-list", identity=_request_client_key(request), limit=30, window_seconds=600)
+    customer_id = SESSION_CUSTOMER_IDS.get(req.session_id)
+    if not customer_id or req.session_id not in REGISTERED_CUSTOMER_SESSIONS:
+        raise HTTPException(status_code=403, detail="AUTHENTICATED_CUSTOMER_SESSION_REQUIRED")
+
+    conn = _postgres_connect()
+    try:
+        with conn, conn.cursor() as cur:
+            cur.execute("""
+                SELECT assessment_id, assessment, status, started_at, updated_at, completed_at
+                FROM customer_assessments
+                WHERE customer_id=%s
+                ORDER BY started_at DESC
+                LIMIT 100
+            """, (customer_id,))
+            rows = cur.fetchall()
+        items = []
+        for row in rows:
+            items.append({
+                "assessment_id": row["assessment_id"],
+                "summary": row["assessment"] or ("Assessment in progress" if row["status"] == "active" else "Assessment"),
+                "status": row["status"],
+                "started_at": row["started_at"].astimezone(INDIA_TZ).isoformat() if row["started_at"] else None,
+                "updated_at": row["updated_at"].astimezone(INDIA_TZ).isoformat() if row["updated_at"] else None,
+                "completed_at": row["completed_at"].astimezone(INDIA_TZ).isoformat() if row["completed_at"] else None,
+            })
+        return {"status": "OK", "assessments": items}
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("Assessment history list failed customer=%s", customer_id[:8])
+        raise HTTPException(status_code=503, detail="Assessment history is temporarily unavailable.") from exc
+    finally:
+        conn.close()
+
+
+@app.post("/api/customer/assessments/detail")
+def get_customer_assessment_detail(req: AssessmentHistoryDetailRequest, request: Request = None):
+    """Return a read-only transcript after checking assessment ownership."""
+    if request is not None:
+        _enforce_rate_limit(request, scope="assessment-history-detail", identity=_request_client_key(request), limit=60, window_seconds=600)
+    customer_id = SESSION_CUSTOMER_IDS.get(req.session_id)
+    if not customer_id or req.session_id not in REGISTERED_CUSTOMER_SESSIONS:
+        raise HTTPException(status_code=403, detail="AUTHENTICATED_CUSTOMER_SESSION_REQUIRED")
+
+    conn = _postgres_connect()
+    try:
+        with conn, conn.cursor() as cur:
+            cur.execute("""
+                SELECT a.assessment_id, a.assessment, a.status, a.started_at, a.updated_at,
+                       a.completed_at, st.checkpoint
+                FROM customer_assessments a
+                LEFT JOIN assessment_state st ON st.assessment_id=a.assessment_id
+                WHERE a.assessment_id=%s AND a.customer_id=%s
+            """, (req.assessment_id, customer_id))
+            assessment = cur.fetchone()
+            if assessment is None:
+                raise HTTPException(status_code=404, detail="ASSESSMENT_NOT_FOUND")
+            cur.execute("""
+                SELECT role, content, created_at
+                FROM assessment_messages
+                WHERE assessment_id=%s
+                ORDER BY sequence_no ASC
+            """, (req.assessment_id,))
+            messages = cur.fetchall()
+        checkpoint = assessment.get("checkpoint") or {}
+        state_payload = checkpoint.get("state") if isinstance(checkpoint, dict) else {}
+        symptom_payload = state_payload.get("symptom_state") if isinstance(state_payload, dict) else {}
+        symptom_summary = ""
+        if isinstance(symptom_payload, dict):
+            try:
+                summary_state = SymptomState(**symptom_payload)
+                symptom_summary = build_symptom_summary(summary_state).split("\\nReply **yes**", 1)[0]
+            except (TypeError, ValueError):
+                logger.warning("Could not format saved symptom summary assessment=%s", req.assessment_id[:8])
+        return {
+            "status": "OK",
+            "assessment": {
+                "assessment_id": assessment["assessment_id"],
+                "summary": assessment["assessment"] or ("Assessment in progress" if assessment["status"] == "active" else "Assessment"),
+                "status": assessment["status"],
+                "started_at": assessment["started_at"].astimezone(INDIA_TZ).isoformat() if assessment["started_at"] else None,
+                "completed_at": assessment["completed_at"].astimezone(INDIA_TZ).isoformat() if assessment["completed_at"] else None,
+            },
+            "symptom_summary": symptom_summary,
+            "messages": [{
+                "role": item["role"],
+                "content": item["content"],
+                "created_at": item["created_at"].astimezone(INDIA_TZ).isoformat() if item["created_at"] else None,
+            } for item in messages],
+            "read_only": True,
+        }
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("Assessment history detail failed customer=%s assessment=%s", customer_id[:8], req.assessment_id[:8])
+        raise HTTPException(status_code=503, detail="Assessment details are temporarily unavailable.") from exc
+    finally:
+        conn.close()
+
+
+@app.post("/api/session/new-assessment")
+def create_new_assessment_session(req: CustomerRestoreRequest, request: Request = None):
+    """Create a fresh assessment for an already authenticated customer.
+
+    The previous assessment/checkpoint is deliberately left untouched in PostgreSQL.
+    Session-wide product-safety restrictions are carried into the new assessment.
+    """
+    if request is not None:
+        _enforce_rate_limit(request, scope="new-assessment-ip", identity=_request_client_key(request), limit=10, window_seconds=600)
+        _enforce_rate_limit(request, scope="new-assessment-session", identity=req.session_id, limit=5, window_seconds=600)
+
+    with _SESSION_LOCK:
+        customer_id = SESSION_CUSTOMER_IDS.get(req.session_id)
+        if (
+            req.session_id not in HISTORY
+            or req.session_id not in conversation_manager.sessions
+            or not customer_id
+            or req.session_id not in REGISTERED_CUSTOMER_SESSIONS
+        ):
+            raise HTTPException(status_code=403, detail="AUTHENTICATED_CUSTOMER_SESSION_REQUIRED")
+
+        old_state = conversation_manager.sessions.get(req.session_id)
+        carry_pregnancy_caution = bool(getattr(old_state, "pregnancy_lactation_caution", False))
+        new_session_id = str(uuid.uuid4())
+        now = time.monotonic()
+        HISTORY[new_session_id] = []
+        HISTORY_LAST_ACCESS[new_session_id] = now
+        conversation_manager.reset(new_session_id)
+        new_state = conversation_manager.sessions[new_session_id]
+        new_state.pregnancy_lactation_caution = carry_pregnancy_caution
+        # Clicking this explicit control is the user's consent to begin another
+        # digestive assessment, while the product restriction remains in force.
+        new_state.pregnancy_assessment_started = carry_pregnancy_caution
+        SESSION_CUSTOMER_IDS[new_session_id] = customer_id
+        REGISTERED_CUSTOMER_SESSIONS.add(new_session_id)
+        HISTORY_LAST_ACCESS[new_session_id] = now
+
+    with CUSTOMER_LOCK:
+        records = _read_customer_records()
+        record = next((item for item in records if item.get("customer_id") == customer_id), None)
+        if record is None:
+            with _SESSION_LOCK:
+                HISTORY.pop(new_session_id, None)
+                HISTORY_LAST_ACCESS.pop(new_session_id, None)
+                conversation_manager.remove(new_session_id)
+                SESSION_CUSTOMER_IDS.pop(new_session_id, None)
+                REGISTERED_CUSTOMER_SESSIONS.discard(new_session_id)
+            raise HTTPException(status_code=404, detail="CUSTOMER_RECORD_NOT_FOUND")
+        # Allocate a distinct durable assessment immediately. Without this row,
+        # the first message in the new session could attach to the customer's
+        # previous active_assessment_id and overwrite its transcript.
+        new_assessment_id = str(uuid.uuid4())
+        conn = _postgres_connect()
+        try:
+            with conn, conn.cursor() as cur:
+                cur.execute(
+                    "SELECT pg_advisory_xact_lock(hashtext(%s))",
+                    (f"gutgpt_assessment:{customer_id}",),
+                )
+                cur.execute("""
+                    UPDATE customer_assessments
+                    SET status='abandoned', updated_at=NOW()
+                    WHERE customer_id=%s AND status='active'
+                """, (customer_id,))
+                cur.execute("""
+                    INSERT INTO customer_assessments
+                        (assessment_id, customer_id, session_id, status, started_at, updated_at)
+                    VALUES (%s,%s,%s,'active',NOW(),NOW())
+                """, (new_assessment_id, customer_id, new_session_id))
+                cur.execute("""
+                    UPDATE customer_chat_state
+                    SET active_assessment_id=%s, last_session_id=%s, updated_at=NOW()
+                    WHERE customer_id=%s
+                """, (new_assessment_id, new_session_id, customer_id))
+        finally:
+            conn.close()
+        SESSION_ASSESSMENT_IDS[new_session_id] = new_assessment_id
+
+        bound_sessions = record.setdefault("bound_session_ids", [])
+        if not isinstance(bound_sessions, list):
+            bound_sessions = record["bound_session_ids"] = []
+        if new_session_id not in bound_sessions:
+            bound_sessions.append(new_session_id)
+            record["updated_at"] = datetime.now(INDIA_TZ).isoformat()
+            _write_customer_records(records)
+
+    logger.info(
+        "event=new_assessment_session_created previous_session=%s new_session=%s pregnancy_caution=%s",
+        req.session_id[:8], new_session_id[:8], carry_pregnancy_caution,
+    )
+    return {"status": "CREATED", "session_id": new_session_id, "previous_assessment_preserved": True}
 
 
 @app.post("/api/customer/resume")
