@@ -1731,11 +1731,26 @@ class ConversationManager:
             else:
                 session.last_products = active_products
             categories = list(dict.fromkeys(p.get("category", "") for p in session.last_products if p.get("category")))
-            return {"status": "PRODUCT_DISCOVERY", "message": (
-                "Available product categories: " + ", ".join(categories) + ". Products: "
-                + "; ".join(p.get("product_name", "") for p in session.last_products)
-                + ". Would you like general digestive support, or are you experiencing a specific symptom?"
-            ), "products": session.last_products, "recommendations": []}
+            product_names = [
+                p.get("product_name", "").strip()
+                for p in session.last_products
+                if p.get("product_name")
+            ]
+            message_lines = [
+                "**Available product categories**",
+                *[f"- {category}" for category in categories],
+                "",
+                "**Available products**",
+                *[f"- {name}" for name in product_names],
+                "",
+                "Would you like general digestive support, or are you experiencing a specific symptom?",
+            ]
+            return {
+                "status": "PRODUCT_DISCOVERY",
+                "message": "\n".join(message_lines),
+                "products": session.last_products,
+                "recommendations": [],
+            }
 
         if re.search(r"\b(what should i (?:take|do)|what do you recommend|can you help|i need something|which one is better)\b", normalized):
             return {"status": "ASK", "message": "Are you looking for general Guttify product information, or are you experiencing a digestive symptom?", "recommendations": []}
