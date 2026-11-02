@@ -37,7 +37,7 @@ from question_schema import QUESTION_SCHEMA, QuestionResolution, question_has_an
 from product_concern_router import detect_product_concerns
 from conversation_intelligence import (
     OPEN_SYMPTOM_REPLY, SAFE_GENERAL_FALLBACK, SCOPE_REPLY,
-    answer_general_question, classify_intent,
+    answer_general_question, answer_company_question, answer_research_question, classify_intent,
 )
 from feature_flags import enabled
 
@@ -1983,8 +1983,9 @@ class ConversationManager:
         ):
             return {"status": "ASK", "message": "I can guide you through the existing symptom assessment before discussing whether any product is suitable. What digestive symptoms are you experiencing?", "recommendations": []}
 
-        if re.search(r"\b(headache|migraine|toothache|sprained ankle|stock price|election|politics|bitcoin|write code|python code|movie review)\b", normalized):
-            return {"status": "ANSWER", "message": SCOPE_REPLY, "recommendations": []}
+        # General-knowledge topics are routed through the constrained assistant
+        # instead of a brittle hard-coded keyword denylist. Clinical/safety
+        # gates above and below remain authoritative.
 
         route = classify_intent(
             user_message, history=conversation_history,
@@ -2005,6 +2006,16 @@ class ConversationManager:
                     user_message, history=conversation_history,
                     product_names=[p.get("product_name") for p in ALL_PRODUCTS],
                 )
+                return {"status": "ANSWER", "message": answer, "recommendations": []}
+            if intent == "general_knowledge_question" and enabled("GUTGPT_GENERAL_KNOWLEDGE_ENABLED", True):
+                answer = answer_general_question(user_message, history=conversation_history,
+                    product_names=[p.get("product_name") for p in ALL_PRODUCTS])
+                return {"status": "ANSWER", "message": answer, "recommendations": []}
+            if intent == "company_information" and enabled("GUTGPT_COMPANY_KNOWLEDGE_ENABLED", True):
+                answer = answer_company_question(user_message, history=conversation_history, products=ALL_PRODUCTS)
+                return {"status": "ANSWER", "message": answer, "recommendations": []}
+            if intent == "research_summary" and enabled("GUTGPT_RESEARCH_ASSISTANT_ENABLED", True):
+                answer = answer_research_question(user_message, history=conversation_history)
                 return {"status": "ANSWER", "message": answer, "recommendations": []}
             if intent == "unrelated_question":
                 return {"status": "ANSWER", "message": SCOPE_REPLY, "recommendations": []}

@@ -276,10 +276,12 @@ def _decode_guest_jwt(token: str) -> dict:
 def validate_production_configuration():
     """Fail fast when required final-site configuration is missing."""
     missing = []
-    provider = os.getenv("GUTGPT_LLM_PROVIDER", "groq").strip().lower()
+    provider = os.getenv("GUTGPT_LLM_PROVIDER", "gemini").strip().lower()
     if provider == "gemini":
         if not os.getenv("GEMINI_API_KEY"):
             missing.append("GEMINI_API_KEY")
+        if os.getenv("GEMINI_PAID_TIER_CONFIRMED", "false").strip().lower() not in {"1", "true", "yes"}:
+            missing.append("GEMINI_PAID_TIER_CONFIRMED=true (required for production customer data; use a billing-enabled Gemini API project)")
     elif not os.getenv("GROQ_API_KEY"):
         missing.append("GROQ_API_KEY")
     if not DATABASE_URL:

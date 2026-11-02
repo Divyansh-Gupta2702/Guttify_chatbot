@@ -15,7 +15,7 @@ logger = logging.getLogger("gutgpt.llm_provider")
 
 
 def selected_provider() -> str:
-    name = os.getenv("GUTGPT_LLM_PROVIDER", "groq").strip().lower()
+    name = os.getenv("GUTGPT_LLM_PROVIDER", "gemini").strip().lower()
     return name if name in {"groq", "gemini"} else "groq"
 
 
