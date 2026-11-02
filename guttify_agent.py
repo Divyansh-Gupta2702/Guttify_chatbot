@@ -365,10 +365,9 @@ class ConversationManager:
         if facts.get("blood_location") in {"tissue", "dripping", "mixed"}:
             data["blood_location"] = facts["blood_location"]
 
-        if facts.get("red_flags"):
-            data["red_flags"] = list(dict.fromkeys(
-                (data.get("red_flags") or []) + [str(x) for x in facts["red_flags"]]
-            ))
+        # NLU red-flag labels are descriptive suggestions, never safety
+        # evidence. The safety checker validates current text and structured
+        # answers independently; model output cannot create a warning.
 
         # Explicit contextual negatives can correct stale generic positives.
         if facts.get("weight_loss") is False:
@@ -387,6 +386,42 @@ class ConversationManager:
             data["secondary_symptoms"] = [
                 x for x in (data.get("secondary_symptoms") or [])
                 if x != "constipation"
+            ]
+
+        # Explicit negatives from validated extraction correct the matching
+        # symptom branch without erasing unrelated co-reported symptoms.
+        negated_symptoms = {
+            "gas": {"gas", "gassy"},
+            "bloating": {"bloating"},
+            "diarrhea": {"diarrhea", "loose stools"},
+            "abdominal_pain": {"stomach pain", "abdominal pain"},
+            "reflux_present": {"acidity", "heartburn"},
+            "constipation": {"constipation"},
+            "hard_stools": {"hard stools"},
+        }
+        for fact_key, labels in negated_symptoms.items():
+            if facts.get(fact_key) is False:
+                data["secondary_symptoms"] = [
+                    item for item in (data.get("secondary_symptoms") or [])
+                    if str(item).casefold() not in labels
+                ]
+                if str(data.get("primary_symptom") or "").casefold() in labels:
+                    data["primary_symptom"] = None
+        if not data.get("primary_symptom"):
+            known_true = (
+                ("gas", "gas"), ("bloating", "bloating"),
+                ("diarrhea", "diarrhea"), ("abdominal_pain", "stomach pain"),
+                ("constipation_explicit", "constipation"),
+                ("reflux_present", "acidity"),
+            )
+            for slot, label in known_true:
+                if data.get(slot) is True:
+                    data["primary_symptom"] = label
+                    break
+        if data.get("primary_symptom"):
+            data["secondary_symptoms"] = [
+                x for x in (data.get("secondary_symptoms") or [])
+                if str(x).casefold() != str(data["primary_symptom"]).casefold()
             ]
 
         session.symptom_state = SymptomState(**data)
@@ -1576,6 +1611,15 @@ class ConversationManager:
     def _handle_message(self, sid, user_message):
         session = self._get_session(sid)
 
+        # Conversational asides do not answer a pending clinical question.
+        # Handle these before NLU/state mutation and retain the pending slot.
+        normalized_message = normalize(user_message)
+        explanation_request = bool(re.fullmatch(
+            r"(?:why(?:\s+(?:do you ask|is that|are you asking))?|what does that mean|"
+            r"can you explain(?: that)?|tell me more|is it serious|what should i do)",
+            normalized_message,
+        ))
+
         # SAFETY MUST ALWAYS RUN FIRST. A user can disclose an emergency after
         # diagnosis, after a product recommendation, or after saying thanks.
         safety = check_safety(user_message)
@@ -1620,6 +1664,12 @@ class ConversationManager:
             screening["product_allowed"] = False
             session.screening = screening
             session.diagnosis_complete = True
+            if explanation_request:
+                return {
+                    "status": "SAFETY_REVIEW",
+                    "message": "That warning appeared because you reported a symptom that can need prompt medical evaluation. It doesn't confirm a diagnosis, but it should be assessed by a healthcare professional. I can't provide product recommendations while this warning applies.",
+                    "recommendations": [], "safety": safety, "screening": screening,
+                }
             return {"status": "SAFETY_REVIEW", "message": safety["message"], "recommendations": [], "safety": safety, "screening": screening}
 
         if session.pregnancy_lactation_caution and not session.pregnancy_assessment_started:
@@ -1724,6 +1774,28 @@ class ConversationManager:
 
         if session.ended:
             return {"status": "SESSION_ENDED", "message": SESSION_ENDED_MESSAGE, "recommendations": []}
+
+        if explanation_request and session.last_question:
+            why = "I'm asking to understand the pattern and duration of your symptoms. That helps the assessment follow the relevant questions and avoid acting on assumptions. You can answer in your own words."
+            return {"status": "ANSWER", "message": why, "recommendations": []}
+
+        general_question = bool(re.search(
+            r"\b(what will you do|what can you help me with|what can you help with|"
+            r"how does (?:this chatbot|gutgpt) work|what is gutgpt|explain your process|"
+            r"why are you asking (?:me )?(?:these|so many) questions|do you actually understand digestive problems|"
+            r"can you help me understand my symptoms|can you help with digestive problems)\b",
+            normalized_message,
+        ))
+        if general_question:
+            if "why are you asking" in normalized_message:
+                reply = "I'm asking these questions to understand your symptoms properly. This helps me distinguish between different digestive concerns and avoid suggesting something unsuitable. You can answer naturally, in your own words."
+            else:
+                reply = "I can help you understand digestive symptoms, ask relevant follow-up questions, identify warning signs that may need medical attention, and share information from the Guttify product catalog. I don't provide a medical diagnosis. Describe what's bothering you and I'll guide you from there."
+            return {"status": "ANSWER", "message": reply, "recommendations": []}
+
+        if re.search(r"\b(?:i have|i've got|i am having|i'm having|experiencing)\s+(?:a\s+)?(?:digestive|digestion|gut)\s+(?:problem|issue|concern|trouble)\b", normalized_message):
+            if not session.symptom_state.primary_symptom:
+                return {"status": "ASK", "message": "I'm sorry something is bothering you. Tell me a little about what you're experiencing, and I'll ask only the relevant follow-up questions.", "recommendations": []}
 
         # Thank-you messages are acknowledgements, not a reason to lock the
         # conversation. Keep the session usable after "thank you", "thanks",

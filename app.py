@@ -335,7 +335,7 @@ async def lifespan(application: FastAPI):
     yield
 
 
-app = FastAPI(title="GutGPT API", version="18.3-jwt-guest-30d-diag", lifespan=lifespan)
+app = FastAPI(title="GutGPT API", version="18.4-conversation-intelligence", lifespan=lifespan)
 
 
 # Shopify storefront origins are supplied as a comma-separated environment

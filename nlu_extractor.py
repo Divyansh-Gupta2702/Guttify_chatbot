@@ -93,6 +93,47 @@ def _clean_json_text(content: str) -> str:
     return text
 
 
+def _response_payload(response: Any) -> tuple[str, str | None, bool, bool]:
+    """Read common LangChain/OpenAI/Groq response shapes without logging data."""
+    metadata = getattr(response, "response_metadata", None)
+    if not isinstance(metadata, dict):
+        metadata = {}
+    additional = getattr(response, "additional_kwargs", None)
+    if not isinstance(additional, dict):
+        additional = {}
+    finish = metadata.get("finish_reason") or metadata.get("stop_reason")
+    refusal = bool(additional.get("refusal") or metadata.get("refusal"))
+    tool_calls = bool(additional.get("tool_calls") or metadata.get("tool_calls"))
+    content = getattr(response, "content", None)
+    structured = getattr(response, "parsed", None) or getattr(response, "structured_output", None)
+    if structured is None and isinstance(response, dict):
+        structured = response.get("parsed") or response.get("structured_output")
+    if structured is not None and content in (None, ""):
+        try:
+            content = json.dumps(structured, ensure_ascii=False)
+        except (TypeError, ValueError):
+            content = None
+    if content is None and isinstance(response, dict):
+        content = response.get("content")
+    if content is None and isinstance(response, dict):
+        choices = response.get("choices")
+        if isinstance(choices, list) and choices:
+            choice = choices[0] if isinstance(choices[0], dict) else {}
+            message = choice.get("message") or {}
+            content = message.get("content")
+            finish = finish or choice.get("finish_reason")
+            refusal = refusal or bool(message.get("refusal"))
+            tool_calls = tool_calls or bool(message.get("tool_calls"))
+    if isinstance(content, list):
+        content = "\n".join(
+            block if isinstance(block, str) else (block.get("text") or (json.dumps(block.get("json"), ensure_ascii=False) if isinstance(block.get("json"), dict) else ""))
+            for block in content if isinstance(block, (str, dict))
+        )
+    if isinstance(content, dict):
+        content = content.get("text") or content.get("content") or ""
+    return (content if isinstance(content, str) else "", str(finish) if finish is not None else None, refusal, tool_calls)
+
+
 def _blank_result(intent="answer_question") -> dict:
     return {
         "intent": intent,
@@ -333,25 +374,19 @@ Return exactly one JSON object with these keys:
     try:
         logger.info("[NLU][MODEL_CALL] called=true")
         response = invoke_groq(llm, prompt, reason="nlu_extraction")
-        content = getattr(response, "content", "")
-        if isinstance(content, list):
-            # Chat-models may expose structured content blocks instead of one
-            # string. Join text blocks before JSON parsing.
-            parts = []
-            for block in content:
-                if isinstance(block, str):
-                    parts.append(block)
-                elif isinstance(block, dict) and isinstance(block.get("text"), str):
-                    parts.append(block["text"])
-            content = "\n".join(parts)
+        content, finish_reason, refusal, tool_calls = _response_payload(response)
+        logger.info("[NLU][MODEL_RESPONSE] content_available=%s finish_reason=%s refusal=%s tool_calls=%s",
+                    bool(content.strip()), finish_reason or "unknown", refusal, tool_calls)
         cleaned = _clean_json_text(content)
         if not cleaned:
-            logger.warning("[NLU][MODEL_PARSE] success=false reason=empty_model_content")
+            category = "refusal" if refusal else "tool_call_only" if tool_calls else "empty_content"
+            logger.warning("[NLU][MODEL_PARSE] success=false category=%s fallback=deterministic", category)
             return None
         try:
             raw = json.loads(cleaned)
         except json.JSONDecodeError as parse_exc:
-            logger.warning("[NLU][MODEL_PARSE] success=false reason=json_decode_error")
+            category = "truncated_or_invalid_json" if finish_reason == "length" else "invalid_json"
+            logger.warning("[NLU][MODEL_PARSE] success=false category=%s fallback=deterministic", category)
             return None
         logger.info("[NLU][MODEL_PARSE] success=true")
         result = _validate(raw, forced_intent=forced_intent)
@@ -432,7 +467,7 @@ Return exactly one JSON object with these keys:
 
         return result
     except Exception as exc:
-        logger.warning("[NLU][MODEL_PARSE] success=false reason=%s", type(exc).__name__)
+        logger.warning("[NLU][MODEL_PARSE] success=false category=%s fallback=deterministic", type(exc).__name__)
         return None
 
 
