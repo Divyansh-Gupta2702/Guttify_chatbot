@@ -52,16 +52,21 @@ def test_ambiguous_product_request_asks_before_recommending():
     result = manager.handle_message("ambiguous-take", "What should I take?")
 
     assert result["status"] == "ASK"
-    assert "general Guttify product information" in result["message"]
+    assert "symptom assessment" in result["message"]
     assert not result.get("recommendations")
 
 
-def test_education_question_does_not_start_symptom_assessment():
+def test_education_question_routes_to_general_answer_without_assessment(monkeypatch):
+    import guttify_agent
+    monkeypatch.setattr(guttify_agent, "classify_intent", lambda *args, **kwargs: {
+        "intent": "general_gut_health_question", "confidence": 0.98,
+    })
+    monkeypatch.setattr(guttify_agent, "answer_general_question", lambda *args, **kwargs: "Bloating can have several causes, including swallowed air and changes in digestion.")
     manager = ConversationManager()
     result = manager.handle_message("education", "What causes bloating?")
 
-    assert result["status"] == "ASK"
-    assert "general gut-health information" in result["message"]
+    assert result["status"] == "ANSWER"
+    assert "several causes" in result["message"]
     assert not manager.sessions["education"].symptom_state.primary_symptom
 
 
@@ -79,8 +84,8 @@ def test_headache_is_polite_out_of_scope_without_assessment():
     manager = ConversationManager()
     result = manager.handle_message("out-of-scope", "I have headache")
 
-    assert result["status"] == "IRRELEVANT"
-    assert "outside" in result["message"]
+    assert result["status"] == "ANSWER"
+    assert "digestive health assistant" in result["message"]
     assert not manager.sessions["out-of-scope"].symptom_state.primary_symptom
 
 
@@ -95,7 +100,5 @@ def test_unrecognized_message_gets_specific_clarification_prompt():
     manager = ConversationManager()
     result = manager.handle_message("gibberish", "Testug")
 
-    assert result["status"] == "IRRELEVANT"
-    assert result["message"] == (
-        "I didn't quite understand that. Are you looking for information about a Guttify product or do you have a digestive health concern?"
-    )
+    assert result["status"] == "ASK"
+    assert "missed what you mean" in result["message"]

@@ -1936,7 +1936,11 @@ def _chat_impl(req: ChatRequest, request: Request = None):
         result = None
     else:
         message = original_message
-        result = conversation_manager.handle_message(req.session_id, message)
+        with _SESSION_LOCK:
+            recent_history = list(HISTORY[req.session_id])
+        result = conversation_manager.handle_message(
+            req.session_id, message, conversation_history=recent_history,
+        )
         logic_ms = (time.perf_counter() - logic_start) * 1000
         status = result["status"]
         logger.info(
@@ -1968,6 +1972,7 @@ def _chat_impl(req: ChatRequest, request: Request = None):
             "NO_MATCH",
             "GREETING",
             "ACKNOWLEDGEMENT",
+            "ANSWER",
             "DIAGNOSIS_COMPLETE",
             "RECOMMENDATION_COMPLETE",
             "SESSION_ENDED",
@@ -2064,9 +2069,9 @@ def _chat_impl(req: ChatRequest, request: Request = None):
 def chat(req: ChatRequest, request: Request = None):
     """Apply one shared Groq-call budget to the entire incoming chat turn."""
     request_id = uuid.uuid4().hex[:8]
-    # GutGPT is English-only: no input or output translation calls are made, so
-    # a single per-message budget covers the turn (NLU model resolution when the
-    # contextual resolver requires it; the deterministic reply path uses none).
+    # GutGPT is English-only. The bounded budget covers contextual intent
+    # routing plus at most one extraction or general-answer call; deterministic
+    # safety, assessment and product replies consume no model call.
     budget = configured_message_budget()
     try:
         with message_call_budget(request_id, max_calls=budget):

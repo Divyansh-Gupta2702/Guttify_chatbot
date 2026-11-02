@@ -54,6 +54,11 @@ RED_FLAG_PATTERNS = [
         "chest pain", "pain in my chest", "pain in the chest", "pressure in my chest",
         "chest pressure", "tightness in my chest", "chest tightness",
     ]),
+    ("significant rectal bleeding", [
+        "heavy rectal bleeding", "significant rectal bleeding", "large amount of blood in stool",
+        "large amount of blood in my stool", "a lot of blood in stool", "a lot of blood in my stool",
+        "blood pouring out when passing stool", "blood pouring out when i poop",
+    ]),
 ]
 
 NEGATION_CUES = {

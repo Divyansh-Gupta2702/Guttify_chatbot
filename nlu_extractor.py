@@ -312,7 +312,7 @@ def _get_llm():
         return ChatGroq(
             model=model,
             temperature=0,
-            max_tokens=int(os.getenv("GROQ_NLU_MAX_TOKENS", "500")),
+            max_tokens=max(160, min(400, int(os.getenv("GROQ_NLU_MAX_TOKENS", "350")))),
             timeout=float(os.getenv("GROQ_NLU_TIMEOUT_SECONDS", "12")),
             max_retries=0,
             api_key=key,
@@ -322,7 +322,7 @@ def _get_llm():
         return None
 
 
-def _llm_extract(message: str, last_question: str | None, state, forced_intent: str | None):
+def _llm_extract(message: str, last_question: str | None, state, forced_intent: str | None, conversation_history=None):
     llm = _get_llm()
     if llm is None:
         return None
@@ -338,6 +338,9 @@ CURRENT QUESTION:
 
 CURRENT STRUCTURED STATE:
 {json.dumps(_state_context(state), ensure_ascii=False)}
+
+RECENT CONVERSATION:
+{json.dumps((conversation_history or [])[-6:], ensure_ascii=False)[:2400]}
 
 USER MESSAGE:
 {message}
@@ -363,12 +366,13 @@ Rules:
     normalized symptoms only when the user explicitly names the condition
     (e.g. "I have piles" / "I have a fissure").
 11. Do not turn "yes"/"no" into unrelated fields. Use the question context.
-12. Only return valid JSON, no markdown.
+12. Return compact valid JSON, no markdown. Include only keys with an explicitly
+    supported value; omit unknown keys, nulls, empty strings, and empty lists.
 
 Allowed normalized symptoms:
 {sorted(ALLOWED_SYMPTOMS)}
 
-Return exactly one JSON object with these keys:
+Return exactly one sparse JSON object using only these allowed keys:
 {sorted(SCHEMA_KEYS)}
 """
     try:
@@ -1280,7 +1284,7 @@ def _filter_unrelated_active_question_symptoms(result: dict, message: str, last_
     return result
 
 
-def extract_natural_facts(message: str, last_question: str | None, state) -> dict:
+def extract_natural_facts(message: str, last_question: str | None, state, conversation_history=None) -> dict:
     """Extract facts once, with an explicit question-resolution boundary.
 
     Order:
@@ -1320,7 +1324,7 @@ def extract_natural_facts(message: str, last_question: str | None, state) -> dic
 
     llm_result = None
     if _needs_llm(message, last_question, fallback):
-        llm_result = _llm_extract(message, last_question, state, forced_intent)
+        llm_result = _llm_extract(message, last_question, state, forced_intent, conversation_history)
 
     if llm_result is None:
         logger.info(

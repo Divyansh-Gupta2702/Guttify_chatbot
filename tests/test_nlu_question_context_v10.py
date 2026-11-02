@@ -107,7 +107,7 @@ def test_11_multiple_facts_one_turn():
 def test_required_question_blocks_progress_when_answer_is_ununderstood():
     cm, session = cm_with_active("t12", "vomiting_fever")
     result = cm.handle_message("t12", "what do you mean?")
-    assert result["status"] == "ASK"
+    assert result["status"] == "ANSWER"
     assert session.last_question == "vomiting_fever"
     assert not session.diagnosis_complete
     assert not result.get("recommendations")

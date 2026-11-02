@@ -31,6 +31,10 @@ from recommendation_engine import evaluate as evaluate_product, find_named_produ
 from nlu_extractor import extract_natural_facts
 from question_schema import QUESTION_SCHEMA, QuestionResolution, question_has_answer, resolve_against_active_question, validate_question_resolution
 from product_concern_router import detect_product_concerns
+from conversation_intelligence import (
+    OPEN_SYMPTOM_REPLY, SAFE_GENERAL_FALLBACK, SCOPE_REPLY,
+    answer_general_question, classify_intent,
+)
 
 SESSION_ENDED_MESSAGE = "This conversation has already wrapped up. Please start a new chat if you'd like help with another question."
 logger = logging.getLogger("gutgpt.nlu")
@@ -520,10 +524,13 @@ class ConversationManager:
         """Single authoritative semantic question-completion check."""
         return question_has_answer(session.symptom_state, field)
 
-    def _run_nlu(self, session, text):
+    def _run_nlu(self, session, text, conversation_history=None):
         before = session.symptom_state.to_dict()
         current_question = session.last_question
-        facts = extract_natural_facts(text, current_question, session.symptom_state)
+        if conversation_history is None:
+            facts = extract_natural_facts(text, current_question, session.symptom_state)
+        else:
+            facts = extract_natural_facts(text, current_question, session.symptom_state, conversation_history)
         # IMPORTANT: extraction is observational here. It must not mutate
         # state before active-question ownership has resolved the answer.
         after = session.symptom_state.to_dict()
@@ -1599,24 +1606,25 @@ class ConversationManager:
         session.diagnosis_complete = screening.get("action") != "product_support"
         return result
 
-    def handle_message(self, sid, user_message):
+    def handle_message(self, sid, user_message, conversation_history=None):
         # Serialize mutations only within this session. Never hold the shared
         # map lock across extraction/network work: a slow Groq call must not
         # stall registration or conversations belonging to other customers.
         with self._lock:
             session_lock = self._session_locks.setdefault(sid, RLock())
         with session_lock:
-            return self._handle_message(sid, user_message)
+            return self._handle_message(sid, user_message, conversation_history)
 
-    def _handle_message(self, sid, user_message):
+    def _handle_message(self, sid, user_message, conversation_history=None):
         session = self._get_session(sid)
 
         # Conversational asides do not answer a pending clinical question.
         # Handle these before NLU/state mutation and retain the pending slot.
         normalized_message = normalize(user_message)
         explanation_request = bool(re.fullmatch(
-            r"(?:why(?:\s+(?:do you ask|is that|are you asking))?|what does that mean|"
-            r"can you explain(?: that)?|tell me more|is it serious|what should i do)",
+            r"(?:why(?:\s+(?:do you ask|do you need to know|is that|are you asking|did (?:that )?warning appear|did that appear|is this serious))?|"
+            r"what does (?:that|the|that warning) mean|what do you mean|can you explain(?: that| the warning)?|"
+            r"tell me more|is it serious|what should i do)",
             normalized_message,
         ))
 
@@ -1793,10 +1801,6 @@ class ConversationManager:
                 reply = "I can help you understand digestive symptoms, ask relevant follow-up questions, identify warning signs that may need medical attention, and share information from the Guttify product catalog. I don't provide a medical diagnosis. Describe what's bothering you and I'll guide you from there."
             return {"status": "ANSWER", "message": reply, "recommendations": []}
 
-        if re.search(r"\b(?:i have|i've got|i am having|i'm having|experiencing)\s+(?:a\s+)?(?:digestive|digestion|gut)\s+(?:problem|issue|concern|trouble)\b", normalized_message):
-            if not session.symptom_state.primary_symptom:
-                return {"status": "ASK", "message": "I'm sorry something is bothering you. Tell me a little about what you're experiencing, and I'll ask only the relevant follow-up questions.", "recommendations": []}
-
         # Thank-you messages are acknowledgements, not a reason to lock the
         # conversation. Keep the session usable after "thank you", "thanks",
         # "thx", "appreciate it", etc.
@@ -1835,7 +1839,7 @@ class ConversationManager:
                     "recommendations": [session.last_product], "screening": None}
 
         detail_followup = bool(re.search(
-            r"\b(instruction|usage|dosage|dose|take|use|ingredient|benefit|warning|precaution|side effect|more detail|tell me more|more information|elaborate|what else|how does it work)\w*\b",
+            r"\b(instruction|usage|dosage|dose|take|use|ingredient|benefit|warning|precaution|side effect|more detail|tell me more|more information|elaborate|what else|how does it work|what is it for|what does it do|purpose)\w*\b",
             normalize(user_message),
         ))
         if detail_followup and session.last_product:
@@ -1846,7 +1850,7 @@ class ConversationManager:
         # Return only active records loaded from the existing catalog.
         normalized = normalize(user_message)
         discovery = bool(re.search(
-            r"\b(products?|what (?:do you have|do you sell|is available|can i have|can help with)|what you have|what i can have|show me|which .* available|do you have anything for)\b",
+            r"\b(products|what (?:do you have|do you sell|is available|can i have|can help with)|what you have|what i can have|show me|which .* available|do you have anything for)\b",
             normalized,
         ))
         if discovery:
@@ -1872,22 +1876,111 @@ class ConversationManager:
                 + ". Would you like general digestive support, or are you experiencing a specific symptom?"
             ), "products": session.last_products, "recommendations": []}
 
-        if re.search(r"\b(what should i (?:take|do)|what do you recommend|can you help|i need something|which one is better)\b", normalized):
-            return {"status": "ASK", "message": "Are you looking for general Guttify product information, or are you experiencing a digestive symptom?", "recommendations": []}
-
-        if re.search(r"\b(what is (?:digestion|gut health|constipation)|what causes (?:bloating|gas|acidity|heartburn|constipation)|how can i improve (?:my )?digestion)\b", normalized):
-            return {"status": "ASK", "message": "I can share general gut-health information. Are you looking for general information, or are you experiencing a digestive symptom you'd like assessed?", "recommendations": []}
-
-        # An explicit unsupported symptom should not be mistaken for a
-        # digestive assessment merely because it was passed to the bot.
-        if re.search(r"\b(headache|migraine|toothache|back pain|sprained ankle)\b", normalized) and not self._clinical_symptom_present(user_message):
-            return {"status": "IRRELEVANT", "message": "I can help with digestive health and Guttify product information. Headaches are outside my gut-health support scope. Are you experiencing a digestive concern?", "recommendations": []}
-        # A pending questionnaire question owns the turn. Numeric/short answers
-        # such as "34 years", "7", "no", and "2.5 litres" must never be rejected
-        # by the generic gibberish detector before contextual resolution.
+        # Short noisy input stays deterministic and cheap. Otherwise use the
+        # contextual intent router for questions and symptom phrases that the
+        # canonical symptom parser cannot confidently recognize.
         if not session.last_question and is_gibberish(user_message):
             return {"status": "GIBBERISH", "message": random_gibberish_response(), "recommendations": []}
 
+        recognized_primary, recognized_secondary = extract_symptoms(user_message)
+        explicit_symptom_report = bool(re.search(
+            r"\b(?:i have|i've got|i am having|i'm having|i experience|i've been|"
+            r"i notice|there is|there's|my .{0,35}(?:feels?|hurts?|is|has))\b",
+            normalized,
+        ))
+        educational_question_prefix = bool(re.match(
+            r"^(?:why\b|what (?:causes|is|are|does|do|happens|is the difference)\b|how (?:does|do|can|is)\b)",
+            normalized,
+        ))
+        if educational_question_prefix:
+            explicit_symptom_report = False
+        explicit_correction = bool(re.search(
+            r"\b(?:actually|i meant|correction|to clarify)\b.*\b(?:no|not|don't|dont|do not|doesn't|does not|isn't|is not|haven't|have not)\b",
+            normalized,
+        ))
+        question_like = "?" in user_message or bool(re.match(
+            r"^(?:what|why|how|can|could|is|are|which|should|would|tell me|explain|do you|does it|does this)\b",
+            normalized,
+        ))
+        if not session.last_question and re.fullmatch(r"(?:yes|yeah|yep|yup|no|nope|nah|okay|ok|sure)", normalized):
+            if session.last_products:
+                clarification = "Do you mean you'd like general information about the products I listed, or would you like to discuss a digestive symptom?"
+            else:
+                clarification = "What would you like me to respond to? You can ask about digestion, describe a symptom, or name a Guttify product."
+            return {"status": "ASK", "message": clarification, "recommendations": []}
+        active_answer_status = None
+        if session.last_question:
+            active_answer_status = resolve_against_active_question(
+                session.last_question, user_message, state=session.symptom_state,
+            ).get("status")
+        should_classify = (
+            question_like and not explicit_symptom_report
+            and (not session.last_question or active_answer_status in {"unresolved", "clarification_needed"})
+        ) or (
+            not session.last_question and not summary_confirmation_turn
+            and not explicit_correction and not recognized_primary and not recognized_secondary
+        )
+        if summary_confirmation_turn:
+            should_classify = False
+        if detect_product_concerns(user_message):
+            should_classify = False
+        if (
+            question_like and not (recognized_primary or recognized_secondary)
+            and re.search(r"\b(?:what should i (?:take|do)|what do you recommend|which product|which one is better)\b", normalized)
+        ):
+            return {"status": "ASK", "message": "I can guide you through the existing symptom assessment before discussing whether any product is suitable. What digestive symptoms are you experiencing?", "recommendations": []}
+
+        if re.search(r"\b(headache|migraine|toothache|sprained ankle|stock price|election|politics|bitcoin|write code|python code|movie review)\b", normalized):
+            return {"status": "ANSWER", "message": SCOPE_REPLY, "recommendations": []}
+
+        route = classify_intent(
+            user_message, history=conversation_history,
+            pending_question=session.last_question,
+        ) if should_classify else None
+
+        if (
+            route is None and not session.last_question and not explicit_correction
+            and not (recognized_primary or recognized_secondary)
+            and re.search(r"\b(?:digestive problem|digestive issue|digestion (?:problem|issue|trouble)|stomach (?:isn't|is not|doesn't|does not) feel(?:ing)? right|stomach feels? (?:off|uncomfortable|heavy)|something is wrong with my digestion|(?:experience )?discomfort after eating|uncomfortable after eating)\b", normalized)
+        ):
+            return {"status": "ASK", "message": OPEN_SYMPTOM_REPLY, "recommendations": []}
+
+        if route:
+            intent = route["intent"]
+            if intent == "general_gut_health_question":
+                answer = answer_general_question(
+                    user_message, history=conversation_history,
+                    product_names=[p.get("product_name") for p in ALL_PRODUCTS],
+                )
+                return {"status": "ANSWER", "message": answer, "recommendations": []}
+            if intent == "unrelated_question":
+                return {"status": "ANSWER", "message": SCOPE_REPLY, "recommendations": []}
+            if intent == "casual_conversation":
+                return {"status": "ANSWER", "message": "I'm doing well, thanks for asking. What would you like to know about digestion or gut health?", "recommendations": []}
+            if intent == "product_information":
+                return {"status": "ANSWER", "message": "I can share information from the verified Guttify product catalog. Which product would you like to ask about?", "recommendations": []}
+            if intent == "product_recommendation_request" and not (recognized_primary or recognized_secondary):
+                return {"status": "ASK", "message": "I can guide you through the existing symptom assessment before discussing whether any product is suitable. What digestive symptoms are you experiencing?", "recommendations": []}
+            if intent == "medical_safety_concern":
+                return {"status": "ANSWER", "message": "I can't diagnose or advise on medication. If your symptoms are severe, worsening, or worrying you, please contact a healthcare professional. If you tell me what you're experiencing, I can continue the structured symptom assessment.", "recommendations": []}
+            if intent == "digestive_problem" and not session.symptom_state.primary_symptom and not (recognized_primary or recognized_secondary):
+                return {"status": "ASK", "message": OPEN_SYMPTOM_REPLY, "recommendations": []}
+
+        elif question_like and re.search(r"\b(gut|digest|stomach|bowel|gas|bloat|acidity|heartburn|constipat|indigestion|ib s|ibs|food|meal)\w*\b", normalized):
+            # When routing is unavailable, keep an obvious educational
+            # question inside the allowed domain and use a safe answer fallback.
+            return {"status": "ANSWER", "message": SAFE_GENERAL_FALLBACK, "recommendations": []}
+
+        elif route is None and question_like and not explicit_symptom_report:
+            return {"status": "ANSWER", "message": SCOPE_REPLY, "recommendations": []}
+
+        # An explicit unsupported symptom should not be mistaken for a
+        # digestive assessment merely because it was passed to the bot.
+        if re.search(r"\b(back pain)\b", normalized) and not self._clinical_symptom_present(user_message):
+            return {"status": "ANSWER", "message": SCOPE_REPLY, "recommendations": []}
+        # A pending questionnaire question owns the turn. Numeric/short answers
+        # such as "34 years", "7", "no", and "2.5 litres" must never be rejected
+        # by the generic gibberish detector before contextual resolution.
         # A final diagnosis is a terminal state for the clinical pipeline.
         # Do not re-run symptom extraction, questionnaire questions, or
         # diagnosis on later messages in the same session. Product-name
@@ -1988,7 +2081,7 @@ class ConversationManager:
             }
             logger.info("[NLU][MODEL_CALL] called=false reason=summary_confirmation_control")
         else:
-            nlu_facts = self._run_nlu(session, user_message)
+            nlu_facts = self._run_nlu(session, user_message, conversation_history)
 
         # Keep the existing deterministic parser as a second layer.
         if pending_question:
@@ -2195,9 +2288,16 @@ class ConversationManager:
             and nlu_intent not in {"assessment", "answer_question", "new_symptom"}
             and not session.last_question
         ):
+            if session.clarification_count >= 3:
+                return {
+                    "status": "ANSWER",
+                    "message": "That's okay—you don't need to know the exact symptom name. Whenever you're ready, tell me what feels different or uncomfortable, and I'll help from there.",
+                    "recommendations": [],
+                }
+            session.clarification_count += 1
             return {
-                "status": "IRRELEVANT",
-                "message": "I didn't quite understand that. Are you looking for information about a Guttify product or do you have a digestive health concern?",
+                "status": "ASK",
+                "message": "I may have missed what you mean. Could you say a little more? I can help with digestive health or Guttify product information.",
                 "recommendations": [],
             }
 
