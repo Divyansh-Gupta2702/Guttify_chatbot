@@ -16,7 +16,10 @@ logger = logging.getLogger("gutgpt.llm_provider")
 
 def selected_provider() -> str:
     name = os.getenv("GUTGPT_LLM_PROVIDER", "gemini").strip().lower()
-    return name if name in {"groq", "gemini"} else "groq"
+    if name in {"groq", "gemini"}:
+        return name
+    logger.error("event=llm_provider_invalid_configuration")
+    return ""
 
 
 def _nlu_schema():
@@ -59,7 +62,9 @@ class _GeminiClient:
         config = {
             "temperature": 0,
             "max_output_tokens": self.max_output_tokens,
-            "thinking_config": types.ThinkingConfig(thinking_level="LOW"),
+            # google-genai 1.46 exposes thinking_budget (not thinking_level).
+            # Keep internal reasoning bounded without relying on a removed field.
+            "thinking_config": types.ThinkingConfig(thinking_budget=128),
         }
         if self.output_mode == "json":
             config["response_mime_type"] = "application/json"
@@ -92,12 +97,25 @@ def create_client(max_output_tokens: int, *, output_mode: str = "text"):
     """Create the configured provider client; absent providers fail closed."""
     provider = selected_provider()
     if provider == "gemini":
-        model = os.getenv("GEMINI_MODEL", "gemini-3.8-flash")
-        return _GeminiClient(model, max(96, min(600, int(max_output_tokens))), output_mode)
+        if not os.getenv("GEMINI_API_KEY", "").strip() and os.getenv("GROQ_API_KEY", "").strip():
+            logger.warning("event=llm_provider_fallback reason=gemini_credentials_unavailable provider=groq")
+            provider = "groq"
+        elif not os.getenv("GEMINI_API_KEY", "").strip():
+            logger.warning("event=llm_provider_unavailable reason=no_credentials")
+            return None
+        else:
+            model = os.getenv("GEMINI_MODEL", "gemini-3.8-flash")
+            return _GeminiClient(model, max(96, min(600, int(max_output_tokens))), output_mode)
 
+    if provider == "groq":
+        return _create_groq_client(max_output_tokens, output_mode)
+
+
+def _create_groq_client(max_output_tokens: int, output_mode: str):
+    """Create the Groq client used directly or as the Gemini credential fallback."""
     from langchain_groq import ChatGroq
 
-    key = os.getenv("GROQ_API_KEY")
+    key = os.getenv("GROQ_API_KEY", "").strip()
     if not key:
         return None
     model = os.getenv("GROQ_CONVERSATION_MODEL") or os.getenv("GROQ_NLU_MODEL", "openai/gpt-oss-20b")

@@ -714,11 +714,26 @@
         const created = await fetchJson("/api/session", { method: "POST" });
         if (typeof created.session_id !== "string" || !created.session_id) throw new Error("INVALID_SESSION");
         sessionId = created.session_id;
-        restored = await fetchJson("/api/customer/restore", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ session_id: sessionId, guest_token: guestToken }),
-        });
+        setStoredSessionId(sessionId);
+        try {
+          restored = await fetchJson("/api/customer/restore", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ session_id: sessionId, guest_token: guestToken }),
+          });
+        } catch (restoreError) {
+          if (restoreError?.status === 401) {
+            clearLegacyGuestToken();
+            status.textContent = "";
+            intake.hidden = false;
+            messages.hidden = true;
+            form.hidden = true;
+            input.disabled = true;
+            intakeError.hidden = true;
+            return;
+          }
+          throw restoreError;
+        }
       }
       setStoredSessionId(sessionId);
 

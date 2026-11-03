@@ -173,11 +173,10 @@ def _issue_guest_jwt(customer_id: str) -> tuple[str, str, str]:
 
 
 def _request_is_secure(request: Request | None) -> bool:
-    """Honor TLS termination at a trusted reverse proxy."""
+    """Use ASGI scheme after the server applies its trusted-proxy policy."""
     if request is None:
         return False
-    forwarded_proto = request.headers.get("x-forwarded-proto", "").split(",", 1)[0].strip().lower()
-    return request.url.scheme == "https" or forwarded_proto == "https"
+    return request.url.scheme == "https"
 
 
 def _uses_partitioned_guest_cookie(request: Request | None, secure: bool) -> bool:
@@ -277,13 +276,11 @@ def validate_production_configuration():
     """Fail fast when required final-site configuration is missing."""
     missing = []
     provider = os.getenv("GUTGPT_LLM_PROVIDER", "gemini").strip().lower()
-    if provider == "gemini":
-        if not os.getenv("GEMINI_API_KEY"):
-            missing.append("GEMINI_API_KEY")
+    if provider not in {"gemini", "groq"}:
+        missing.append("GUTGPT_LLM_PROVIDER must be gemini or groq")
+    elif provider == "gemini" and os.getenv("GEMINI_API_KEY", "").strip():
         if os.getenv("GEMINI_PAID_TIER_CONFIRMED", "false").strip().lower() not in {"1", "true", "yes"}:
             missing.append("GEMINI_PAID_TIER_CONFIRMED=true (required for production customer data; use a billing-enabled Gemini API project)")
-    elif not os.getenv("GROQ_API_KEY"):
-        missing.append("GROQ_API_KEY")
     if not DATABASE_URL:
         missing.append("DATABASE_URL (PostgreSQL is required; JSON-file storage is disabled)")
     if not allowed_origins:
@@ -320,6 +317,11 @@ def validate_production_configuration():
         "GutGPT production configuration validated: origins=%d session_ttl=%ss max_sessions=%d",
         len(allowed_origins), SESSION_TTL_SECONDS, MAX_SESSIONS,
     )
+    has_llm_credentials = bool(os.getenv("GROQ_API_KEY", "").strip()) or (
+        provider == "gemini" and bool(os.getenv("GEMINI_API_KEY", "").strip())
+    )
+    if not has_llm_credentials:
+        logger.warning("event=llm_provider_unavailable reason=no_credentials clinical_rules_remain_available=true")
 
 
 @asynccontextmanager

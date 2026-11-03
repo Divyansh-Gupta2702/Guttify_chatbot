@@ -2040,7 +2040,7 @@ class ConversationManager:
 
         # An explicit unsupported symptom should not be mistaken for a
         # digestive assessment merely because it was passed to the bot.
-        if re.search(r"\b(back pain)\b", normalized) and not self._clinical_symptom_present(user_message):
+        if re.search(r"\b(?:back pain|headache|migraine)\b", normalized) and not self._clinical_symptom_present(user_message):
             return {"status": "ANSWER", "message": SCOPE_REPLY, "recommendations": []}
         # A pending questionnaire question owns the turn. Numeric/short answers
         # such as "34 years", "7", "no", and "2.5 litres" must never be rejected
