@@ -7,6 +7,7 @@ from guttify_agent import (
     PRODUCT_ELIGIBILITY,
     _approved_names_for_screening,
     _filter_approved_products,
+    _with_diarrhea_guidance,
 )
 from intent_parser import SymptomState, extract_symptoms
 import nlu_extractor
@@ -122,6 +123,19 @@ def test_diarrhea_first_question_includes_hydration_guidance():
     assert result["recommendations"] == []
     assert "oral rehydration solution (ORS)" in result["message"]
     assert "does not establish any Guttify product as suitable" in result["message"]
+
+
+def test_diarrhea_guidance_is_added_only_once_per_session():
+    manager = ConversationManager()
+    session = manager._get_session("diarrhea-guidance-once")
+    session.symptom_state.primary_symptom = "diarrhea"
+
+    first = _with_diarrhea_guidance("First question", session.symptom_state, session=session)
+    second = _with_diarrhea_guidance("Second question", session.symptom_state, session=session)
+
+    assert "oral rehydration solution (ORS)" in first
+    assert "oral rehydration solution (ORS)" not in second
+    assert "Second question" in second
 
 
 @pytest.mark.parametrize("answer,expected", [("5", 5), ("about 4", 4), ("6 stools", 6), ("3 times a day", 3)])

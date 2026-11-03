@@ -850,6 +850,18 @@ def _write_customer_records(records: list[dict]) -> None:
                 for item in record.get("assessments", []) if isinstance(record.get("assessments", []), list) else []:
                     if not isinstance(item, dict) or not item.get("session_id"):
                         continue
+                    assessment_id = str(item.get("assessment_id") or uuid.uuid4())
+                    cur.execute(
+                        "SELECT session_id FROM customer_assessments WHERE assessment_id=%s",
+                        (assessment_id,),
+                    )
+                    id_owner = cur.fetchone()
+                    if id_owner and id_owner["session_id"] != str(item["session_id"]):
+                        # Legacy customer records can contain a reused ID.
+                        # The session ID is the idempotency key here, so repair
+                        # the stale ID instead of failing the whole chat turn.
+                        assessment_id = str(uuid.uuid4())
+                        item["assessment_id"] = assessment_id
                     completed = _to_utc_datetime(item.get("completed_at")) or datetime.now(timezone.utc)
                     cur.execute("""
                         INSERT INTO customer_assessments (assessment_id, customer_id, session_id, assessment, status, started_at, updated_at, completed_at)
@@ -861,7 +873,7 @@ def _write_customer_records(records: list[dict]) -> None:
                             -- assessment lifecycle state. _persist_assessment_checkpoint()
                             -- owns status/completed_at based on assessment_state.checkpoint.
                             updated_at=GREATEST(customer_assessments.updated_at, EXCLUDED.updated_at)
-                    """, (str(item.get("assessment_id") or uuid.uuid4()), cid, str(item["session_id"]),
+                    """, (assessment_id, cid, str(item["session_id"]),
                           str(item.get("assessment", "Insufficient information")), completed, completed, completed))
     except HTTPException:
         raise

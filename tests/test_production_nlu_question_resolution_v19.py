@@ -188,6 +188,19 @@ def test_unresolved_cannot_become_answered_from_existing_state():
     assert s.symptom_state.straining is None
 
 
+def test_varied_unresolved_answers_cannot_loop_forever():
+    cm, sid, s = active("constipation", "piles")
+    s.symptom_state.constipation_explicit = None
+    s.symptom_state.straining = None
+
+    cm.handle_message(sid, "something unrelated")
+    cm.handle_message(sid, "I was talking about yesterday")
+    cm.handle_message(sid, "another unrelated detail")
+
+    assert s.last_question != "constipation"
+    assert "constipation" in s.symptom_state.answered_unknown_fields
+
+
 def test_answered_constipation_advances_to_next_question():
     cm, sid, s = active("constipation", "piles")
     result = cm.handle_message(sid, "no")
