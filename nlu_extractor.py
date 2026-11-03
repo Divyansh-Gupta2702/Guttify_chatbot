@@ -740,8 +740,11 @@ def _question_specific_fallback(message: str, last_question: str | None, state) 
         pain_pos = bool(re.search(
             r"\b(?:abdominal pain|stomach pain|belly pain|stomach ache|cramps?|cramping|i do have some pain|i have some pain|i have pain)\b", n
         ))
+        bare_pain_yes = bool(re.fullmatch(
+            r"(?:yes|yeah|yep|yup|absolutely|definitely|of course|it does|pretty much)", n
+        ))
 
-        if bare_yes:
+        if bare_pain_yes:
             out["pain"] = True
             out["abdominal_pain"] = True
             out["pain_related_to_bowel_movement"] = True
@@ -1201,6 +1204,13 @@ def _needs_llm(message: str, last_question: str | None, fallback: dict) -> bool:
     if not n:
         return False
 
+    if last_question in {"daily_frequency", "bowel_frequency"} and re.fullmatch(
+        r"(?:sometimes|occasionally|rarely|once in a while|every (?:other|alternate|second) day|"
+        r"once daily|once a day|twice daily|twice a day)",
+        n,
+    ):
+        return False
+
     # Very short, unambiguous answers are cheaper and safer to parse locally.
     simple = [
         r"^\d+(?:\.\d+)?\s*(?:days?|weeks?|months?|years?)$",
@@ -1316,7 +1326,7 @@ def _filter_unrelated_active_question_symptoms(result: dict, message: str, last_
     return result
 
 
-def extract_natural_facts(message: str, last_question: str | None, state, conversation_history=None) -> dict:
+def extract_natural_facts(message: str, last_question: str | None, state, conversation_history=None, active_component: str | None = None) -> dict:
     """Extract facts once, with an explicit question-resolution boundary.
 
     Order:
@@ -1333,9 +1343,10 @@ def extract_natural_facts(message: str, last_question: str | None, state, conver
     # especially important for yes/no, unknown, age, duration, stool and food
     # answers: no model call is needed and model confidence cannot downgrade them.
     resolution = validate_question_resolution(resolve_against_active_question(
-        last_question, message, extracted=fallback, state=state
+        last_question, message, extracted=fallback, state=state,
+        active_component=active_component,
     ))
-    if resolution["status"] in {"answered", "unknown"}:
+    if resolution["status"] in {"answered", "partial", "unknown", "refused"}:
         for key, value in resolution["values"].items():
             if value == "unknown":
                 continue
@@ -1404,8 +1415,8 @@ def extract_natural_facts(message: str, last_question: str | None, state, conver
             "food_trigger": {"food_trigger", "food_related"},
             "trigger": {"food_trigger", "food_related"},
             "food_relation": {"food_related"},
-            "upper_symptoms": {"abdominal_pain"},
-            "symptoms": {"bloating", "diarrhea", "abdominal_pain", "constipation_explicit"},
+            "upper_symptoms": {"upper_symptoms"},
+            "symptoms": {"bloating", "diarrhea", "abdominal_pain", "constipation_explicit", "gas", "other_symptoms"},
             "red_flag_check": {"red_flags"},
             "product_concern": set(),
         }
@@ -1443,12 +1454,13 @@ def extract_natural_facts(message: str, last_question: str | None, state, conver
     # fields are available. Run the resolver once more without invoking the
     # model again. This is the single ownership boundary for the active field.
     final_resolution = validate_question_resolution(resolve_against_active_question(
-        last_question, message, extracted=result, state=state
+        last_question, message, extracted=result, state=state,
+        active_component=active_component,
     ))
     result["_question_resolution"] = final_resolution
     result["_answer_status"] = final_resolution["status"]
     result["_resolver_source"] = result.get("_resolver_source", "fallback")
-    if final_resolution["status"] in {"answered", "unknown"}:
+    if final_resolution["status"] in {"answered", "partial", "unknown", "refused"}:
         for key, value in final_resolution["values"].items():
             if value != "unknown":
                 result[key] = value

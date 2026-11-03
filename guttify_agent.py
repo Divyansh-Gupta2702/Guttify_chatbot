@@ -33,7 +33,7 @@ from safety_checker import (
 )
 from recommendation_engine import evaluate as evaluate_product, find_named_product, has_domain_overlap, products as ALL_PRODUCTS
 from nlu_extractor import extract_natural_facts
-from question_schema import QUESTION_SCHEMA, QuestionResolution, question_has_answer, resolve_against_active_question, validate_question_resolution
+from question_schema import QUESTION_SCHEMA, QuestionResolution, next_question_component, question_has_answer, question_has_progressed, resolve_against_active_question, validate_question_resolution
 from product_concern_router import detect_product_concerns
 from conversation_intelligence import (
     OPEN_SYMPTOM_REPLY, SAFE_GENERAL_FALLBACK, SCOPE_REPLY,
@@ -217,6 +217,7 @@ class SessionState:
     questions_asked: int = 0
     diarrhea_guidance_shown: bool = False
     last_question: str | None = None
+    active_question_component: str | None = None
     awaiting_close: bool = False
     ended: bool = False
     # True after a final clinical assessment has already been delivered.
@@ -507,12 +508,13 @@ class ConversationManager:
         lower = raw.lower().replace("’", "'")
         # Split contrastive clauses so a denial of one symptom does not negate
         # a positive symptom after "but" / "however".
-        clauses = re.split(r"\b(?:but|however|although)\b|[,;]", lower)
+        clauses = re.split(r"\b(?:but|however|although)\b|[,;]|(?<=[.!?])\s+", lower)
         definitions = {
             "bloating": ("bloating", r"\b(?:bloat(?:ed|ing)?|belly feels swollen|stomach feels full of air)\b"),
             "gas": ("gas", r"\b(?:gas|gassy|flatulence|passing gas|lots of gas|excess gas)\b"),
             "diarrhea": ("diarrhea", r"\b(?:diarr(?:hea|hoea)|loose stools?|loose motions?|watery stools?)\b"),
             "abdominal_pain": ("stomach pain", r"\b(?:abdominal pain|stomach pain|belly pain|stomach ache|stomachache|cramps?)\b"),
+            "blood_present": ("blood", r"\b(?:blood|bleeding|bloody stool|rectal bleeding)\b"),
         }
         positive = []
         negative = []
@@ -537,6 +539,12 @@ class ConversationManager:
         for field, label in negative:
             if field == "abdominal_pain":
                 data["abdominal_pain"] = False
+            elif field == "blood_present":
+                data["blood_present"] = False
+                # These questions only apply when bleeding is present. Clear
+                # their old discriminators when the user corrects that fact.
+                data["blood_colour"] = None
+                data["blood_location"] = None
             elif field == "diarrhea":
                 data["diarrhea"] = False
                 data["diarrhea_explicit"] = False
@@ -554,6 +562,8 @@ class ConversationManager:
         for field, label in positive:
             if field == "abdominal_pain":
                 data["abdominal_pain"] = True
+            elif field == "blood_present":
+                data["blood_present"] = True
             elif field == "diarrhea":
                 data["diarrhea"] = True
                 data["diarrhea_explicit"] = True
@@ -591,10 +601,17 @@ class ConversationManager:
     def _run_nlu(self, session, text, conversation_history=None):
         before = session.symptom_state.to_dict()
         current_question = session.last_question
+        resolver_kwargs = ({"active_component": session.active_question_component}
+                           if session.active_question_component else {})
         if conversation_history is None:
-            facts = extract_natural_facts(text, current_question, session.symptom_state)
+            facts = extract_natural_facts(
+                text, current_question, session.symptom_state, **resolver_kwargs,
+            )
         else:
-            facts = extract_natural_facts(text, current_question, session.symptom_state, conversation_history)
+            facts = extract_natural_facts(
+                text, current_question, session.symptom_state, conversation_history,
+                **resolver_kwargs,
+            )
         # IMPORTANT: extraction is observational here. It must not mutate
         # state before active-question ownership has resolved the answer.
         after = session.symptom_state.to_dict()
@@ -642,6 +659,8 @@ class ConversationManager:
         question_resolution = contextual.get("_question_resolution") if isinstance(contextual, dict) else None
         question_resolution = validate_question_resolution(question_resolution)
         resolution_is_unresolved = question_resolution.get("status") in {"unresolved", "clarification_needed"}
+        resolution_is_partial = question_resolution.get("status") == "partial"
+        resolved_active_values = question_resolution.get("values") or {}
         active_owned = set((QUESTION_SCHEMA.get(field).fields if QUESTION_SCHEMA.get(field) else set()))
         protected_active_values = {k: data.get(k) for k in active_owned}
         invalid_unresolved_fields = []
@@ -655,26 +674,42 @@ class ConversationManager:
         # Record the question as completed without writing True/False/None into
         # the clinical slot, so diagnosis and safety rules never treat "I don't
         # know" as evidence either way.
-        if isinstance(question_resolution, dict) and question_resolution.get("status") == "unknown":
-            unknown_fields = list(getattr(s, "answered_unknown_fields", []) or [])
-            if field not in unknown_fields:
-                unknown_fields.append(field)
-            s.answered_unknown_fields = unknown_fields
+        if isinstance(question_resolution, dict) and question_resolution.get("status") in {"unknown", "refused"}:
+            resolution_status = question_resolution["status"]
+            target_name = "refused_fields" if resolution_status == "refused" else "answered_unknown_fields"
+            answer_fields = list(question_resolution.get("refused_fields") or []) if resolution_status == "refused" else [field]
+            recorded_fields = list(getattr(s, target_name, []) or [])
+            for answer_field in answer_fields:
+                if answer_field and answer_field not in recorded_fields:
+                    recorded_fields.append(answer_field)
+            setattr(s, target_name, recorded_fields)
             if field == "stool_form":
                 s.stool_form = "unknown"
             s.red_flags = derive_red_flags(s)
-            logger.info("[NLU][ANSWER] field=%s value=unknown status=unknown", field)
+            logger.info("[NLU][ANSWER] field=%s value=%s status=%s", field, resolution_status, resolution_status)
             logger.info("[NLU][CONFIDENCE] type=deterministic value=%.2f", float(question_resolution.get("confidence") or 0.99))
-            logger.info("[QUESTION][RESOLUTION] field=%s value=unknown status=unknown confidence=%.2f", field, float(question_resolution.get("confidence") or 0.99))
+            logger.info("[QUESTION][RESOLUTION] field=%s value=%s status=%s confidence=%.2f", field, resolution_status, resolution_status, float(question_resolution.get("confidence") or 0.99))
             return QuestionResolution(
                 field=field,
                 answered=True,
                 values={k: getattr(s, k, None) for k in (QUESTION_SCHEMA.get(field).fields if QUESTION_SCHEMA.get(field) else set())},
                 confidence=float(question_resolution.get("confidence") or 0.99),
                 clarification_needed=False,
-                answer_status="unknown",
+                answer_status=resolution_status,
                 source="deterministic",
             )
+
+        partial_unknowns = question_resolution.get("unknown_fields") or []
+        partial_refusals = question_resolution.get("refused_fields") or []
+        for target_name, answer_fields in (
+            ("answered_unknown_fields", partial_unknowns),
+            ("refused_fields", partial_refusals),
+        ):
+            recorded_fields = list(data.get(target_name) or [])
+            for answer_field in answer_fields:
+                if answer_field and answer_field not in recorded_fields:
+                    recorded_fields.append(answer_field)
+            data[target_name] = recorded_fields
 
         if field == "vomiting_fever_swelling" and isinstance(contextual.get("swelling"), bool):
             data["abdominal_distension"] = contextual["swelling"]
@@ -1144,7 +1179,7 @@ class ConversationManager:
         # The validated resolver owns the active question. Re-apply only the
         # values it actually detected after legacy compatibility handlers so a
         # generic parser cannot overwrite a contextual negative/positive.
-        if question_resolution.get("status") == "answered":
+        if question_resolution.get("status") in {"answered", "partial"}:
             for _key, _value in (question_resolution.get("values") or {}).items():
                 if _key == "lump_or_prolapse":
                     data["lump_or_prolapse"] = _value
@@ -1197,6 +1232,8 @@ class ConversationManager:
         normalized = n
 
         def explicit_field(f):
+            if f in {"answered_unknown_fields", "refused_fields"}:
+                return True
             patterns = {
                 "duration": r"\b(?:for|since|started|began|been having|lasting|lasted|ago)\b.{0,80}\b(?:\d+(?:\.\d+)?|one|two|three|four|five|six|seven|eight|nine|ten)\s*(?:hours?|days?|weeks?|months?|years?)\b",
                 "age": r"\b(?:i am|i'm|im|my age is|aged)\s*\d{1,3}\b",
@@ -1255,8 +1292,11 @@ class ConversationManager:
                     # legacy handlers earlier in this method. Resolved turns
                     # retain the legacy handler's values until the validated
                     # resolver values are re-applied below.
+                    preserve_prior = resolution_is_unresolved or (
+                        resolution_is_partial and k not in resolved_active_values
+                    )
                     merged_data[k] = (protected_active_values.get(k)
-                                      if resolution_is_unresolved else data.get(k))
+                                      if preserve_prior else data.get(k))
                     continue
                 if explicit_field(k):
                     continue
@@ -1316,8 +1356,10 @@ class ConversationManager:
         if preserved:
             logger.info("[QUESTION][STATE_PRESERVE] preserved=%s", preserved)
         resolver_status = question_resolution.get("status") if isinstance(question_resolution, dict) else "unresolved"
-        answered = resolver_status == "answered" and question_has_answer(session.symptom_state, field)
-        answer_status = "answered" if answered else resolver_status
+        answered = resolver_status in {"answered", "partial"} and question_has_answer(session.symptom_state, field)
+        answer_status = "answered" if answered else (
+            "partial" if resolver_status in {"answered", "partial"} else resolver_status
+        )
         resolver_source = contextual.get("_resolver_source", "fallback") if isinstance(contextual, dict) else "fallback"
         if answered:
             logger.info("[NLU][RESOLUTION_GUARD] status=answered fields_written=%s", list((question_resolution.get("values") or {}).keys()))
@@ -1676,7 +1718,9 @@ class ConversationManager:
             return result
         safety = result.setdefault("safety", {})
         red_flag = bool(safety.get("red_flag") or session.symptom_state.red_flags)
-        reason_code = "urgent_red_flag" if red_flag else "pregnancy_lactation_product_restriction"
+        reason_code = safety.get("reason_code") or (
+            "urgent_red_flag" if red_flag else "pregnancy_lactation_product_restriction"
+        )
         if red_flag:
             known = {item.get("reason") for item in session.safety_flag_provenance if isinstance(item, dict)}
             for reason in session.symptom_state.red_flags or safety.get("reasons", []):
@@ -2256,7 +2300,7 @@ class ConversationManager:
             # the response did not answer that question, keep the context
             # active and ask for clarification instead of skipping a required
             # clinical field or declaring a diagnosis prematurely.
-            if resolution_status in {"unresolved", "clarification_needed"} or not self._question_has_answer(session, pending_question):
+            if resolution_status in {"unresolved", "clarification_needed"} or not question_has_progressed(session.symptom_state, pending_question):
                 session.last_question = pending_question
                 # Use a focused clarification when the user answered only
                 # part of a multi-concept question. Repeating the entire
@@ -2295,6 +2339,8 @@ class ConversationManager:
                     "lump": "Is there a lump or something protruding from the anus?",
                     "stool_straining": "Are your stools hard or lumpy, and do you need to strain to pass them?",
                     "constipation": "Do you have hard stools or strain when passing stool?",
+                    "bowel_frequency": "About how many bowel movements do you usually have in a week? A rough estimate is fine.",
+                    "daily_frequency": "About how many loose or watery stools do you have on a typical day? A number or rough range is fine.",
                     "blood_mucus": "Do you have blood or mucus in the stool?",
                     "vomiting_fever": "Any vomiting or fever?",
                     "vomiting_fever_swelling": "Any repeated vomiting, fever, or severe abdominal swelling?",
@@ -2308,41 +2354,41 @@ class ConversationManager:
                     "bowel_pattern": "Do you mainly have constipation, diarrhea, or both at different times?",
                     "symptoms": "What happens after the food: bloating, gas, diarrhea, cramps, constipation, or something else?",
                 }
-                question_text = focused_clarifications.get(
-                    pending_question,
-                    question_texts.get(pending_question, "Could you answer the question above in a little more detail?")
-                )
+                missing_component = next_question_component(pending_question, session.symptom_state)
+                if missing_component:
+                    session.active_question_component, question_text = missing_component
+                else:
+                    session.active_question_component = None
+                    question_text = focused_clarifications.get(
+                        pending_question,
+                        question_texts.get(pending_question, "Could you answer the question above in a little more detail?")
+                    )
                 normalized_reply = normalize(user_message)
                 repeated = (
                     session.clarification_question == pending_question
-                    and (
-                        session.clarification_response == normalized_reply
-                        or session.clarification_count >= 2
-                    )
+                    and session.clarification_response == normalized_reply
                 )
-                if repeated:
-                    unknown = list(getattr(session.symptom_state, "answered_unknown_fields", []) or [])
-                    if pending_question not in unknown:
-                        unknown.append(pending_question)
-                    session.symptom_state.answered_unknown_fields = unknown
-                    session.clarification_count += 1
-                    logger.info(
-                        "[QUESTION][BLOCK] field=%s reason=repeated_nonanswer action=MARK_UNKNOWN_AND_ADVANCE",
-                        pending_question,
-                    )
-                else:
-                    session.clarification_question = pending_question
-                    session.clarification_response = normalized_reply
-                    session.clarification_count += 1
-                    logger.info("[QUESTION][BLOCK] field=%s reason=answer_not_understood action=ASK_CLARIFICATION", pending_question)
-                    logger.info("[NLU] unanswered_question field=%s; preserving context", pending_question)
-                    return {
-                        "status": "ASK",
-                        "message": _with_diarrhea_guidance(f"I want to make sure I understood that. {question_text}", session.symptom_state, session=session),
-                        "recommendations": [],
-                        "safety": safety,
-                    }
+                session.clarification_question = pending_question
+                session.clarification_response = normalized_reply
+                session.clarification_count += 1
+                logger.info(
+                    "[QUESTION][BLOCK] field=%s reason=%s action=ASK_CLARIFICATION",
+                    pending_question,
+                    "repeated_nonanswer" if repeated else "answer_not_understood",
+                )
+                logger.info("[NLU] unanswered_question field=%s; preserving context", pending_question)
+                clarification_intro = (
+                    "I still need an answer to that specific part. "
+                    if repeated else "I want to make sure I understood that. "
+                )
+                return {
+                    "status": "ASK",
+                    "message": _with_diarrhea_guidance(f"{clarification_intro}{question_text}", session.symptom_state, session=session),
+                    "recommendations": [],
+                    "safety": safety,
+                }
             session.last_question = None
+            session.active_question_component = None
             session.clarification_question = None
             session.clarification_response = None
             session.clarification_count = 0
@@ -2503,6 +2549,51 @@ class ConversationManager:
                 session.questions_asked += 1
                 logger.info("[QUESTION] next=%s safety_flag_count=%d", name, len(session.symptom_state.red_flags or []))
                 return {"status": "ASK", "message": _with_diarrhea_guidance(question_text, session.symptom_state, session=session), "recommendations": [], "safety": safety}
+
+        safety_unknowns = set(
+            (session.symptom_state.answered_unknown_fields or [])
+            + (session.symptom_state.refused_fields or [])
+        ) & {
+            "blood", "bleeding", "blood_present", "blood_colour", "blood_location",
+            "blood_mucus", "mucus", "anal_pain", "sharp_pain_during_stool", "lump",
+            "lump_or_prolapse", "night_weight_fever", "night_time_symptoms", "weight_loss",
+            "vomiting_fever", "vomiting_fever_swelling", "swallowing", "weight_swallow",
+            "fever", "vomiting", "persistent_vomiting", "vomiting_blood",
+            "difficulty_swallowing", "abdominal_distension",
+        }
+        if safety_unknowns:
+            message = (
+                "I can't complete a safe symptom assessment because one or more warning-sign "
+                "questions were left unanswered. I have not treated those answers as negative "
+                "or made a diagnosis. Please discuss your symptoms with a healthcare professional."
+            )
+            screening = {
+                "pattern": "Assessment incomplete — safety information unknown",
+                "likely_condition": "Assessment incomplete",
+                "confidence": "low",
+                "evidence": [f"Unanswered safety question: {field}" for field in sorted(safety_unknowns)],
+                "differentials": [],
+                "action": "incomplete_safety_information",
+                "product_allowed": False,
+                "message": message,
+            }
+            session.screening = screening
+            session.diagnosis_complete = True
+            incomplete_safety = {
+                "safe_to_recommend": False,
+                "requires_doctor": True,
+                "red_flag": False,
+                "reason_code": "unanswered_safety_question",
+                "reasons": sorted(safety_unknowns),
+                "message": message,
+            }
+            return {
+                "status": "SAFETY_REVIEW",
+                "message": message,
+                "recommendations": [],
+                "safety": incomplete_safety,
+                "screening": screening,
+            }
 
         # A required question is never bypassed by the max-question fallback.
         # If we still have active question context, keep the assessment blocked.

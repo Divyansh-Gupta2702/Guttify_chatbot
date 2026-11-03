@@ -138,7 +138,10 @@ def test_diarrhea_guidance_is_added_only_once_per_session():
     assert "Second question" in second
 
 
-@pytest.mark.parametrize("answer,expected", [("5", 5), ("about 4", 4), ("6 stools", 6), ("3 times a day", 3)])
+@pytest.mark.parametrize("answer,expected", [
+    ("5", 5), ("about 4", 4), ("6 stools", 6), ("3 times a day", 3),
+    ("once daily", 1), ("twice a day", 2), ("every alternate day", 0.5),
+])
 def test_daily_frequency_short_answer_resolves_without_llm(answer, expected):
     resolution = resolve_against_active_question("daily_frequency", answer)
     assert resolution["status"] == "answered"
@@ -160,11 +163,27 @@ def test_daily_frequency_short_answer_skips_groq_extraction(monkeypatch):
     assert facts["bowel_frequency_per_day"] == 5
 
 
-@pytest.mark.parametrize("answer", ["yes", "no", "often"])
-def test_daily_frequency_non_numeric_answer_remains_unresolved(answer):
+@pytest.mark.parametrize("answer", ["yes", "no"])
+def test_daily_frequency_non_numeric_yes_no_remains_unresolved(answer):
     resolution = resolve_against_active_question("daily_frequency", answer)
     assert resolution["status"] == "unresolved"
     assert resolution["values"] == {}
+
+
+@pytest.mark.parametrize("answer", ["sometimes", "occasionally", "rarely"])
+def test_qualitative_frequency_requests_a_numeric_estimate_without_llm(answer, monkeypatch):
+    monkeypatch.setattr(
+        nlu_extractor,
+        "_llm_extract",
+        lambda *args, **kwargs: pytest.fail("qualitative frequency should use deterministic clarification"),
+    )
+    resolution = resolve_against_active_question("daily_frequency", answer)
+    facts = nlu_extractor.extract_natural_facts(
+        answer, "daily_frequency", SymptomState(primary_symptom="diarrhea"),
+    )
+    assert resolution["status"] == "clarification_needed"
+    assert facts["_answer_status"] == "clarification_needed"
+    assert facts.get("bowel_frequency_per_day") is None
 
 
 @pytest.mark.parametrize("pattern", [

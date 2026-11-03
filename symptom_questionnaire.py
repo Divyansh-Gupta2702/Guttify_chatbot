@@ -7,7 +7,7 @@ records the exact field it asked, so replies like "5 months", "23", "no", or
 import logging
 
 from clinical_rule_engine import _duration_days
-from question_schema import question_has_answer
+from question_schema import question_has_answer, question_has_progressed
 
 logger = logging.getLogger("gutgpt.questionnaire")
 
@@ -37,7 +37,7 @@ def next_question(state):
         # it must remain eligible to be asked. Explicitly accepted "unknown" is
         # a valid conversational outcome and is tracked separately.
         unknown_fields = set(getattr(state, "answered_unknown_fields", []) or [])
-        has_answer = question_has_answer(state, name)
+        has_answer = question_has_progressed(state, name)
         if condition and name not in unknown_fields and (name not in asked or not has_answer):
             return name, text
         if name in {"blood_colour", "blood_location", "anal_pain", "lump", "constipation"}:

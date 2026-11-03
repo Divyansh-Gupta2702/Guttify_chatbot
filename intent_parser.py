@@ -447,6 +447,7 @@ class SymptomState:
     straining: bool = None
     incomplete_evacuation: bool = None
     abdominal_pain: bool = None
+    upper_symptoms: str = None
     pain_location: str = None
     pain_related_to_bowel_movement: bool = None
     blood_present: bool = None
@@ -492,6 +493,7 @@ class SymptomState:
     # from clinical state so "I don't know" resolves the question without
     # pretending the clinical fact is false or true.
     answered_unknown_fields: list = field(default_factory=list)
+    refused_fields: list = field(default_factory=list)
     # Track if the conditional weight-loss question (triggered by duration >= 1 month) has been asked
     weight_loss_duration_asked: bool = False
 

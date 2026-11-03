@@ -1,4 +1,6 @@
 
+import pytest
+
 import guttify_agent
 import nlu_extractor
 from guttify_agent import ConversationManager
@@ -134,13 +136,14 @@ def test_model_content_with_fence_and_preamble_parses():
         monkeypatch.undo()
 
 
-def test_repeated_identical_clarification_advances_instead_of_looping():
+def test_repeated_unrelated_answer_does_not_skip_required_question():
     cm, sid, s = active("pain_relation", "stomach pain")
     first = cm.handle_message(sid, "not sure which")
     assert first["status"] == "ASK"
     second = cm.handle_message(sid, "not sure which")
-    assert s.last_question != "pain_relation"
-    assert s.symptom_state.answered_unknown_fields
+    assert s.last_question == "pain_relation"
+    assert "specific part" in second["message"]
+    assert not s.symptom_state.answered_unknown_fields
 
 
 def test_constipation_bare_no_is_deterministic_negative():
@@ -188,17 +191,75 @@ def test_unresolved_cannot_become_answered_from_existing_state():
     assert s.symptom_state.straining is None
 
 
-def test_varied_unresolved_answers_cannot_loop_forever():
-    cm, sid, s = active("constipation", "piles")
-    s.symptom_state.constipation_explicit = None
-    s.symptom_state.straining = None
+def test_compound_partial_answer_is_saved_and_followup_targets_missing_component():
+    cm, sid, s = active("night_weight_fever", "diarrhea")
+    first = cm.handle_message(sid, "I have a fever")
 
-    cm.handle_message(sid, "something unrelated")
-    cm.handle_message(sid, "I was talking about yesterday")
-    cm.handle_message(sid, "another unrelated detail")
+    assert s.symptom_state.fever is True
+    assert s.last_question == "night_weight_fever"
+    assert "wake you at night" in first["message"]
+    assert s.active_question_component == "night_time_symptoms"
 
-    assert s.last_question != "constipation"
-    assert "constipation" in s.symptom_state.answered_unknown_fields
+    second = cm.handle_message(sid, "no")
+    assert s.symptom_state.night_time_symptoms is False
+    assert "unexplained weight loss" in second["message"]
+    assert s.active_question_component == "weight_loss"
+
+
+@pytest.mark.parametrize("question,message,expected", [
+    ("night_weight_fever", "I have a fever", {"fever": True}),
+    ("blood_mucus", "No blood", {"blood_present": False}),
+    ("vomiting_fever", "Yes, I have vomiting", {"vomiting": True}),
+])
+def test_compound_questions_keep_explicit_partial_fields(question, message, expected, monkeypatch):
+    monkeypatch.setattr(nlu_extractor, "_llm_extract", lambda *args, **kwargs: None)
+    facts = extract_natural_facts(message, question, SymptomState(primary_symptom="diarrhea"))
+    assert facts["_answer_status"] == "partial"
+    assert all(facts.get(field) == value for field, value in expected.items())
+    assert facts["_question_resolution"]["values"] == expected
+
+
+def test_pain_answer_does_not_infer_bowel_movement_relationship(monkeypatch):
+    monkeypatch.setattr(nlu_extractor, "_llm_extract", lambda *args, **kwargs: None)
+    facts = extract_natural_facts(
+        "Yes, I have abdominal pain.", "pain", SymptomState(primary_symptom="diarrhea")
+    )
+    assert facts["_answer_status"] == "partial"
+    assert facts["_question_resolution"]["values"] == {"abdominal_pain": True}
+    assert facts.get("pain_related_to_bowel_movement") is not True
+
+
+@pytest.mark.parametrize("question,message,field,expected", [
+    ("upper_symptoms", "nausea", "upper_symptoms", "nausea"),
+    ("upper_symptoms", "I feel full quickly", "upper_symptoms", "fullness"),
+    ("symptoms", "gas", "gas", True),
+    ("symptoms", "cramps", "abdominal_pain", True),
+    ("symptoms", "nausea", "other_symptoms", ["nausea"]),
+])
+def test_open_symptom_questions_resolve_without_llm(monkeypatch, question, message, field, expected):
+    monkeypatch.setattr(nlu_extractor, "_llm_extract", lambda *args, **kwargs: None)
+    facts = extract_natural_facts(message, question, SymptomState(primary_symptom="indigestion"))
+    assert facts["_answer_status"] == "answered"
+    assert facts[field] == expected
+    assert facts["_resolver_source"] == "deterministic"
+
+
+def test_compound_negative_bloating_pain_resolves_both_symptoms():
+    resolution = resolve_against_active_question(
+        "bloating_pain", "no bloating and no abdominal pain", state=SymptomState()
+    )
+    assert resolution["status"] == "answered"
+    assert resolution["values"]["bloating"] is False
+    assert resolution["values"]["abdominal_pain"] is False
+
+
+def test_unknown_and_refusal_are_distinct_from_negative():
+    unknown = resolve_against_active_question("blood_mucus", "I don't know")
+    refused = resolve_against_active_question("blood_mucus", "prefer not to say")
+    assert unknown["status"] == "unknown"
+    assert refused["status"] == "refused"
+    assert unknown["values"]["blood_present"] == "unknown"
+    assert refused["values"] == {}
 
 
 def test_answered_constipation_advances_to_next_question():

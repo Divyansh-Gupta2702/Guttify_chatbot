@@ -38,8 +38,8 @@ QUESTION_SCHEMA = {
     "weight_loss_duration": QuestionSpec(frozenset({"weight_loss"}), "boolean"),
     "bowel_frequency": QuestionSpec(frozenset({"bowel_frequency_per_week"}), "numeric"),
     "daily_frequency": QuestionSpec(frozenset({"bowel_frequency_per_day"}), "numeric"),
-    "stool_straining": QuestionSpec(frozenset({"stool_form", "straining", "constipation_explicit"}), "composite_boolean"),
-    "constipation": QuestionSpec(frozenset({"stool_form", "straining", "constipation_explicit"}), "composite_boolean"),
+    "stool_straining": QuestionSpec(frozenset({"stool_form", "hard_stools", "straining", "constipation_explicit"}), "composite_boolean"),
+    "constipation": QuestionSpec(frozenset({"stool_form", "hard_stools", "straining", "constipation_explicit"}), "composite_boolean"),
     "hard_stools": QuestionSpec(frozenset({"hard_stools"}), "boolean"),
     "straining": QuestionSpec(frozenset({"straining"}), "boolean"),
     "incomplete_evacuation": QuestionSpec(frozenset({"incomplete_evacuation"}), "boolean"),
@@ -59,8 +59,8 @@ QUESTION_SCHEMA = {
     "night_weight_fever": QuestionSpec(frozenset({"night_time_symptoms", "weight_loss", "fever"}), "composite_boolean", allow_bare_no_all=True),
     "swallowing": QuestionSpec(frozenset({"difficulty_swallowing", "persistent_vomiting", "vomiting_blood"}), "composite_boolean", allow_bare_no_all=True),
     "weight_swallow": QuestionSpec(frozenset({"weight_loss", "difficulty_swallowing", "persistent_vomiting", "vomiting_blood"}), "composite_boolean", allow_bare_no_all=True),
-    "upper_symptoms": QuestionSpec(frozenset({"abdominal_pain"}), "free_text"),
-    "symptoms": QuestionSpec(frozenset({"abdominal_pain", "bloating", "diarrhea", "constipation_explicit"}), "free_text"),
+    "upper_symptoms": QuestionSpec(frozenset({"upper_symptoms"}), "free_text"),
+    "symptoms": QuestionSpec(frozenset({"abdominal_pain", "bloating", "diarrhea", "constipation_explicit", "gas", "other_symptoms"}), "free_text", require_all=False),
     "stool_form": QuestionSpec(frozenset({"stool_form"}), "numeric"),
     "severity": QuestionSpec(frozenset({"severity"}), "numeric"),
     "pain_location": QuestionSpec(frozenset({"pain_location"}), "choice"),
@@ -104,6 +104,7 @@ STATE_FIELD_POLICY = {
     "straining": "question_owned",
     "incomplete_evacuation": "question_owned",
     "abdominal_pain": "question_owned",
+    "upper_symptoms": "question_owned",
     "pain_location": "question_owned",
     "pain_related_to_bowel_movement": "question_owned",
     "blood_present": "question_owned",
@@ -146,6 +147,7 @@ STATE_FIELD_POLICY = {
     "asked_fields": "question_engine",
     "weight_loss_duration_asked": "question_engine",
     "answered_unknown_fields": "question_engine",
+    "refused_fields": "question_engine",
 }
 
 
@@ -155,6 +157,12 @@ _UNKNOWN_RE = re.compile(
     r"^not\s+sure$|^unsure$|^uncertain$|^not\s+certain$|"
     r"^can'?t\s+tell$|^no\s+idea$|^i\s+have\s+no\s+idea$|"
     r"^i\s+don'?t\s+remember$|^i\s+can'?t\s+say$",
+    re.I,
+)
+_REFUSAL_RE = re.compile(
+    r"^(?:prefer not to say|rather not say|i'?d rather not say|"
+    r"i do not want to answer|i don't want to answer|dont want to answer|"
+    r"skip|i want to skip|rather not answer)$",
     re.I,
 )
 _YES_RE = re.compile(
@@ -167,6 +175,164 @@ _NO_RE = re.compile(
     r"i\s+don't|i\s+do\s+not|i\s+haven't|i\s+have\s+not|"
     r"it\s+doesn't|it\s+does\s+not)$", re.I,
 )
+
+
+_COMPOUND_COMPONENT_PATTERNS = {
+    "blood_mucus": {
+        "blood_present": r"\b(?:blood|bleeding|bloody)\b",
+        "mucus": r"\bmuc(?:us|ous)\b",
+    },
+    "night_weight_fever": {
+        "night_time_symptoms": r"\b(?:wake[s]? me|waking me|symptoms? at night|only at night|at night|during the night)\b",
+        "weight_loss": r"\b(?:weight loss|losing weight|lost weight|unintentional weight loss)\b",
+        "fever": r"\bfever\b",
+    },
+    "vomiting_fever": {
+        "vomiting": r"\b(?:vomit(?:ing)?|throw(?:ing)? up)\b",
+        "fever": r"\bfever\b",
+    },
+    "vomiting_fever_swelling": {
+        "vomiting": r"\b(?:vomit(?:ing)?|throw(?:ing)? up)\b",
+        "fever": r"\bfever\b",
+        "abdominal_distension": r"\b(?:(?:abdominal|stomach|belly) swelling|distension|distention|swelling|swollen)\b",
+    },
+    "swallowing": {
+        "difficulty_swallowing": r"\b(?:difficulty|trouble|painful|pain) swallowing\b",
+        "persistent_vomiting": r"\b(?:persistent|repeated|repeatedly|can't stop|cannot stop) vomit(?:ing)?\b",
+        "vomiting_blood": r"\b(?:vomit(?:ing)? blood|throw(?:ing)? up blood|blood in (?:my )?vomit)\b",
+    },
+    "weight_swallow": {
+        "weight_loss": r"\b(?:weight loss|losing weight|lost weight|unintentional weight loss)\b",
+        "difficulty_swallowing": r"\b(?:difficulty|trouble|painful|pain) swallowing\b",
+        "persistent_vomiting": r"\b(?:persistent|repeated|repeatedly|can't stop|cannot stop) vomit(?:ing)?\b",
+        "vomiting_blood": r"\b(?:vomit(?:ing)? blood|throw(?:ing)? up blood|blood in (?:my )?vomit)\b",
+    },
+}
+
+
+def _component_boolean(message: str, pattern: str) -> bool | None:
+    """Return an explicitly mentioned component value, without inferring absence."""
+    negative = re.search(
+        r"\b(?:no|not|never|without|don't|dont|do not|doesn't|does not|"
+        r"isn't|is not|haven't|have not|hasn't|has not)\b.{0,45}" + pattern,
+        message,
+    )
+    if negative:
+        return False
+    if re.search(pattern, message):
+        return True
+    return None
+
+
+def _composite_completion(question_id: str, values: dict, state=None) -> bool:
+    """Check whether explicit/current values complete this question's required slots."""
+    def get(name):
+        value = values.get(name)
+        return value if value is not None else getattr(state, name, None)
+
+    if question_id == "pain":
+        pain = get("abdominal_pain")
+        return pain is False or (pain is True and get("pain_related_to_bowel_movement") is not None)
+    if question_id == "bloating_pain":
+        pain = get("abdominal_pain")
+        if pain is True:
+            return get("pain_related_to_bowel_movement") is not None
+        if get("bloating") is None or pain is None:
+            return False
+        return pain is False
+    if question_id in {"stool_straining", "constipation"}:
+        return get("constipation_explicit") is not None or (
+            (get("stool_form") is not None or get("hard_stools") is not None)
+            and get("straining") is not None
+        )
+    if question_id in {"pain_relation", "food_relation", "triggers", "food_trigger", "trigger"}:
+        if question_id == "pain_relation":
+            meal, bowel = get("food_related"), get("pain_related_to_bowel_movement")
+            return meal is True or bowel is True or (meal is False and bowel is False)
+        return any(get(name) is not None for name in ("food_related", "food_trigger", "pain_related_to_bowel_movement"))
+    spec = get_question_spec(question_id)
+    return bool(spec) and all(get(name) is not None for name in spec.fields)
+
+
+_CLARIFICATION_COMPONENTS = {
+    "pain": (
+        ("abdominal_pain", lambda s: s.abdominal_pain is None, "Do you have recurring abdominal pain or cramps?"),
+        ("pain_related_to_bowel_movement", lambda s: s.abdominal_pain is True and s.pain_related_to_bowel_movement is None, "Does the pain improve, worsen, or change after a bowel movement?"),
+    ),
+    "bloating_pain": (
+        ("bloating", lambda s: s.bloating is None, "Do you have bloating?"),
+        ("abdominal_pain", lambda s: s.abdominal_pain is None, "Do you have recurring abdominal pain or cramps?"),
+        ("pain_related_to_bowel_movement", lambda s: s.abdominal_pain is True and s.pain_related_to_bowel_movement is None, "Does the pain improve, worsen, or change after a bowel movement?"),
+    ),
+    "blood_mucus": (
+        ("blood_present", lambda s: s.blood_present is None, "Have you noticed blood in or around the stool?"),
+        ("mucus", lambda s: s.mucus is None, "Have you noticed mucus in the stool?"),
+    ),
+    "night_weight_fever": (
+        ("night_time_symptoms", lambda s: s.night_time_symptoms is None, "Do your symptoms wake you at night or happen only at night?"),
+        ("weight_loss", lambda s: s.weight_loss is None, "Have you had unexplained weight loss?"),
+        ("fever", lambda s: s.fever is None, "Have you had a fever?"),
+    ),
+    "vomiting_fever": (
+        ("vomiting", lambda s: s.vomiting is None, "Have you had repeated vomiting?"),
+        ("fever", lambda s: s.fever is None, "Have you had a fever?"),
+    ),
+    "vomiting_fever_swelling": (
+        ("vomiting", lambda s: s.vomiting is None, "Have you had repeated vomiting?"),
+        ("fever", lambda s: s.fever is None, "Have you had a fever?"),
+        ("abdominal_distension", lambda s: s.abdominal_distension is None, "Do you have severe abdominal swelling?"),
+    ),
+    "swallowing": (
+        ("difficulty_swallowing", lambda s: s.difficulty_swallowing is None, "Do you have difficulty or pain swallowing?"),
+        ("persistent_vomiting", lambda s: s.persistent_vomiting is None, "Have you had persistent or repeated vomiting?"),
+        ("vomiting_blood", lambda s: s.vomiting_blood is None, "Have you vomited blood?"),
+    ),
+    "weight_swallow": (
+        ("weight_loss", lambda s: s.weight_loss is None, "Have you had unexplained weight loss?"),
+        ("difficulty_swallowing", lambda s: s.difficulty_swallowing is None, "Do you have difficulty or pain swallowing?"),
+        ("persistent_vomiting", lambda s: s.persistent_vomiting is None, "Have you had persistent or repeated vomiting?"),
+        ("vomiting_blood", lambda s: s.vomiting_blood is None, "Have you vomited blood?"),
+    ),
+    "stool_straining": (
+        ("hard_stools", lambda s: s.hard_stools is None and s.stool_form is None, "Are your stools hard (hard stools) or lumpy?"),
+        ("straining", lambda s: s.straining is None, "Do you need to strain to pass stool?"),
+    ),
+    "constipation": (
+        ("hard_stools", lambda s: s.hard_stools is None and s.stool_form is None, "Are your stools hard (hard stools) or lumpy?"),
+        ("straining", lambda s: s.straining is None, "Do you need to strain to pass stool?"),
+    ),
+    "pain_relation": (
+        ("food_related", lambda s: s.food_related is None, "Is the pain related to meals or eating?"),
+        ("pain_related_to_bowel_movement", lambda s: s.pain_related_to_bowel_movement is None, "Is the pain related to bowel movements?"),
+    ),
+}
+
+
+def next_question_component(question_id: str, state) -> tuple[str, str] | None:
+    """Return the first explicitly missing sub-question for a compound item."""
+    unknown = set(getattr(state, "answered_unknown_fields", []) or [])
+    refused = set(getattr(state, "refused_fields", []) or [])
+    if question_id in unknown or question_id in refused:
+        return None
+    for component, missing, prompt in _CLARIFICATION_COMPONENTS.get(question_id, ()):
+        if component not in unknown and component not in refused and missing(state):
+            return component, prompt
+    return None
+
+
+def question_has_progressed(state: Any, question_id: str | None) -> bool:
+    """Question-selection completion, including explicitly unknown components.
+
+    This is only for progression. Clinical completion and safety gates continue
+    to use question_has_answer, which requires actual clinical values.
+    """
+    if question_has_answer(state, question_id):
+        return True
+    unknown = set(getattr(state, "answered_unknown_fields", []) or [])
+    refused = set(getattr(state, "refused_fields", []) or [])
+    if question_id in unknown or question_id in refused:
+        return True
+    return bool(question_id in _CLARIFICATION_COMPONENTS and next_question_component(question_id, state) is None)
 
 # Bare yes/no ownership. Composite questions are deliberately opt-in:
 # a bare answer can only fill all slots when the question itself is a
@@ -207,6 +373,8 @@ def classify_answer_status(value: str) -> str:
     n = normalize_answer_text(value)
     if _UNKNOWN_RE.fullmatch(n):
         return "unknown"
+    if _REFUSAL_RE.fullmatch(n):
+        return "refused"
     if _YES_RE.fullmatch(n):
         return "yes"
     if _NO_RE.fullmatch(n):
@@ -224,6 +392,7 @@ def resolve_against_active_question(
     message: str,
     extracted: dict | None = None,
     state=None,
+    active_component: str | None = None,
 ) -> dict:
     """Resolve one user turn against the active question.
 
@@ -239,6 +408,141 @@ def resolve_against_active_question(
 
     n = normalize_answer_text(message)
     status = classify_answer_status(n)
+
+    # A clarification can narrow a compound question to one specific field.
+    # In that context a short yes/no belongs to that field alone.
+    if active_component in (spec.fields if spec else ()) and status in {"yes", "no"}:
+        values = {active_component: status == "yes"}
+        if question_id == "pain" and active_component == "abdominal_pain" and status == "no":
+            values["pain_related_to_bowel_movement"] = False
+        return {
+            "status": "answered" if _composite_completion(question_id, values, state) else "partial",
+            "values": values,
+            "confidence": 0.99,
+            "source": "deterministic",
+        }
+    if active_component in (spec.fields if spec else ()) and status == "unknown":
+        return {
+            "status": "partial",
+            "values": {},
+            "unknown_fields": [active_component],
+            "confidence": 0.99,
+            "source": "deterministic",
+        }
+    if active_component in (spec.fields if spec else ()) and status == "refused":
+        return {
+            "status": "partial",
+            "values": {},
+            "refused_fields": [active_component],
+            "confidence": 0.99,
+            "source": "deterministic",
+        }
+
+    component_patterns = _COMPOUND_COMPONENT_PATTERNS.get(question_id or "", {})
+    component_values = {
+        field: value
+        for field, pattern in component_patterns.items()
+        if (value := _component_boolean(n, pattern)) is not None
+    }
+    if question_id in {"swallowing", "weight_swallow"} and re.search(
+        r"\b(?:no|not|never|without|don't|dont|do not)\b.{0,35}\b(?:vomit(?:ing)?|throw(?:ing)? up)\b",
+        n,
+    ):
+        component_values.setdefault("persistent_vomiting", False)
+    if question_id == "blood_mucus" and status == "no":
+        component_values.update({"blood_present": False, "mucus": False})
+
+    if question_id == "pain_relation":
+        meal_negative = bool(re.search(r"\b(?:not|never|no|without|isn't|is not)\b.{0,35}\b(?:meals?|eating|food)\b", n))
+        bowel_negative = bool(re.search(r"\b(?:not|never|no|without|isn't|is not)\b.{0,35}\b(?:bowel movements?|stool|poop)\b", n))
+        meal_positive = not meal_negative and bool(re.search(r"\b(?:after meals?|after eating|when i eat|triggered by meals?|related to meals?)\b", n))
+        bowel_positive = not bowel_negative and bool(re.search(r"\b(?:after (?:a )?(?:bowel movement|stool|poop)|related to (?:bowel movements?|stool)|changes? with (?:bowel movements?|stool))\b", n))
+        if meal_positive or bowel_positive or meal_negative or bowel_negative:
+            if meal_positive:
+                component_values["food_related"] = True
+            elif meal_negative:
+                component_values["food_related"] = False
+            if bowel_positive:
+                component_values["pain_related_to_bowel_movement"] = True
+            elif bowel_negative:
+                component_values["pain_related_to_bowel_movement"] = False
+            if meal_positive and not bowel_positive:
+                component_values["pain_related_to_bowel_movement"] = False
+            if bowel_positive and not meal_positive:
+                component_values["food_related"] = False
+
+    if question_id == "food_relation":
+        meal_negative = bool(re.search(r"\b(?:not|never|no|without|isn't|is not)\b.{0,35}\b(?:triggered|worsened|related|after|by)?\s*(?:by\s+)?(?:meals?|eating|food)\b", n))
+        meal_positive = bool(re.search(r"\b(?:triggered|worsened|related to|after)\b.{0,25}\b(?:meals?|eating|food)\b", n))
+        if meal_negative or meal_positive:
+            component_values["food_related"] = not meal_negative
+
+    if question_id == "bloating_pain":
+        bloating = _component_boolean(n, r"\b(?:bloating|bloated|bloat)\b")
+        if bloating is not None:
+            component_values["bloating"] = bloating
+
+    if question_id in {"pain", "bloating_pain"}:
+        pain_pattern = r"\b(?:abdominal pain|stomach pain|belly pain|stomach ache|cramps?|cramping|pain)\b"
+        pain = _component_boolean(n, pain_pattern)
+        if pain is not None:
+            component_values["abdominal_pain"] = pain
+            if pain is False:
+                component_values["pain_related_to_bowel_movement"] = False
+        relation_positive = re.search(
+            r"\b(?:related to|changes? with|improves? after|worsens? after|"
+            r"better after|worse after|worse before|relieved after)\b.{0,45}\b(?:bowel movements?|stool|poop)\b|"
+            r"\b(?:after|when) (?:passing )?(?:a )?(?:bowel movement|stool|poop)\b",
+            n,
+        )
+        relation_negative = re.search(
+            r"\b(?:not|never|doesn't|does not|isn't|is not)\b.{0,30}"
+            r"\brelated to\s+(?:bowel movements?|stool|poop)\b",
+            n,
+        )
+        if relation_negative:
+            component_values["pain_related_to_bowel_movement"] = False
+        elif relation_positive:
+            component_values["pain_related_to_bowel_movement"] = True
+
+    if component_values:
+        complete = _composite_completion(question_id, component_values, state)
+        return {
+            "status": "answered" if complete else "partial",
+            "values": component_values,
+            "confidence": 0.99,
+            "source": "deterministic",
+        }
+
+    if question_id == "upper_symptoms":
+        if re.search(r"\b(?:none|no symptoms|none of those|nothing|not experiencing any)\b", n):
+            return {"status": "answered", "values": {"upper_symptoms": "none reported"}, "confidence": 0.99, "source": "deterministic"}
+        terms = [term for term, pattern in (
+            ("nausea", r"\b(?:nausea|nauseous|queasy|sick to my stomach)\b"),
+            ("fullness", r"\b(?:fullness|full quickly|early satiety|early fullness)\b"),
+            ("burning", r"\b(?:burning|burns|indigestion)\b"),
+            ("belching", r"\b(?:belching|burping|belch|burp)\b"),
+            ("upper abdominal discomfort", r"\b(?:upper|epigastric) (?:abdominal )?(?:pain|discomfort|ache)\b"),
+        ) if re.search(pattern, n)]
+        if terms:
+            return {"status": "answered", "values": {"upper_symptoms": ", ".join(terms)}, "confidence": 0.99, "source": "deterministic"}
+
+    if question_id == "symptoms":
+        values = {}
+        for field_name, pattern in (
+            ("bloating", r"\b(?:bloating|bloated|bloat)\b"),
+            ("gas", r"\b(?:gas|gassy|flatulence|farting)\b"),
+            ("diarrhea", r"\b(?:diarrh(?:ea|oea)|loose stools?|loose motions?)\b"),
+            ("constipation_explicit", r"\b(?:constipat(?:ion|ed)|hard stools?)\b"),
+            ("abdominal_pain", r"\b(?:pain|cramp(?:s|ing)?|ache)\b"),
+        ):
+            found = _component_boolean(n, pattern)
+            if found is not None:
+                values[field_name] = found
+        if not values and n:
+            values["other_symptoms"] = [n]
+        if values:
+            return {"status": "answered", "values": values, "confidence": 0.99, "source": "deterministic"}
 
     # Bowel-pattern is a three-way choice (constipation, diarrhea, or normal),
     # not a yes/no proposition. Resolve only explicit category answers or
@@ -318,6 +622,14 @@ def resolve_against_active_question(
         return {
             "status": "unknown",
             "values": {f: "unknown" for f in spec.fields},
+            "confidence": 0.99,
+            "source": "deterministic",
+        }
+    if status == "refused":
+        return {
+            "status": "refused",
+            "values": {},
+            "refused_fields": [question_id],
             "confidence": 0.99,
             "source": "deterministic",
         }
@@ -445,7 +757,7 @@ def resolve_against_active_question(
             if abdominal is not None: vals["abdominal_pain"] = abdominal
             # No pain makes the relation dimension inapplicable.
             if abdominal is False: vals["pain_related_to_bowel_movement"] = False
-            return {"status": "answered", "values": vals, "confidence": 0.99, "source": "deterministic"}
+            return {"status": "answered" if _composite_completion(question_id, vals, state) else "partial", "values": vals, "confidence": 0.99, "source": "deterministic"}
     if question_id == "pain":
         if re.search(r"\b(?:no|not|never|without|don't|dont|do not)\b.{0,30}\b(?:abdominal pain|stomach pain|belly pain|stomach ache|pain)\b", n):
             return {"status": "answered", "values": {"abdominal_pain": False, "pain_related_to_bowel_movement": False}, "confidence": 0.99, "source": "deterministic"}
@@ -558,6 +870,12 @@ def resolve_against_active_question(
         # This question explicitly asks for frequency PER WEEK, so short
         # contextual answers such as "3 times" or "3" are complete answers.
         # Do not send these obvious numeric answers to the LLM/fallback path.
+        if re.fullmatch(r"(?:once|one time)\s+(?:daily|a day|per day)", n):
+            return {"status": "answered", "values": {"bowel_frequency_per_week": 7}, "confidence": 0.99, "source": "deterministic"}
+        if re.fullmatch(r"(?:twice|two times)\s+(?:daily|a day|per day)", n):
+            return {"status": "answered", "values": {"bowel_frequency_per_week": 14}, "confidence": 0.99, "source": "deterministic"}
+        if re.fullmatch(r"every (?:other|alternate|second) day", n):
+            return {"status": "answered", "values": {"bowel_frequency_per_week": 3.5}, "confidence": 0.99, "source": "deterministic"}
         m = re.search(r"\b(\d+(?:\.\d+)?)\s*(?:bowel movements?|times?|motions?)\s*(?:per|a)\s*week\b", n)
         if not m:
             m = re.fullmatch(r"(?:about\s+|around\s+|roughly\s+)?(\d+(?:\.\d+)?)\s*(?:bowel movements?|times?|motions?)", n)
@@ -567,7 +885,13 @@ def resolve_against_active_question(
             value = float(m.group(1)) if "." in m.group(1) else int(m.group(1))
             return {"status": "answered", "values": {"bowel_frequency_per_week": value}, "confidence": 0.99, "source": "deterministic"}
     if question_id == "daily_frequency":
-        m = re.search(r"\b(\d+(?:\.\d+)?)\s*(?:bowel movements?|times?|stools?|motions?)\s*(?:per|a)\s*day\b", n)
+        if re.fullmatch(r"(?:once|one time)\s+(?:daily|a day|per day)", n):
+            return {"status": "answered", "values": {"bowel_frequency_per_day": 1}, "confidence": 0.99, "source": "deterministic"}
+        if re.fullmatch(r"(?:twice|two times)\s+(?:daily|a day|per day)", n):
+            return {"status": "answered", "values": {"bowel_frequency_per_day": 2}, "confidence": 0.99, "source": "deterministic"}
+        if re.fullmatch(r"every (?:other|alternate|second) day", n):
+            return {"status": "answered", "values": {"bowel_frequency_per_day": 0.5}, "confidence": 0.99, "source": "deterministic"}
+        m = re.search(r"\b(\d+(?:\.\d+)?)\s*(?:loose\s+)?(?:bowel movements?|times?|stools?|motions?)\s*(?:per|a)\s*day\b", n)
         if m:
             return {"status": "answered", "values": {"bowel_frequency_per_day": float(m.group(1)) if "." in m.group(1) else int(m.group(1))}, "confidence": 0.99, "source": "deterministic"}
         # The active question already establishes "per day", so accept a
@@ -585,6 +909,8 @@ def resolve_against_active_question(
                 "confidence": 0.99,
                 "source": "deterministic",
             }
+        if re.fullmatch(r"(?:sometimes|occasionally|rarely|once in a while)", n):
+            return {"status": "clarification_needed", "values": {}, "confidence": 0.95, "source": "deterministic"}
     if question_id == "severity":
         m = re.search(r"\b([1-9]|10)\b", n)
         if m:
@@ -620,7 +946,8 @@ def resolve_against_active_question(
             if target not in candidates and extracted.get(source) is not None:
                 candidates[target] = extracted.get(source)
         if candidates:
-            return {"status": "answered", "values": candidates, "confidence": 0.98, "source": "deterministic"}
+            complete = _composite_completion(question_id, candidates, state)
+            return {"status": "answered" if complete else "partial", "values": candidates, "confidence": 0.98, "source": "deterministic"}
 
     return {"status": "unresolved", "values": {}, "confidence": 0.0, "source": "unresolved"}
 
@@ -647,9 +974,10 @@ def validate_question_resolution(resolution: dict | None) -> dict:
         # Invalid resolver payloads are safely normalized rather than allowed
         # to mutate state. The caller logs the discarded keys for observability.
         normalized["values"] = {}
-    elif status == "answered":
-        # Empty answered payloads are not genuine answers.
-        if not values:
+    elif status in {"answered", "partial"}:
+        # A partial component can be explicitly unknown/refused without a
+        # clinical value. Otherwise an empty answered payload is invalid.
+        if not values and not normalized.get("unknown_fields") and not normalized.get("refused_fields"):
             normalized["status"] = "unresolved"
     return normalized
 
@@ -674,6 +1002,10 @@ def question_has_answer(state: Any, question_id: str | None) -> bool:
         if question_id in {"blood", "bleeding", "blood_colour", "blood_location", "blood_mucus", "anal_pain", "lump"}:
             return False
         return True
+    if question_id in set(getattr(state, "refused_fields", []) or []):
+        if question_id in {"blood", "bleeding", "blood_colour", "blood_location", "blood_mucus", "anal_pain", "lump", "night_weight_fever", "vomiting_fever", "vomiting_fever_swelling", "swallowing", "weight_swallow"}:
+            return False
+        return True
     # Compatibility: unknown legacy IDs remain governed by their explicit
     # questionnaire condition rather than being treated as answered.
     spec = get_question_spec(question_id)
@@ -696,7 +1028,7 @@ def question_has_answer(state: Any, question_id: str | None) -> bool:
         # are known, unless the user explicitly supplied a canonical
         # constipation yes/no answer.
         return _has(state, "constipation_explicit") or (
-            _has(state, "stool_form") and _has(state, "straining")
+            (_has(state, "stool_form") or _has(state, "hard_stools")) and _has(state, "straining")
         )
     if question_id == "hard_stools":
         return _has(state, "hard_stools")
@@ -705,15 +1037,21 @@ def question_has_answer(state: Any, question_id: str | None) -> bool:
     if question_id == "incomplete_evacuation":
         return _has(state, "incomplete_evacuation")
     if question_id == "bloating_pain":
-        if state.bloating is True or state.abdominal_pain is True:
-            return state.abdominal_pain is not True or _has(state, "pain_related_to_bowel_movement")
-        return state.bloating is False and state.abdominal_pain is False
+        if state.abdominal_pain is True:
+            return _has(state, "pain_related_to_bowel_movement")
+        if state.bloating is None or state.abdominal_pain is None:
+            return False
+        return state.abdominal_pain is False
     if question_id == "pain":
         return _has(state, "abdominal_pain") and (
             state.abdominal_pain is False or _has(state, "pain_related_to_bowel_movement")
         )
     if question_id == "pain_relation":
-        return _has(state, "food_related") or _has(state, "pain_related_to_bowel_movement")
+        return (
+            state.food_related is True
+            or state.pain_related_to_bowel_movement is True
+            or (state.food_related is False and state.pain_related_to_bowel_movement is False)
+        )
     if question_id in {"blood", "bleeding"}:
         return _has(state, "blood_present")
     if question_id == "blood_colour":
@@ -737,11 +1075,11 @@ def question_has_answer(state: Any, question_id: str | None) -> bool:
     if question_id == "weight_swallow":
         return _has(state, "weight_loss") and _has(state, "difficulty_swallowing") and _has(state, "persistent_vomiting") and _has(state, "vomiting_blood")
     if question_id == "upper_symptoms":
-        return _has(state, "abdominal_pain")
+        return _has(state, "upper_symptoms")
     if question_id == "symptoms":
         # The food-intolerance question asks what symptoms occur; a category
         # answer, not pre-existing pain/frequency, is required.
-        return any(_has(state, f) for f in ("bloating", "diarrhea", "abdominal_pain", "constipation_explicit"))
+        return any(_has(state, f) for f in ("bloating", "diarrhea", "abdominal_pain", "constipation_explicit", "gas")) or bool(getattr(state, "other_symptoms", []))
     if question_id == "stool_form":
         # "I don't know" is a valid answer to the optional
         # "if you know it" Bristol-type question. The sentinel prevents the

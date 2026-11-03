@@ -946,11 +946,22 @@ def _persist_assessment_checkpoint(session_id: str, completed: bool = False, tur
             # competing active assessments or interleave sequence numbers.
             cur.execute("SELECT pg_advisory_xact_lock(hashtext(%s))", (f"gutgpt_assessment:{customer_id}",))
             if assessment_id:
-                cur.execute("SELECT assessment_id FROM customer_assessments WHERE assessment_id=%s AND customer_id=%s FOR UPDATE", (assessment_id, customer_id))
-                if cur.fetchone() is None:
+                cur.execute("SELECT customer_id FROM customer_assessments WHERE assessment_id=%s FOR UPDATE", (assessment_id,))
+                owner = cur.fetchone()
+                if owner and owner["customer_id"] != customer_id:
+                    # A stale session mapping can point at an ID owned by a
+                    # different customer. Never let ON CONFLICT silently keep
+                    # that foreign row while writing this customer's checkpoint.
+                    assessment_id = str(uuid.uuid4())
+                    SESSION_ASSESSMENT_IDS[session_id] = assessment_id
                     cur.execute("""
                         INSERT INTO customer_assessments (assessment_id, customer_id, session_id, status, started_at, updated_at)
-                        VALUES (%s,%s,%s,'active',NOW(),NOW()) ON CONFLICT (assessment_id) DO NOTHING
+                        VALUES (%s,%s,%s,'active',NOW(),NOW())
+                    """, (assessment_id, customer_id, session_id))
+                elif owner is None:
+                    cur.execute("""
+                        INSERT INTO customer_assessments (assessment_id, customer_id, session_id, status, started_at, updated_at)
+                        VALUES (%s,%s,%s,'active',NOW(),NOW())
                     """, (assessment_id, customer_id, session_id))
             else:
                 cur.execute("SELECT active_assessment_id FROM customer_chat_state WHERE customer_id=%s FOR UPDATE", (customer_id,))
