@@ -11,6 +11,8 @@ import os
 import threading
 import time
 import contextvars
+import hashlib
+import json
 from contextlib import contextmanager
 import uuid
 from typing import Any, Iterator
@@ -22,6 +24,10 @@ _SEMAPHORE = threading.BoundedSemaphore(_MAX_CONCURRENT)
 
 class GroqBusyError(RuntimeError):
     """The local Groq request queue is full; callers should use safe fallback."""
+
+    def __init__(self, message: str, *, reason: str = "capacity"):
+        super().__init__(message)
+        self.reason = reason
 
 
 class GroqBudgetExceeded(RuntimeError):
@@ -63,6 +69,60 @@ def configured_message_budget() -> int:
     return max(1, int(os.getenv("GROQ_MAX_CALLS_PER_MESSAGE", "2")))
 
 
+def _bounded_int_env(name: str, default: int, minimum: int, maximum: int) -> int:
+    try:
+        value = int(os.getenv(name, str(default)))
+    except (TypeError, ValueError):
+        value = default
+    return max(minimum, min(maximum, value))
+
+
+def configured_output_token_cap() -> int:
+    """Provider-wide ceiling for actual Groq max_tokens configuration."""
+    return _bounded_int_env("GROQ_OUTPUT_TOKEN_HARD_MAX", 1200, 160, 1600)
+
+
+def configured_output_tokens(reason: str) -> int:
+    """Return the bounded output allowance for a named Groq task."""
+    configured = {
+        "conversation_intent": ("GROQ_INTENT_MAX_OUTPUT_TOKENS", 260, 96),
+        "nlu_extraction": ("GROQ_NLU_MAX_TOKENS", 350, 160),
+        "general_knowledge_answer": ("GROQ_GENERAL_ANSWER_MAX_OUTPUT_TOKENS", 800, 96),
+        "company_knowledge_answer": ("GROQ_COMPANY_ANSWER_MAX_OUTPUT_TOKENS", 800, 96),
+        "research_summary_answer": ("GROQ_RESEARCH_ANSWER_MAX_OUTPUT_TOKENS", 900, 96),
+    }
+    env_name, default, minimum = configured.get(
+        reason,
+        ("GROQ_SHARED_OUTPUT_TOKEN_RESERVE", 500, 1),
+    )
+    if reason == "nlu_extraction":
+        return max(160, min(400, _bounded_int_env(env_name, default, minimum, 400)))
+    return _bounded_int_env(env_name, default, minimum, configured_output_token_cap())
+
+
+def llm_client_cache_fingerprint(output_mode: str) -> str:
+    """Hash non-secret provider settings so cached clients expire on config change."""
+    names = (
+        "GUTGPT_LLM_PROVIDER", "GROQ_API_KEY", "GROQ_CONVERSATION_MODEL",
+        "GROQ_NLU_MODEL", "GROQ_NLU_TIMEOUT_SECONDS", "GROQ_OUTPUT_TOKEN_HARD_MAX",
+        "GROQ_INTENT_MAX_OUTPUT_TOKENS", "GROQ_NLU_MAX_TOKENS",
+        "GROQ_GENERAL_ANSWER_MAX_OUTPUT_TOKENS",
+        "GROQ_COMPANY_ANSWER_MAX_OUTPUT_TOKENS",
+        "GROQ_RESEARCH_ANSWER_MAX_OUTPUT_TOKENS",
+    )
+    payload = {name: os.getenv(name, "") for name in names}
+    payload["output_mode"] = output_mode
+    return hashlib.sha256(json.dumps(payload, sort_keys=True).encode("utf-8")).hexdigest()
+
+
+def is_truncated_finish_reason(value: Any) -> bool:
+    """Recognize Groq/OpenAI/LangChain token-limit finish reason variants."""
+    normalized = str(value or "").strip().lower().replace("-", "_").replace(" ", "_")
+    return normalized in {"length", "max_tokens", "finishreason.max_tokens", "max_output_tokens"} \
+        or normalized.endswith(".length") or normalized.endswith(".max_tokens") \
+        or normalized.endswith(".max_output_tokens")
+
+
 def _reserve_budget(request_id: str) -> str:
     budget = _budget.get()
     if budget is None:
@@ -75,7 +135,7 @@ def _reserve_budget(request_id: str) -> str:
     return budget["request_id"]
 
 
-def _breaker_before_call(request_id: str) -> None:
+def _breaker_before_call(request_id: str) -> bool:
     global _breaker_probe_active
     now = time.monotonic()
     with _breaker_lock:
@@ -84,8 +144,30 @@ def _breaker_before_call(request_id: str) -> None:
             raise GroqCircuitOpen("Groq circuit is temporarily open")
         if _breaker_open_until and not _breaker_probe_active:
             _breaker_probe_active = True
+            return True
         elif _breaker_open_until and _breaker_probe_active:
+            logger.warning("event=groq_rejected request_id=%s reason=half_open_probe_active", request_id)
             raise GroqCircuitOpen("Groq recovery probe is already in progress")
+        return False
+
+
+def _breaker_probe_aborted(owns_probe: bool) -> None:
+    """Release a half-open reservation when preflight fails before Groq is called."""
+    global _breaker_probe_active
+    if not owns_probe:
+        return
+    with _breaker_lock:
+        if _breaker_open_until and _breaker_probe_active:
+            _breaker_probe_active = False
+
+
+def _breaker_state() -> str:
+    with _breaker_lock:
+        if _breaker_open_until > time.monotonic():
+            return "open"
+        if _breaker_open_until and _breaker_probe_active:
+            return "half_open_probe"
+        return "closed" if not _breaker_open_until else "half_open"
 
 
 def _breaker_success() -> None:
@@ -122,7 +204,35 @@ def _usage(response: Any) -> tuple[int | None, int | None]:
 
 
 
-def _shared_capacity_reserve(prompt: Any, request_id: str) -> str | None:
+def ensure_shared_limiter_schema(cur) -> None:
+    """Create or add the lease fields needed for atomic TPM reconciliation."""
+    cur.execute("""CREATE TABLE IF NOT EXISTS groq_shared_usage_window (
+        singleton SMALLINT PRIMARY KEY CHECK (singleton = 1),
+        window_started_at TIMESTAMPTZ NOT NULL,
+        request_count INTEGER NOT NULL DEFAULT 0,
+        reserved_tokens BIGINT NOT NULL DEFAULT 0,
+        cooldown_until TIMESTAMPTZ
+    )""")
+    cur.execute("""CREATE TABLE IF NOT EXISTS groq_shared_leases (
+        lease_id TEXT PRIMARY KEY,
+        expires_at TIMESTAMPTZ NOT NULL,
+        reserved_tokens BIGINT,
+        window_started_at TIMESTAMPTZ
+    )""")
+    # NULL identifies legacy in-flight leases. Their old aggregate reservation
+    # stays charged until the normal 60-second reset, which is conservative.
+    cur.execute("ALTER TABLE groq_shared_leases ADD COLUMN IF NOT EXISTS reserved_tokens BIGINT")
+    cur.execute("ALTER TABLE groq_shared_leases ADD COLUMN IF NOT EXISTS window_started_at TIMESTAMPTZ")
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_groq_shared_leases_expiry ON groq_shared_leases(expires_at)")
+
+
+def _shared_capacity_reserve(
+    prompt: Any,
+    request_id: str,
+    *,
+    reason: str,
+    output_tokens: int,
+) -> str | None:
     """Reserve shared RPM/TPM/concurrency capacity in PostgreSQL atomically.
 
     Chat production requests run inside message_call_budget and therefore require
@@ -133,16 +243,17 @@ def _shared_capacity_reserve(prompt: Any, request_id: str) -> str | None:
         return None
     enabled = os.getenv("GROQ_SHARED_LIMITER_ENABLED", "true").strip().lower() not in {"0", "false", "no"}
     if not enabled:
-        raise GroqBusyError("Shared Groq limiter is disabled")
+        raise GroqBusyError("Shared Groq limiter is disabled", reason="disabled")
     database_url = os.getenv("DATABASE_URL", "").strip()
     if not database_url:
-        raise GroqBusyError("Shared Groq limiter requires DATABASE_URL")
+        raise GroqBusyError("Shared Groq limiter requires DATABASE_URL", reason="database_unavailable")
     rpm_limit = max(1, int(os.getenv("GROQ_SHARED_RPM_LIMIT", "30")))
     tpm_limit = max(1, int(os.getenv("GROQ_SHARED_TPM_LIMIT", "20000")))
     concurrency_limit = max(1, int(os.getenv("GROQ_SHARED_MAX_CONCURRENT", "8")))
-    output_reserve = max(1, int(os.getenv("GROQ_SHARED_OUTPUT_TOKEN_RESERVE", "500")))
+    output_reserve = max(1, int(output_tokens))
     prompt_text = str(prompt)
-    token_reserve = max(1, (len(prompt_text) + 3) // 4) + output_reserve
+    prompt_estimate = max(1, (len(prompt_text.encode("utf-8")) + 2) // 3)
+    token_reserve = prompt_estimate + output_reserve
     lease_id = uuid.uuid4().hex
     try:
         import psycopg
@@ -157,7 +268,7 @@ def _shared_capacity_reserve(prompt: Any, request_id: str) -> str | None:
                     request_count = CASE WHEN window_started_at <= NOW() - INTERVAL '60 seconds' THEN 0 ELSE request_count END,
                     reserved_tokens = CASE WHEN window_started_at <= NOW() - INTERVAL '60 seconds' THEN 0 ELSE reserved_tokens END,
                     window_started_at = CASE WHEN window_started_at <= NOW() - INTERVAL '60 seconds' THEN NOW() ELSE window_started_at END
-                    WHERE singleton=1 RETURNING request_count, reserved_tokens, cooldown_until""")
+                    WHERE singleton=1 RETURNING request_count, reserved_tokens, cooldown_until, window_started_at""")
                 row = cur.fetchone()
                 cur.execute("SELECT COUNT(*) AS active FROM groq_shared_leases WHERE expires_at > NOW()")
                 active = int(cur.fetchone()["active"])
@@ -165,20 +276,32 @@ def _shared_capacity_reserve(prompt: Any, request_id: str) -> str | None:
                     cur.execute("SELECT (cooldown_until > NOW()) AS active FROM groq_shared_usage_window WHERE singleton=1")
                     if cur.fetchone()["active"]:
                         raise GroqCircuitOpen("Shared Groq cooldown is active")
-                if int(row["request_count"]) >= rpm_limit or int(row["reserved_tokens"]) + token_reserve > tpm_limit or active >= concurrency_limit:
-                    raise GroqBusyError("Shared Groq rate or concurrency limit reached")
+                if int(row["request_count"]) >= rpm_limit:
+                    raise GroqBusyError("Shared Groq request limit reached", reason="rpm")
+                if int(row["reserved_tokens"]) + token_reserve > tpm_limit:
+                    raise GroqBusyError("Shared Groq token limit reached", reason="tpm")
+                if active >= concurrency_limit:
+                    raise GroqBusyError("Shared Groq concurrency limit reached", reason="concurrency")
                 cur.execute("UPDATE groq_shared_usage_window SET request_count=request_count+1, reserved_tokens=reserved_tokens+%s WHERE singleton=1", (token_reserve,))
-                cur.execute("INSERT INTO groq_shared_leases(lease_id, expires_at) VALUES (%s, NOW() + INTERVAL '90 seconds')", (lease_id,))
-        logger.info("event=groq_shared_reservation request_id=%s estimated_tokens=%s", request_id, token_reserve)
+                cur.execute("""INSERT INTO groq_shared_leases
+                    (lease_id, expires_at, reserved_tokens, window_started_at)
+                    VALUES (%s, NOW() + INTERVAL '90 seconds', %s, %s)""",
+                    (lease_id, token_reserve, row["window_started_at"]))
+        logger.info("event=groq_shared_reservation provider=groq request_id=%s task=%s reserved_tokens=%s output_tokens=%s",
+                    request_id, reason, token_reserve, output_reserve)
         return lease_id
-    except (GroqBusyError, GroqCircuitOpen):
+    except (GroqBusyError, GroqCircuitOpen) as exc:
+        logger.warning("event=groq_shared_rejected provider=groq request_id=%s task=%s reason=%s breaker_state=%s",
+                       request_id, reason, getattr(exc, "reason", "shared_cooldown"), _breaker_state())
         raise
     except Exception as exc:
         logger.warning("event=groq_shared_limiter_error request_id=%s category=%s", request_id, type(exc).__name__)
+        logger.warning("event=groq_shared_rejected provider=groq request_id=%s task=%s reason=database_unavailable breaker_state=%s",
+                       request_id, reason, _breaker_state())
         raise GroqBusyError("Shared Groq limiter is unavailable; failing closed") from exc
 
 
-def _shared_capacity_release(lease_id: str | None) -> None:
+def _shared_capacity_release(lease_id: str | None, *, actual_tokens: int | None = None, request_id: str = "unknown") -> None:
     if not lease_id:
         return
     database_url = os.getenv("DATABASE_URL", "").strip()
@@ -186,11 +309,23 @@ def _shared_capacity_release(lease_id: str | None) -> None:
         return
     try:
         import psycopg
-        with psycopg.connect(database_url, connect_timeout=4) as conn:
+        from psycopg.rows import dict_row
+        with psycopg.connect(database_url, row_factory=dict_row, connect_timeout=4) as conn:
             with conn.cursor() as cur:
-                cur.execute("DELETE FROM groq_shared_leases WHERE lease_id=%s", (lease_id,))
-    except Exception:
-        logger.warning("event=groq_shared_lease_release_failed")
+                cur.execute("SELECT pg_advisory_xact_lock(hashtext('gutgpt-groq-shared-limiter'))")
+                cur.execute("""DELETE FROM groq_shared_leases WHERE lease_id=%s
+                    RETURNING reserved_tokens, window_started_at""", (lease_id,))
+                lease = cur.fetchone()
+                if lease and actual_tokens is not None and lease["reserved_tokens"] is not None and lease["window_started_at"] is not None:
+                    cur.execute("""UPDATE groq_shared_usage_window
+                        SET reserved_tokens=GREATEST(0, reserved_tokens - %s + %s)
+                        WHERE singleton=1 AND window_started_at=%s""",
+                        (int(lease["reserved_tokens"]), max(0, int(actual_tokens)), lease["window_started_at"]))
+                    logger.info("event=groq_shared_reconciled provider=groq request_id=%s reserved_tokens=%s actual_tokens=%s current_window=%s",
+                                request_id, lease["reserved_tokens"], actual_tokens, bool(cur.rowcount))
+    except Exception as exc:
+        logger.warning("event=groq_shared_lease_release_failed provider=groq request_id=%s category=%s",
+                       request_id, type(exc).__name__)
 
 
 def _shared_cooldown(seconds: int = 10) -> None:
@@ -201,6 +336,7 @@ def _shared_cooldown(seconds: int = 10) -> None:
         import psycopg
         with psycopg.connect(database_url, connect_timeout=4) as conn:
             with conn.cursor() as cur:
+                cur.execute("SELECT pg_advisory_xact_lock(hashtext('gutgpt-groq-shared-limiter'))")
                 cur.execute("""UPDATE groq_shared_usage_window SET cooldown_until=GREATEST(COALESCE(cooldown_until, NOW()), NOW() + (%s * INTERVAL '1 second')) WHERE singleton=1""", (max(1, seconds),))
     except Exception:
         logger.warning("event=groq_shared_cooldown_update_failed")
@@ -213,39 +349,70 @@ def invoke_groq(client: Any, prompt: Any, *, reason: str, request_id: str = "unk
     set max_retries=0, so one invocation cannot hide an SDK retry loop.
     """
     request_id = _reserve_budget(request_id)
-    _breaker_before_call(request_id)
+    owns_probe = _breaker_before_call(request_id)
     started = time.monotonic()
     model_name = getattr(client, "model_name", None) or getattr(client, "model", None) or "configured"
-    lease_id = _shared_capacity_reserve(prompt, request_id)
-    if not _SEMAPHORE.acquire(timeout=_ACQUIRE_TIMEOUT):
-        _shared_capacity_release(lease_id)
-        logger.warning("event=groq_rejected request_id=%s reason=%s category=local_queue_full", request_id, reason)
-        raise GroqBusyError("Groq capacity is temporarily busy")
+    provider_name = getattr(client, "_gutgpt_provider", "groq")
+    configured_max = getattr(client, "max_tokens", None)
+    if not isinstance(configured_max, int) or configured_max <= 0:
+        configured_max = configured_output_tokens(reason)
+    lease_id = None
+    actual_tokens = None
+    acquired = False
     try:
-        response = client.invoke(prompt)
-        in_tokens, out_tokens = _usage(response)
+        lease_id = _shared_capacity_reserve(
+            prompt, request_id, reason=reason, output_tokens=configured_max,
+        )
+        try:
+            acquired = _SEMAPHORE.acquire(timeout=_ACQUIRE_TIMEOUT)
+        except Exception as exc:
+            actual_tokens = 0  # The model was not called; this reservation is refundable.
+            logger.warning("event=groq_rejected provider=%s request_id=%s task=%s category=local_semaphore_error error_type=%s breaker_state=%s",
+                           provider_name, request_id, reason, type(exc).__name__, _breaker_state())
+            raise GroqBusyError("Groq local capacity is temporarily unavailable", reason="local_semaphore_error") from exc
+        if not acquired:
+            logger.warning("event=groq_rejected provider=%s request_id=%s task=%s category=local_queue_full breaker_state=%s",
+                           provider_name, request_id, reason, _breaker_state())
+            actual_tokens = 0  # No provider request was started; refund this lease.
+            raise GroqBusyError("Groq capacity is temporarily busy", reason="local_queue_full")
+        try:
+            response = client.invoke(prompt)
+        except Exception as exc:
+            status = getattr(getattr(exc, "response", None), "status_code", None)
+            category = "rate_limit" if status == 429 or "429" in str(exc) else (
+                "auth" if status in (401, 403) else "timeout" if isinstance(exc, TimeoutError) or "timeout" in type(exc).__name__.lower() else "provider_error")
+            _breaker_failure()
+            if category == "rate_limit":
+                retry_after = getattr(getattr(exc, "response", None), "headers", {}).get("Retry-After") if getattr(exc, "response", None) is not None else None
+                try:
+                    _shared_cooldown(int(retry_after) if retry_after else 10)
+                except (TypeError, ValueError):
+                    _shared_cooldown(10)
+            logger.warning("event=llm_failure provider=%s request_id=%s task=%s model=%s category=%s status=%s latency_ms=%.1f retry_count=0 breaker_state=%s",
+                           provider_name, request_id, reason, model_name, category, status,
+                           (time.monotonic() - started) * 1000, _breaker_state())
+            raise
         _breaker_success()
+        in_tokens, out_tokens = _usage(response)
+        if in_tokens is not None and out_tokens is not None:
+            actual_tokens = max(0, in_tokens) + max(0, out_tokens)
+        metadata = getattr(response, "response_metadata", None) or {}
+        metadata = metadata if isinstance(metadata, dict) else {}
+        finish_reason = str(metadata.get("finish_reason") or metadata.get("stop_reason") or "unknown")
+        truncated = is_truncated_finish_reason(finish_reason)
+        latency_ms = (time.monotonic() - started) * 1000
+        if truncated:
+            logger.warning("event=llm_truncated provider=%s request_id=%s task=%s model=%s finish_reason=%s latency_ms=%.1f breaker_state=%s",
+                           provider_name, request_id, reason, model_name, finish_reason, latency_ms, _breaker_state())
         logger.info(
-            "event=llm_call provider=%s request_id=%s reason=%s model=%s latency_ms=%.1f input_tokens=%s output_tokens=%s retry_count=0 result=model",
-            getattr(client, "_gutgpt_provider", "groq"), request_id, reason, model_name,
-            (time.monotonic() - started) * 1000, in_tokens, out_tokens,
+            "event=llm_call provider=%s request_id=%s task=%s model=%s latency_ms=%.1f input_tokens=%s output_tokens=%s finish_reason=%s truncated=%s retry_count=0 result=model breaker_state=%s shared_limiter=%s",
+            provider_name, request_id, reason, model_name, latency_ms, in_tokens, out_tokens,
+            finish_reason, truncated, _breaker_state(), "reserved" if lease_id else "not_required",
         )
         return response
-    except Exception as exc:
-        status = getattr(getattr(exc, "response", None), "status_code", None)
-        category = "rate_limit" if status == 429 or "429" in str(exc) else (
-            "auth" if status in (401, 403) else "timeout" if isinstance(exc, TimeoutError) or "timeout" in type(exc).__name__.lower() else "provider_error")
-        _breaker_failure()
-        if category == "rate_limit":
-            retry_after = getattr(getattr(exc, "response", None), "headers", {}).get("Retry-After") if getattr(exc, "response", None) is not None else None
-            try:
-                _shared_cooldown(int(retry_after) if retry_after else 10)
-            except (TypeError, ValueError):
-                _shared_cooldown(10)
-        logger.warning("event=llm_failure provider=%s request_id=%s reason=%s category=%s status=%s latency_ms=%.1f retry_count=0",
-                       getattr(client, "_gutgpt_provider", "groq"), request_id, reason, category, status,
-                       (time.monotonic() - started) * 1000)
-        raise
     finally:
-        _SEMAPHORE.release()
-        _shared_capacity_release(lease_id)
+        if not acquired:
+            _breaker_probe_aborted(owns_probe)
+        else:
+            _SEMAPHORE.release()
+        _shared_capacity_release(lease_id, actual_tokens=actual_tokens, request_id=request_id)

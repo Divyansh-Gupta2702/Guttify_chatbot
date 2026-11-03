@@ -303,6 +303,17 @@ def resolve_against_active_question(
             "source": "deterministic",
         }
 
+    # "Any blood or mucus?" is a yes/no question about the combined
+    # presence of either finding. A bare no unambiguously means neither is
+    # present, so resolve both fields without sending the answer to the LLM.
+    if question_id == "blood_mucus" and status == "no":
+        return {
+            "status": "answered",
+            "values": {"blood_present": False, "mucus": False},
+            "confidence": 0.99,
+            "source": "deterministic",
+        }
+
     if status == "unknown":
         return {
             "status": "unknown",
@@ -559,6 +570,21 @@ def resolve_against_active_question(
         m = re.search(r"\b(\d+(?:\.\d+)?)\s*(?:bowel movements?|times?|stools?|motions?)\s*(?:per|a)\s*day\b", n)
         if m:
             return {"status": "answered", "values": {"bowel_frequency_per_day": float(m.group(1)) if "." in m.group(1) else int(m.group(1))}, "confidence": 0.99, "source": "deterministic"}
+        # The active question already establishes "per day", so accept a
+        # concise count such as "5" or "about 5" without an LLM call.
+        m = re.fullmatch(
+            r"(?:about\s+|around\s+|roughly\s+)?(\d+(?:\.\d+)?)"
+            r"(?:\s*(?:loose\s+)?(?:bowel movements?|times?|stools?|motions?))?",
+            n,
+        )
+        if m and 0 <= float(m.group(1)) <= 100:
+            value = float(m.group(1))
+            return {
+                "status": "answered",
+                "values": {"bowel_frequency_per_day": int(value) if value.is_integer() else value},
+                "confidence": 0.99,
+                "source": "deterministic",
+            }
     if question_id == "severity":
         m = re.search(r"\b([1-9]|10)\b", n)
         if m:

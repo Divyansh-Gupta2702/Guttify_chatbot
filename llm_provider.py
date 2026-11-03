@@ -9,13 +9,13 @@ import logging
 import os
 from types import SimpleNamespace
 
-from groq_service import invoke_groq
+from groq_service import invoke_groq, configured_output_token_cap
 
 logger = logging.getLogger("gutgpt.llm_provider")
 
 
 def selected_provider() -> str:
-    name = os.getenv("GUTGPT_LLM_PROVIDER", "gemini").strip().lower()
+    name = os.getenv("GUTGPT_LLM_PROVIDER", "groq").strip().lower()
     if name in {"groq", "gemini"}:
         return name
     logger.error("event=llm_provider_invalid_configuration")
@@ -119,7 +119,8 @@ def _create_groq_client(max_output_tokens: int, output_mode: str):
     if not key:
         return None
     model = os.getenv("GROQ_CONVERSATION_MODEL") or os.getenv("GROQ_NLU_MODEL", "openai/gpt-oss-20b")
-    options = {"model": model, "temperature": 0, "max_tokens": max(96, min(600, int(max_output_tokens))),
+    options = {"model": model, "temperature": 0,
+               "max_tokens": max(96, min(configured_output_token_cap(), int(max_output_tokens))),
                "timeout": float(os.getenv("GROQ_NLU_TIMEOUT_SECONDS", "12")),
                "max_retries": 0, "api_key": key}
     if output_mode == "json":
@@ -156,7 +157,7 @@ def provider_health_fields(response):
     if not isinstance(usage, dict):
         usage = {}
     return {
-        "provider": selected_provider(),
+        "provider": metadata.get("provider") or getattr(response, "_gutgpt_provider", "groq"),
         "content_available": bool(content.strip()) if isinstance(content, str) else False,
         "content_length": len(content) if isinstance(content, str) else 0,
         "finish_reason": str(metadata.get("finish_reason") or metadata.get("stop_reason") or "unknown"),

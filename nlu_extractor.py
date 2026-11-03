@@ -21,6 +21,7 @@ from typing import Any
 from intent_parser import extract_food_trigger, extract_stool_form
 from question_schema import resolve_against_active_question, validate_question_resolution
 from llm_provider import create_client, invoke_provider
+from groq_service import configured_output_tokens, llm_client_cache_fingerprint, is_truncated_finish_reason
 
 # Keep the historical symbol for callers/tests that monkeypatch the model
 # transport; provider selection itself lives exclusively in llm_provider.py.
@@ -303,14 +304,21 @@ def _state_context(state) -> dict:
     }
 
 
-@lru_cache(maxsize=1)
-def _get_llm():
+@lru_cache(maxsize=2)
+def _get_llm_cached(limit: int, config_fingerprint: str):
     try:
-        limit = max(160, min(400, int(os.getenv("GROQ_NLU_MAX_TOKENS", "350"))))
         return create_client(limit, output_mode="json")
     except Exception as exc:
         logger.warning("[NLU] provider initialization failed category=%s; using deterministic fallback", type(exc).__name__)
         return None
+
+
+def _get_llm():
+    limit = configured_output_tokens("nlu_extraction")
+    return _get_llm_cached(limit, llm_client_cache_fingerprint("json"))
+
+
+_get_llm.cache_clear = _get_llm_cached.cache_clear
 
 
 def _llm_extract(message: str, last_question: str | None, state, forced_intent: str | None, conversation_history=None):
@@ -379,10 +387,13 @@ Return exactly one sparse JSON object using only these allowed keys:
             metadata = getattr(response, "response_metadata", None)
             metadata = metadata if isinstance(metadata, dict) else {}
             logger.info("[NLU][MODEL_RESPONSE] provider=%s content_available=%s content_length=%s finish_reason=%s refusal=%s tool_calls=%s reasoning_tokens_present=%s latency_ms=%s",
-                        os.getenv("GUTGPT_LLM_PROVIDER", "groq"), bool(content.strip()), len(content),
+                        getattr(llm, "_gutgpt_provider", "groq"), bool(content.strip()), len(content),
                         finish_reason or "unknown", refusal, tool_calls,
                         bool(usage.get("thinking_tokens") or usage.get("reasoning_tokens")),
                         metadata.get("latency_ms", "unknown"))
+            if is_truncated_finish_reason(finish_reason):
+                logger.warning("[NLU][MODEL_PARSE] success=false category=truncated_json retry=0 fallback=deterministic")
+                return None
             cleaned = _clean_json_text(content)
             category = None
             if not cleaned:

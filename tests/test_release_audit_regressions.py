@@ -35,9 +35,11 @@ def test_sensitive_backup_and_old_backup_source_are_excluded_from_release_tree()
 
 
 def test_runtime_manifests_declare_direct_runtime_dependencies():
-    pipfile = (ROOT / "Pipfile").read_text(encoding="utf-8").lower()
+    # Direct Ubuntu deployments install from requirements.txt; Pipfile was
+    # removed during the user's repository cleanup and is not a runtime input.
+    requirements = (ROOT / "requirements.txt").read_text(encoding="utf-8").lower()
     for dependency in ("python-dotenv", "pyjwt", "psycopg", "tenacity", "langsmith"):
-        assert dependency in pipfile
+        assert dependency in requirements
 
 
 def test_documentation_matches_english_only_postgres_production_mode():

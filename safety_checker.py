@@ -14,7 +14,7 @@ RED_FLAG_PATTERNS = [
     ]),
     ("black/tarry stool", [
         "black stool", "black tarry stool", "black and tarry stool", "tarry stool",
-        "black poop", "black poo", "black bowel movement", "stool is black",
+        "black poop", "black poo", "black bowel movement", "stool is black", "stools are black",
         "stool is black and tarry", "my stool is black", "my stool is black and tarry",
         "poop is black", "poop is black and tarry", "tarry poop",
     ]),
@@ -39,6 +39,27 @@ RED_FLAG_PATTERNS = [
     ("dehydration", [
         "severe dehydration", "dehydrated and unable to keep fluids",
         "not urinating and very thirsty", "unable to keep fluids down and not urinating",
+        "signs of dehydration", "symptoms of dehydration", "very little urine",
+        "not urinating", "unable to urinate", "dry mouth and dizziness",
+    ]),
+    ("high fever", [
+        "high fever", "very high fever", "fever above 102", "fever over 102",
+        "fever of 102", "fever above 39", "fever over 39", "fever of 39",
+    ]),
+    ("severe weakness", [
+        "severe weakness", "extreme weakness", "too weak to stand",
+        "so weak i can't stand", "so weak i cannot stand",
+    ]),
+    ("persistent/worsening diarrhea", [
+        "persistent diarrhea", "persistent diarrhoea", "chronic diarrhea",
+        "chronic diarrhoea", "worsening diarrhea", "worsening diarrhoea",
+        "persistent or worsening diarrhea", "persistent or worsening diarrhoea",
+        "diarrhea is persistent or worsening", "diarrhoea is persistent or worsening",
+        "diarrhea getting worse", "diarrhoea getting worse",
+        "diarrhea is getting worse", "diarrhoea is getting worse",
+        "diarrhea that is getting worse", "diarrhoea that is getting worse",
+        "diarrhea for more than 2 days", "diarrhoea for more than 2 days",
+        "diarrhea for over 2 days", "diarrhoea for over 2 days",
     ]),
     ("unexplained significant weight loss", [
         "unexplained weight loss", "losing weight without trying", "weight loss without trying",
@@ -126,6 +147,12 @@ def detect_red_flags(text):
         "blood when i poop", "blood when pooping", "pooping blood", "pooping with blood",
         "blood in my poop", "blood in poop", "blood in my poo", "blood in poo",
     ])
+    diarrhea = _concept_present(n, [
+        "diarrhea", "diarrhoea", "loose stool", "loose stools", "loose motion",
+        "loose motions", "watery stool", "watery stools", "watery bowel movements",
+    ])
+    if bleeding and diarrhea:
+        found.append("blood in stool with diarrhea")
     dizziness = _concept_present(n, [
         "dizzy", "dizziness", "lightheaded", "light headed", "faint", "fainted",
         "fainting", "passed out", "pass out",

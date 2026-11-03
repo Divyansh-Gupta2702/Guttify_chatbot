@@ -55,7 +55,10 @@ VERSION_FILE = BASE_DIR / "VERSION.txt"
 QUESTION_FLOW_SCHEMA_VERSION = "v18.1"
 
 from support_footer import append_human_support_footer
-from groq_service import message_call_budget, configured_message_budget, GroqBudgetExceeded, GroqCircuitOpen, GroqBusyError
+from groq_service import (
+    message_call_budget, configured_message_budget, GroqBudgetExceeded,
+    GroqCircuitOpen, GroqBusyError, ensure_shared_limiter_schema,
+)
 MAX_MESSAGE_LENGTH = max(256, min(10000, int(os.getenv("MAX_MESSAGE_LENGTH", "4000"))))
 MAX_HISTORY_MESSAGES = 100
 
@@ -275,7 +278,7 @@ def _decode_guest_jwt(token: str) -> dict:
 def validate_production_configuration():
     """Fail fast when required final-site configuration is missing."""
     missing = []
-    provider = os.getenv("GUTGPT_LLM_PROVIDER", "gemini").strip().lower()
+    provider = os.getenv("GUTGPT_LLM_PROVIDER", "groq").strip().lower()
     if provider not in {"gemini", "groq"}:
         missing.append("GUTGPT_LLM_PROVIDER must be gemini or groq")
     elif provider == "gemini" and os.getenv("GEMINI_API_KEY", "").strip():
@@ -591,18 +594,7 @@ def _init_postgres() -> None:
                 updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
             )""")
             cur.execute("CREATE INDEX IF NOT EXISTS idx_chat_idempotency_updated_at ON chat_idempotency(updated_at)")
-            cur.execute("""CREATE TABLE IF NOT EXISTS groq_shared_usage_window (
-                singleton SMALLINT PRIMARY KEY CHECK (singleton = 1),
-                window_started_at TIMESTAMPTZ NOT NULL,
-                request_count INTEGER NOT NULL DEFAULT 0,
-                reserved_tokens BIGINT NOT NULL DEFAULT 0,
-                cooldown_until TIMESTAMPTZ
-            )""")
-            cur.execute("""CREATE TABLE IF NOT EXISTS groq_shared_leases (
-                lease_id TEXT PRIMARY KEY,
-                expires_at TIMESTAMPTZ NOT NULL
-            )""")
-            cur.execute("CREATE INDEX IF NOT EXISTS idx_groq_shared_leases_expiry ON groq_shared_leases(expires_at)")
+            ensure_shared_limiter_schema(cur)
             # Drop any legacy FK definitions and recreate the expected customer FK.
             cur.execute("""
                 DO $$ DECLARE constraint_row RECORD; BEGIN

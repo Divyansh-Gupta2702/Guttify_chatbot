@@ -104,6 +104,20 @@ PRODUCT_CONCERN_QUESTIONS = {
 
 
 
+def _state_reports_diarrhea(state):
+    if state is None:
+        return False
+    if (
+        getattr(state, "diarrhea", None) is True
+        or getattr(state, "diarrhea_explicit", None) is True
+        or str(getattr(state, "primary_symptom", "") or "").strip().lower() == "diarrhea"
+    ):
+        return True
+    secondary = " ".join(str(item) for item in (getattr(state, "secondary_symptoms", None) or []))
+    primary, symptoms = extract_symptoms(secondary)
+    return primary == "diarrhea" or "diarrhea" in symptoms
+
+
 def _approved_names_for_screening(screening, state=None):
     """Return the product allow-list for a completed clinical pattern.
 
@@ -112,6 +126,20 @@ def _approved_names_for_screening(screening, state=None):
     heartburn/acidity/reflux is explicitly present.
     """
     pattern = screening.get("pattern") if isinstance(screening, dict) else None
+
+    # None is the legacy "no condition-specific gate" sentinel below. An
+    # affirmative diarrhea context must instead return an explicit empty set:
+    # none of the repository's product documentation establishes eligibility
+    # for acute/chronic diarrhea or IBS-D. This also prevents gas/bloating or
+    # acidity matches from overriding the primary bowel condition.
+    diarrhea_context = bool(
+        _state_reports_diarrhea(state)
+        or (isinstance(pattern, str) and "diarrhea" in pattern.lower())
+        or (isinstance(screening, dict) and "ibs-d" in str(screening.get("likely_condition", "")).lower())
+    )
+    if diarrhea_context:
+        return set()
+
     allowed = set(PRODUCT_ELIGIBILITY.get(pattern) or set())
 
     if pattern == "Upper-abdominal meal-related dyspepsia pattern" and state is not None:
@@ -135,6 +163,25 @@ def _approved_names_for_screening(screening, state=None):
             allowed.update(ADDITIONAL_SYMPTOM_PRODUCT_ELIGIBILITY.get(symptom, set()))
 
     return allowed or None
+
+
+def _with_diarrhea_guidance(message, state=None, screening=None):
+    """Add brief hydration guidance without changing the assessment rules."""
+    pattern = screening.get("pattern") if isinstance(screening, dict) else ""
+    has_diarrhea = bool(
+        _state_reports_diarrhea(state)
+        or (isinstance(pattern, str) and "diarrhea" in pattern.lower())
+        or (isinstance(screening, dict) and "ibs-d" in str(screening.get("likely_condition", "")).lower())
+    )
+    if not has_diarrhea:
+        return message
+    guidance = (
+        "While we assess this, keep sipping fluids. A correctly prepared oral rehydration solution (ORS), "
+        "used according to its packet instructions, can help replace fluid and salts. "
+        "The available product information does not establish any Guttify product as suitable for diarrhea."
+    )
+    message = str(message or "").strip()
+    return f"{guidance}\n\n{message}" if message else guidance
 
 
 def _filter_approved_products(result, screening, state=None):
@@ -2285,7 +2332,7 @@ class ConversationManager:
                     logger.info("[NLU] unanswered_question field=%s; preserving context", pending_question)
                     return {
                         "status": "ASK",
-                        "message": f"I want to make sure I understood that. {question_text}",
+                        "message": _with_diarrhea_guidance(f"I want to make sure I understood that. {question_text}", session.symptom_state),
                         "recommendations": [],
                         "safety": safety,
                     }
@@ -2383,7 +2430,10 @@ class ConversationManager:
             )
             return {
                 "status": "ASK",
-                "message": "I still need an answer to the question above before I can complete the assessment.",
+                "message": _with_diarrhea_guidance(
+                    "I still need an answer to the question above before I can complete the assessment.",
+                    session.symptom_state,
+                ),
                 "recommendations": [],
                 "safety": safety,
             }
@@ -2405,7 +2455,7 @@ class ConversationManager:
                 session.last_question = name
                 session.questions_asked += 1
                 logger.info("[QUESTION] next=%s safety_flag_count=%d", name, len(session.symptom_state.red_flags or []))
-                return {"status": "ASK", "message": question_text, "recommendations": [], "safety": safety}
+                return {"status": "ASK", "message": _with_diarrhea_guidance(question_text, session.symptom_state), "recommendations": [], "safety": safety}
 
         if self._can_assess(session, screening):
             screening = self._add_bristol_evidence(screening, session.symptom_state)
@@ -2422,7 +2472,7 @@ class ConversationManager:
 
             if not screening.get("product_allowed"):
                 session.diagnosis_complete = True
-                return {"status": "DIAGNOSIS", "message": screening["message"], "recommendations": [], "safety": safety, "screening": screening}
+                return {"status": "DIAGNOSIS", "message": _with_diarrhea_guidance(screening["message"], session.symptom_state, screening), "recommendations": [], "safety": safety, "screening": screening}
 
             allowed = _approved_names_for_screening(screening, session.symptom_state)
             result = evaluate_product(session.symptom_state, user_message, allowed_names=allowed, match_context=screening.get("pattern"))
@@ -2434,7 +2484,7 @@ class ConversationManager:
             # Clinical assessment must never disappear merely because product
             # data is incomplete.
             session.diagnosis_complete = True
-            return {"status": "DIAGNOSIS", "message": screening["message"], "recommendations": [], "safety": safety, "screening": screening}
+            return {"status": "DIAGNOSIS", "message": _with_diarrhea_guidance(screening["message"], session.symptom_state, screening), "recommendations": [], "safety": safety, "screening": screening}
 
         if session.questions_asked < MAX_QUESTIONS:
             q = next_question(session.symptom_state)
@@ -2445,7 +2495,7 @@ class ConversationManager:
                 session.last_question = name
                 session.questions_asked += 1
                 logger.info("[QUESTION] next=%s safety_flag_count=%d", name, len(session.symptom_state.red_flags or []))
-                return {"status": "ASK", "message": question_text, "recommendations": [], "safety": safety}
+                return {"status": "ASK", "message": _with_diarrhea_guidance(question_text, session.symptom_state), "recommendations": [], "safety": safety}
 
         # A required question is never bypassed by the max-question fallback.
         # If we still have active question context, keep the assessment blocked.
@@ -2456,7 +2506,10 @@ class ConversationManager:
             )
             return {
                 "status": "ASK",
-                "message": "I still need an answer to the question above before I can complete the assessment.",
+                "message": _with_diarrhea_guidance(
+                    "I still need an answer to the question above before I can complete the assessment.",
+                    session.symptom_state,
+                ),
                 "recommendations": [],
                 "safety": safety,
             }
@@ -2481,7 +2534,7 @@ class ConversationManager:
                 result["safety"] = safety
                 return self._remember_recommendation(session, result)
         session.diagnosis_complete = True
-        return {"status": "DIAGNOSIS", "message": screening["message"], "recommendations": [], "safety": safety, "screening": screening}
+        return {"status": "DIAGNOSIS", "message": _with_diarrhea_guidance(screening["message"], session.symptom_state, screening), "recommendations": [], "safety": safety, "screening": screening}
 
 
 def re_fullmatch_number(text):

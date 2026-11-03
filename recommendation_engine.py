@@ -14,7 +14,7 @@ from pathlib import Path
 
 from gibberish_checker import is_gibberish, random_gibberish_response
 from greeting_checker import is_greeting, random_greeting_response
-from intent_parser import SYMPTOM_SYNONYMS, SymptomState, extract_named_aspect, merge_state
+from intent_parser import SYMPTOM_SYNONYMS, SymptomState, extract_named_aspect, extract_symptoms, merge_state
 from safety_checker import check_safety, derive_red_flags
 
 # Canonical symptom vocabulary (see intent_parser.py) — the only symptom
@@ -270,10 +270,36 @@ def score_product(product, state: SymptomState, raw_query: str, match_context=No
     return score
 
 
-def score_all_products(state: SymptomState, raw_query: str, match_context=None):
+def _has_active_diarrhea_context(state: SymptomState, raw_query: str = ""):
+    """Fail closed when diarrhea is present in the structured or raw context.
+
+    This is an eligibility guard, not a diagnosis. Missing condition-specific
+    product evidence means no product is eligible for a diarrhea context.
+    """
+    if (
+        getattr(state, "diarrhea_explicit", None) is True
+        or getattr(state, "diarrhea", None) is True
+        or normalize_text(getattr(state, "primary_symptom", "") or "") == "diarrhea"
+        or any(normalize_text(item) == "diarrhea" for item in (getattr(state, "secondary_symptoms", None) or []))
+    ):
+        return True
+    secondary_text = " ".join(str(item) for item in (getattr(state, "secondary_symptoms", None) or []))
+    secondary_primary, secondary_items = extract_symptoms(secondary_text)
+    if secondary_primary == "diarrhea" or "diarrhea" in secondary_items:
+        return True
+    primary, secondary = extract_symptoms(raw_query or "")
+    return primary == "diarrhea" or "diarrhea" in secondary
+
+
+def score_all_products(state: SymptomState, raw_query: str, match_context=None, allowed_names=None):
     candidates = []
+    eligible_names = None if allowed_names is None else set(allowed_names)
     for product in products:
         if product.get("status") != "active":
+            continue
+        # Eligibility is applied before scoring/ranking; a score cannot revive
+        # a product excluded by the clinical condition or safety layer.
+        if eligible_names is not None and product.get("product_name") not in eligible_names:
             continue
         score = score_product(product, state, raw_query, match_context=match_context)
         if score > 0:
@@ -434,7 +460,19 @@ def evaluate(state: SymptomState, raw_query: str, allowed_names=None, match_cont
     if not state.primary_symptom:
         return {"status": "NO_MATCH", "recommendations": [], "message": NO_MATCH_MESSAGE}
 
-    candidates = score_all_products(state, raw_query, match_context=match_context)
+    if _has_active_diarrhea_context(state, raw_query):
+        return {
+            "status": "NO_MATCH",
+            "recommendations": [],
+            "message": (
+                "The available product information does not establish a Guttify product as suitable for diarrhea, "
+                "so I can't recommend one for this symptom."
+            ),
+        }
+
+    candidates = score_all_products(
+        state, raw_query, match_context=match_context, allowed_names=allowed_names,
+    )
     if allowed_names is not None:
         allowed_names = set(allowed_names)
         candidates = [c for c in candidates if c["product"].get("product_name") in allowed_names]
