@@ -30,9 +30,9 @@ def test_answer_to_duration_is_not_irrelevant():
 def test_constipation_full_flow_reaches_assessment_and_product():
     _, result = run([
         "unable to pass my stools", "5 months", "no weight loss", "23", "2 times a week",
-        "hard and strain", "no incomplete", "bloating but no abdominal pain",
+        "hard and strain", "no", "no bloating and no abdominal pain",
         "no blood", "no sharp pain",
-        "no vomiting no fever no swelling", "2 litres", "low", "no medicines",
+        "no", "no", "no", "2 litres", "low", "no medicines",
     ])
     assert result["status"] in ("RECOMMENDATION_FOUND", "AMBIGUOUS")
     assert result["screening"]["pattern"] == "Functional constipation pattern"
@@ -42,10 +42,10 @@ def test_constipation_full_flow_reaches_assessment_and_product():
 def test_ibs_c_pattern_is_distinguished_from_plain_constipation():
     _, result = run([
         "I am constipated", "5 months", "no weight loss", "23", "2 times a week",
-        "hard and I strain", "yes incomplete",
-        "yes abdominal pain, it gets better after bowel movement",
+        "hard and I strain", "yes",
+        "no bloating but yes abdominal pain", "yes, it changes after passing stool",
         "no blood", "no sharp pain",
-        "no vomiting, no fever, no severe swelling", "2 litres", "average", "no medicines",
+        "no", "no", "no", "2 litres", "average", "no medicines",
     ])
     assert result["screening"]["pattern"] == "IBS-C pattern"
     assert result["status"] in ("RECOMMENDATION_FOUND", "AMBIGUOUS")
@@ -80,9 +80,7 @@ def test_black_stool_is_red_flag():
 def test_reflux_pattern_can_recommend_acid_ease():
     _, result = run([
         "I have heartburn after meals", "3 months", "no weight loss", "23",
-        "yes acid comes up", "worse lying down at night",
-        "no particular food triggers it",
-        "no difficulty swallowing, no persistent vomiting, no vomiting blood",
+        "yes acid comes up", "yes", "coffee", "no", "no", "no",
     ])
     assert result["screening"]["pattern"] == "Reflux/GERD-like symptom pattern"
     assert result["status"] == "RECOMMENDATION_FOUND"

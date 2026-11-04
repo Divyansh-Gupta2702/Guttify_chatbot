@@ -644,9 +644,13 @@ def extract_age(text):
     n = normalize(text)
     m = re.search(r"\b(?:i am|im|age is|aged)\s*(\d{1,3})\b", n)
     if m:
-        return int(m.group(1))
+        value = int(m.group(1))
+        return value if 1 <= value <= 120 else None
     m = re.fullmatch(r"\s*(\d{1,3})\s*(?:years? old)?\s*", n)
-    return int(m.group(1)) if m else None
+    if not m:
+        return None
+    value = int(m.group(1))
+    return value if 1 <= value <= 120 else None
 
 
 def extract_bowel_frequency(text):
@@ -790,7 +794,7 @@ def merge_state(previous, text, red_flags=None):
         "bowel_frequency_per_week": _merge_value(previous.bowel_frequency_per_week, extract_bowel_frequency(text)),
         "bowel_frequency_per_day": _merge_value(previous.bowel_frequency_per_day, extract_bowel_frequency_per_day(text)),
         "stool_form": _merge_value(previous.stool_form, extract_stool_form(text)),
-        "straining": _merge_value(previous.straining, extract_bool(text, ["strain", "straining", "push hard", "pushing hard"], ["no strain", "without straining"])),
+        "straining": _merge_value(previous.straining, extract_bool(text, ["strain", "straining", "push hard", "pushing hard"], ["no strain", "no straining", "without strain", "without straining", "don't strain", "dont strain", "do not strain", "don't have to strain", "dont have to strain", "do not have to strain", "not straining", "never strain"])),
         "incomplete_evacuation": _merge_value(previous.incomplete_evacuation, extract_bool(text, ["incomplete evacuation", "not completely empty", "not fully empty", "still feel like i need to go", "feel incompletely empty"], ["complete evacuation", "completely empty", "fully empty"])),
         "abdominal_pain": _merge_value(previous.abdominal_pain, extract_bool(text, ["abdominal pain", "stomach pain", "belly pain", "stomach ache", "abdominal ache", "cramps", "cramping"], ["no abdominal pain", "no stomach pain", "no cramps", "no pain", "do not have abdominal pain", "don't have abdominal pain", "dont have abdominal pain", "do not have stomach pain", "don't have stomach pain", "dont have stomach pain", "no pain at all"])),
         "pain_related_to_bowel_movement": _merge_value(previous.pain_related_to_bowel_movement, extract_bool(text, ["pain improves after stool", "pain improves after bowel movement", "pain relieved after stool", "pain relieved after bowel movement", "pain related to bowel movement", "pain when i need to poop", "pain changes after bowel movement", "pain associated with stool", "better after bowel movement", "worse after bowel movement"], ["pain not related to stool", "not related to bowel movement", "not related to stool"])),

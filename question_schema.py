@@ -36,6 +36,26 @@ QUESTION_SCHEMA = {
     "age": QuestionSpec(frozenset({"age"}), "numeric"),
     "weight_loss": QuestionSpec(frozenset({"weight_loss"}), "boolean"),
     "weight_loss_duration": QuestionSpec(frozenset({"weight_loss"}), "boolean"),
+    # Atomic clinical questions. Composite IDs below remain registered for
+    # older persisted assessments and resolver compatibility.
+    "mucus": QuestionSpec(frozenset({"mucus"}), "boolean"),
+    "fever": QuestionSpec(frozenset({"fever"}), "boolean"),
+    "vomiting": QuestionSpec(frozenset({"vomiting"}), "boolean"),
+    "abdominal_distension": QuestionSpec(frozenset({"abdominal_distension"}), "boolean"),
+    "night_time_symptoms": QuestionSpec(frozenset({"night_time_symptoms"}), "boolean"),
+    "difficulty_swallowing": QuestionSpec(frozenset({"difficulty_swallowing"}), "boolean"),
+    "persistent_vomiting": QuestionSpec(frozenset({"persistent_vomiting"}), "boolean"),
+    "vomiting_blood": QuestionSpec(frozenset({"vomiting_blood"}), "boolean"),
+    "recent_worsening": QuestionSpec(frozenset({"recent_worsening"}), "boolean"),
+    "bloating": QuestionSpec(frozenset({"bloating"}), "boolean"),
+    "abdominal_pain": QuestionSpec(frozenset({"abdominal_pain"}), "boolean"),
+    "sharp_pain_during_stool": QuestionSpec(frozenset({"sharp_pain_during_stool"}), "boolean"),
+    "food_onset_timing": QuestionSpec(frozenset({"symptom_onset_after_food"}), "duration"),
+    "food_symptom": QuestionSpec(frozenset({"other_symptoms"}), "free_text"),
+    "pain_bowel_relation": QuestionSpec(frozenset({"pain_related_to_bowel_movement"}), "boolean"),
+    "trigger_food": QuestionSpec(frozenset({"food_trigger"}), "choice"),
+    "constipation_symptom": QuestionSpec(frozenset({"constipation_explicit"}), "boolean"),
+    "diarrhea_symptom": QuestionSpec(frozenset({"diarrhea"}), "boolean"),
     "bowel_frequency": QuestionSpec(frozenset({"bowel_frequency_per_week"}), "numeric"),
     "daily_frequency": QuestionSpec(frozenset({"bowel_frequency_per_day"}), "numeric"),
     "stool_straining": QuestionSpec(frozenset({"stool_form", "hard_stools", "straining", "constipation_explicit"}), "composite_boolean"),
@@ -209,12 +229,32 @@ _COMPOUND_COMPONENT_PATTERNS = {
     },
 }
 
+_ATOMIC_BOOLEAN_PATTERNS = {
+    "hard_stools": r"\b(?:hard|lumpy|hard stools?)\b",
+    "straining": r"\bstrain(?:ing)?\b",
+    "mucus": r"\bmuc(?:us|ous)\b",
+    "fever": r"\bfever\b",
+    "vomiting": r"\b(?:vomit(?:ing)?|throw(?:ing)? up)\b",
+    "abdominal_distension": r"\b(?:(?:abdominal|stomach|belly) swelling|distension|distention|swelling|swollen)\b",
+    "night_time_symptoms": r"\b(?:wake[s]? me|waking me|night symptoms?|symptoms? at night|only at night|at night|during the night)\b",
+    "difficulty_swallowing": r"\b(?:difficulty|trouble|painful|pain) swallowing\b",
+    "persistent_vomiting": r"\b(?:persistent|repeated|repeatedly|can't stop|cannot stop) vomit(?:ing)?\b",
+    "vomiting_blood": r"\b(?:vomit(?:ing)? blood|throw(?:ing)? up blood|blood in (?:my )?vomit)\b",
+    "recent_worsening": r"\b(?:wors(?:e|ening)|getting worse|worsened)\b",
+    "bloating": r"\b(?:bloating|bloated|bloat)\b",
+    "abdominal_pain": r"\b(?:abdominal|stomach|belly) pain\b|\bcramps?\b",
+    "sharp_pain_during_stool": r"\b(?:sharp|tearing|cutting)\b.{0,20}\bpain\b|\bsharp anal pain\b|\btearing pain\b|\bpain\b",
+    "pain_bowel_relation": r"\b(?:change|changes|related|improve|improves|worsen|worsens)\b.{0,30}\b(?:bowel movements?|stool|poop)\b",
+    "constipation_symptom": r"\bconstipat(?:ion|ed)\b",
+    "diarrhea_symptom": r"\b(?:diarrh(?:ea|oea)|loose motions?|loose stools?)\b",
+}
+
 
 def _component_boolean(message: str, pattern: str) -> bool | None:
     """Return an explicitly mentioned component value, without inferring absence."""
     negative = re.search(
         r"\b(?:no|not|never|without|don't|dont|do not|doesn't|does not|"
-        r"isn't|is not|haven't|have not|hasn't|has not)\b.{0,45}" + pattern,
+        r"isn't|is not|aren't|are not|haven't|have not|hasn't|has not)\b.{0,45}(?:" + pattern + r")",
         message,
     )
     if negative:
@@ -339,6 +379,21 @@ def question_has_progressed(state: Any, question_id: str | None) -> bool:
 # conjunctive proposition, not merely because the schema owns multiple fields.
 _BARE_BOOL = {
     "weight_loss": {"weight_loss"},
+    "mucus": {"mucus"},
+    "fever": {"fever"},
+    "vomiting": {"vomiting"},
+    "abdominal_distension": {"abdominal_distension"},
+    "night_time_symptoms": {"night_time_symptoms"},
+    "difficulty_swallowing": {"difficulty_swallowing"},
+    "persistent_vomiting": {"persistent_vomiting"},
+    "vomiting_blood": {"vomiting_blood"},
+    "recent_worsening": {"recent_worsening"},
+    "bloating": {"bloating"},
+    "abdominal_pain": {"abdominal_pain"},
+    "sharp_pain_during_stool": {"sharp_pain_during_stool"},
+    "pain_bowel_relation": {"pain_related_to_bowel_movement"},
+    "constipation_symptom": {"constipation_explicit"},
+    "diarrhea_symptom": {"diarrhea"},
     "weight_loss_duration": {"weight_loss"},
     "blood": {"blood_present"},
     "bleeding": {"blood_present"},
@@ -698,7 +753,7 @@ def resolve_against_active_question(
         m = re.fullmatch(r"(?:i\s+am|i'?m|im|aged|age\s+is)?\s*(\d{1,3})(?:\s+years?\s+old)?", n)
         if m:
             v = int(m.group(1))
-            if 0 <= v <= 120:
+            if 1 <= v <= 120:
                 return {"status": "answered", "values": {"age": v}, "confidence": 0.99, "source": "deterministic"}
 
     if question_id == "duration":
@@ -707,6 +762,24 @@ def resolve_against_active_question(
         m = re.search(r"\b(\d+(?:\.\d+)?)\s*(hours?|days?|weeks?|months?|years?)\b", n)
         if m:
             return {"status": "answered", "values": {"duration": f"{m.group(1)} {m.group(2)}"}, "confidence": 0.99, "source": "deterministic"}
+
+    if question_id == "trigger_food":
+        from intent_parser import extract_food_trigger
+        trigger = extract_food_trigger(message)
+        if trigger:
+            return {"status": "answered", "values": {"food_trigger": trigger}, "confidence": 0.99, "source": "deterministic"}
+        if re.search(r"\b(?:no particular food|nothing|none|not sure|don't know|do not know)\b", n):
+            return {"status": "unknown", "values": {}, "confidence": 0.99, "source": "deterministic"}
+
+    if question_id == "food_onset_timing":
+        onset = (extracted or {}).get("symptom_onset_after_food")
+        if not onset and re.search(r"\b(?:immediately|right away|\d+\s*(?:minutes?|mins?|hours?|hrs?))\b", n):
+            onset = str(message).strip()
+        if onset:
+            return {"status": "answered", "values": {"symptom_onset_after_food": str(onset)}, "confidence": 0.98, "source": "deterministic"}
+
+    if question_id == "food_symptom" and n:
+        return {"status": "answered", "values": {"other_symptoms": [str(message).strip()[:120]]}, "confidence": 0.98, "source": "deterministic"}
 
     if question_id == "stool_form":
         stool = None
@@ -738,6 +811,16 @@ def resolve_against_active_question(
 
     if question_id in {"duration"} and extracted and extracted.get("duration"):
         return {"status": "answered", "values": {"duration": extracted["duration"]}, "confidence": 0.98, "source": "deterministic"}
+
+    if question_id == "hard_stools" and re.search(r"\b(?:normal|soft|not hard)\b", n):
+        return {"status": "answered", "values": {"hard_stools": False}, "confidence": 0.99, "source": "deterministic"}
+
+    atomic_pattern = _ATOMIC_BOOLEAN_PATTERNS.get(question_id)
+    if atomic_pattern:
+        value = _component_boolean(n, atomic_pattern)
+        if value is not None:
+            field = next(iter(spec.fields))
+            return {"status": "answered", "values": {field: value}, "confidence": 0.99, "source": "deterministic"}
 
     # Deterministic contextual patterns for composite natural-language answers.
     if question_id == "bloating_pain":
@@ -778,6 +861,24 @@ def resolve_against_active_question(
     # it does not infer missing values.
     if extracted:
         semantic_aliases = {
+            "mucus": {"mucus": "mucus"},
+            "fever": {"fever": "fever"},
+            "vomiting": {"vomiting": "vomiting"},
+            "abdominal_distension": {"abdominal_distension": "abdominal_distension"},
+            "night_time_symptoms": {"night_time_symptoms": "night_time_symptoms"},
+            "difficulty_swallowing": {"difficulty_swallowing": "difficulty_swallowing"},
+            "persistent_vomiting": {"persistent_vomiting": "persistent_vomiting"},
+            "vomiting_blood": {"vomiting_blood": "vomiting_blood"},
+            "recent_worsening": {"recent_worsening": "recent_worsening"},
+            "bloating": {"bloating": "bloating"},
+            "abdominal_pain": {"abdominal_pain": "abdominal_pain"},
+            "sharp_pain_during_stool": {"sharp_pain_during_stool": "sharp_pain_during_stool"},
+            "hard_stools": {"hard_stools": "hard_stools"},
+            "straining": {"straining": "straining"},
+            "pain_bowel_relation": {"pain_related_to_bowel_movement": "pain_related_to_bowel_movement"},
+            "trigger_food": {"food_trigger": "food_trigger"},
+            "constipation_symptom": {"constipation_explicit": "constipation"},
+            "diarrhea_symptom": {"diarrhea": "loose_stools"},
             "anal_pain": {"anal_pain": "pain", "sharp_pain_during_stool": "pain"},
             "blood": {"blood_present": "bleeding"},
             "bleeding": {"blood_present": "bleeding"},
@@ -1018,6 +1119,20 @@ def question_has_answer(state: Any, question_id: str | None) -> bool:
         return _has(state, "age")
     if question_id in {"weight_loss", "weight_loss_duration"}:
         return _has(state, "weight_loss")
+    if question_id in {"mucus", "fever", "vomiting", "abdominal_distension", "night_time_symptoms", "difficulty_swallowing", "persistent_vomiting", "vomiting_blood", "recent_worsening", "bloating", "abdominal_pain", "sharp_pain_during_stool"}:
+        return _has(state, question_id)
+    if question_id == "pain_bowel_relation":
+        return _has(state, "pain_related_to_bowel_movement")
+    if question_id == "food_onset_timing":
+        return _has(state, "symptom_onset_after_food")
+    if question_id == "food_symptom":
+        return bool(getattr(state, "other_symptoms", None))
+    if question_id == "trigger_food":
+        return _has(state, "food_trigger")
+    if question_id == "constipation_symptom":
+        return _has(state, "constipation_explicit")
+    if question_id == "diarrhea_symptom":
+        return _has(state, "diarrhea")
     if question_id == "bowel_frequency":
         return _has(state, "bowel_frequency_per_week")
     if question_id == "daily_frequency":

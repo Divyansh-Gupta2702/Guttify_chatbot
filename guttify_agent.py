@@ -43,7 +43,7 @@ from feature_flags import enabled
 
 SESSION_ENDED_MESSAGE = "This conversation has already wrapped up. Please start a new chat if you'd like help with another question."
 logger = logging.getLogger("gutgpt.nlu")
-MAX_QUESTIONS = 15
+MAX_QUESTIONS = 30
 
 
 PRODUCT_ELIGIBILITY = {
@@ -1068,7 +1068,10 @@ class ConversationManager:
             )
             self._set(data, "abdominal_pain", v)
 
-        elif field == "symptoms":
+        elif field in {"symptoms", "food_symptom"}:
+            data["other_symptoms"] = list(dict.fromkeys(
+                list(data.get("other_symptoms") or []) + [text.strip()[:120]]
+            ))
             # Capture the main symptom categories named in the food-intolerance
             # question so its branch-specific screening can actually advance.
             n2 = normalize(text)
@@ -2334,10 +2337,31 @@ class ConversationManager:
                     "age": "What is your age?",
                     "weight_loss": "Have you lost any significant weight?",
                     "weight_loss_duration": "Have you lost any significant weight?",
+                    "mucus": "Have you noticed mucus in your stool?",
+                    "fever": "Have you had a fever?",
+                    "vomiting": "Have you had vomiting?",
+                    "abdominal_distension": "Have you had severe abdominal swelling?",
+                    "night_time_symptoms": "Do your symptoms wake you at night?",
+                    "difficulty_swallowing": "Do you have difficulty or pain swallowing?",
+                    "persistent_vomiting": "Have you had persistent vomiting?",
+                    "vomiting_blood": "Have you vomited blood?",
+                    "recent_worsening": "Has the pain been getting worse recently?",
+                    "bloating": "Are you experiencing abdominal bloating?",
+                    "abdominal_pain": "Are you experiencing abdominal pain?",
+                    "sharp_pain_during_stool": "Is there sharp or tearing pain during or just after a bowel movement?",
+                    "pain_bowel_relation": "Does the pain change after a bowel movement?",
+                    "trigger_food": "Which food or drink seems to trigger it?",
+                    "constipation_symptom": "Are you experiencing constipation?",
+                    "diarrhea_symptom": "Are you experiencing diarrhea or loose motions?",
+                    "food_onset_timing": "How soon after eating does the symptom start?",
+                    "food_symptom": "What symptom do you notice after eating that food?",
                     "blood": "Have you noticed any bleeding or blood around/after a bowel movement?",
                     "blood_colour": "Is the blood bright/fresh red, or dark/black/tarry?",
                     "blood_location": "If it is bright red, is it on tissue, dripping into the toilet, or mixed into the stool?",
                     "anal_pain": "Is there sharp or tearing pain during or just after a bowel movement?",
+                    "hard_stools": "Are you experiencing hard stools or lumpy stools?",
+                    "straining": "Do you need to strain to pass stool?",
+                    "incomplete_evacuation": "Do you often feel that your bowel has not completely emptied after passing stool?",
                     "lump": "Is there a lump or something protruding from the anus?",
                     "stool_straining": "Are your stools hard or lumpy, and do you need to strain to pass them?",
                     "constipation": "Do you have hard stools or strain when passing stool?",

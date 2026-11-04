@@ -243,11 +243,11 @@ def _validate(raw: Any, forced_intent: str | None = None) -> dict:
             out[key] = value
 
     age = raw.get("age")
-    if isinstance(age, int) and 0 <= age <= 120:
+    if isinstance(age, int) and not isinstance(age, bool) and 1 <= age <= 120:
         out["age"] = age
     elif isinstance(age, str) and age.strip().isdigit():
         value = int(age.strip())
-        if 0 <= value <= 120:
+        if 1 <= value <= 120:
             out["age"] = value
 
     for key in LIST_FIELDS:
@@ -632,11 +632,11 @@ def _question_specific_fallback(message: str, last_question: str | None, state) 
         m = re.search(r"\b(?:i am|i'm|im|age is|aged)\s*(\d{1,3})\b|\b(\d{1,3})\s*(?:years?\s*old)\b", n)
         if m:
             v = int(next(x for x in m.groups() if x is not None))
-            if 0 <= v <= 120:
+            if 1 <= v <= 120:
                 out["age"] = v
         elif re.fullmatch(r"\d{1,3}", n):
             v = int(n)
-            if 0 <= v <= 120:
+            if 1 <= v <= 120:
                 out["age"] = v
 
     elif last_question == "incomplete_evacuation":

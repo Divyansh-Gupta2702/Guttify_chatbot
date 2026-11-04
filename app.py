@@ -51,6 +51,7 @@ from guttify_chatbot import _deterministic_product_reply, _deterministic_screeni
 from safety_checker import pregnancy_lactation_evidence
 BASE_DIR = Path(__file__).resolve().parent
 WIDGET_FILE = BASE_DIR / "gutgpt-widget.js"
+BRISTOL_CHART_FILE = BASE_DIR / "Bristol Stool Chart Infographic.png"
 VERSION_FILE = BASE_DIR / "VERSION.txt"
 QUESTION_FLOW_SCHEMA_VERSION = "v18.1"
 
@@ -1041,6 +1042,26 @@ def _persist_assessment_checkpoint(session_id: str, completed: bool = False, tur
         conn.close()
 
 
+def _persist_customer_age_correction(session_id: str, age: int) -> bool:
+    """Persist a validated assessment age correction to the bound profile."""
+    customer_id = SESSION_CUSTOMER_IDS.get(session_id)
+    if not customer_id or isinstance(age, bool) or not isinstance(age, int) or not 1 <= age <= 120:
+        return False
+    conn = _postgres_connect()
+    try:
+        with conn, conn.cursor() as cur:
+            cur.execute("UPDATE customers SET age=%s, updated_at=NOW() WHERE customer_id=%s", (age, customer_id))
+            updated = cur.rowcount == 1
+        if updated:
+            logger.info("Customer profile age updated from assessment session=%s", session_id[:8])
+        return updated
+    except Exception:
+        logger.exception("Customer profile age update failed session=%s", session_id[:8])
+        return False
+    finally:
+        conn.close()
+
+
 
 def _restore_assessment_checkpoint(customer_id: str, new_session_id: str) -> dict | None:
     """Restore the latest unfinished assessment, including its normalized message log."""
@@ -1048,6 +1069,7 @@ def _restore_assessment_checkpoint(customer_id: str, new_session_id: str) -> dic
     assessment_id = None
     updated_at = None
     active_assessment_found = False
+    profile_age = None
     conn = _postgres_connect()
     try:
         with conn, conn.cursor() as cur:
@@ -1077,6 +1099,9 @@ def _restore_assessment_checkpoint(customer_id: str, new_session_id: str) -> dic
                 message_rows = cur.fetchall()
             else:
                 message_rows = []
+            cur.execute("SELECT age FROM customers WHERE customer_id=%s", (customer_id,))
+            profile_row = cur.fetchone()
+            profile_age = profile_row["age"] if profile_row else None
     except HTTPException:
         raise
     except Exception:
@@ -1112,6 +1137,10 @@ def _restore_assessment_checkpoint(customer_id: str, new_session_id: str) -> dic
         payload = dict(payload)
         payload["symptom_state"] = SymptomState(**payload["symptom_state"])
         restored_state = SessionState(**payload)
+        # The customer profile is authoritative for age. Checkpoints are
+        # assessment snapshots and may predate registration or an age correction.
+        if isinstance(profile_age, int) and 1 <= profile_age <= 120:
+            restored_state.symptom_state.age = profile_age
         if not isinstance(history, list):
             history = []
         restored_history = [m for m in history if isinstance(m, dict) and m.get("role") in ("user", "assistant") and isinstance(m.get("content"), str)][-MAX_HISTORY_MESSAGES:]
@@ -1342,6 +1371,19 @@ def widget():
         WIDGET_FILE,
         media_type="application/javascript",
         headers={"Cache-Control": "no-cache, must-revalidate"},
+    )
+
+
+@app.get("/bristol-stool-chart.png")
+def bristol_stool_chart():
+    """Serve the existing Bristol chart from the same HTTPS origin as the widget."""
+    if not BRISTOL_CHART_FILE.is_file():
+        logger.warning("Bristol Stool Chart asset is unavailable")
+        raise HTTPException(status_code=404, detail="Bristol Stool Chart asset is unavailable.")
+    return FileResponse(
+        BRISTOL_CHART_FILE,
+        media_type="image/png",
+        headers={"Cache-Control": "public, max-age=86400"},
     )
 
 
@@ -2042,9 +2084,22 @@ def _chat_impl(req: ChatRequest, request: Request = None):
         message = original_message
         with _SESSION_LOCK:
             recent_history = list(HISTORY[req.session_id])
+        with conversation_manager._lock:
+            existing_session = conversation_manager.sessions.get(req.session_id)
+            age_before_turn = existing_session.symptom_state.age if existing_session else None
         result = conversation_manager.handle_message(
             req.session_id, message, conversation_history=recent_history,
         )
+        with conversation_manager._lock:
+            updated_session = conversation_manager.sessions.get(req.session_id)
+            age_after_turn = updated_session.symptom_state.age if updated_session else None
+        if age_after_turn != age_before_turn and age_after_turn is not None:
+            if SESSION_CUSTOMER_IDS.get(req.session_id) and not _persist_customer_age_correction(req.session_id, age_after_turn):
+                with conversation_manager._lock:
+                    current_session = conversation_manager.sessions.get(req.session_id)
+                    if current_session is not None:
+                        current_session.symptom_state.age = age_before_turn
+                raise HTTPException(status_code=503, detail="The age correction could not be saved to the customer profile.")
         _persist_customer_safety_restriction(req.session_id, original_message)
         logic_ms = (time.perf_counter() - logic_start) * 1000
         status = result["status"]

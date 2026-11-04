@@ -62,18 +62,28 @@ def _complete_constipation_session(manager, sid):
     state.stool_form = 2
     state.straining = True
     state.incomplete_evacuation = False
+    state.hard_stools = True
     state.abdominal_pain = False
+    state.bloating = False
+    state.sharp_pain_during_stool = False
     state.blood_present = False
     state.weight_loss = False
     state.vomiting = False
     state.fever = False
     state.abdominal_distension = False
+    state.difficulty_swallowing = False
+    state.persistent_vomiting = False
+    state.vomiting_blood = False
+    state.night_time_symptoms = False
+    state.recent_worsening = False
+    state.water_intake = "2 litres"
+    state.fibre_intake = "average"
     state.medications = "none"
     state.constipation_explicit = True
     state.asked_fields = [
-        "duration", "weight_loss", "age", "bowel_frequency", "stool_straining",
-        "incomplete_evacuation", "bloating_pain", "pain_relation", "blood",
-        "anal_pain", "vomiting_fever_swelling", "water", "fibre", "medications",
+        "duration", "weight_loss", "age", "bowel_frequency", "hard_stools", "straining",
+        "incomplete_evacuation", "bloating", "abdominal_pain", "pain_relation", "blood",
+        "sharp_pain_during_stool", "vomiting", "fever", "abdominal_distension", "water", "fibre", "medications",
         "stool_form", "daily_frequency", "pain", "infection", "blood_mucus",
         "night_weight_fever", "reflux", "timing", "triggers", "swallowing",
     ]

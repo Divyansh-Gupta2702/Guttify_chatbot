@@ -81,7 +81,7 @@ def test_explicit_blood_correction_updates_state_and_activates_bleeding_followup
 
     session = manager.sessions[session_id]
     assert session.symptom_state.blood_present is False
-    assert session.last_question == "anal_pain"
+    assert session.last_question == "sharp_pain_during_stool"
 
     manager.handle_message(session_id, "Actually, I noticed blood")
     assert session.symptom_state.blood_present is True
