@@ -41,13 +41,9 @@ class TestV8RegressionFixes(unittest.TestCase):
     def test_gas_can_reach_acid_ease(self):
         cm = ConversationManager()
         sid = "gas-route"
-        from test_all_symptom_questionnaire_completeness import TestAllSymptomQuestionnaires
-        result = cm.handle_message(sid, "gas")
-        for _ in range(20):
-            question = cm.sessions[sid].last_question
-            if question is None:
-                break
-            result = cm.handle_message(sid, TestAllSymptomQuestionnaires.ANSWERS[question])
+        result = None
+        for msg in ["gas", "2 weeks", "23", "no constipation", "no food trigger", "no abdominal pain", "Bristol type 4"]:
+            result = cm.handle_message(sid, msg)
         if result and result.get("status") == "SUMMARY_REVIEW":
             result = cm.handle_message(sid, "yes")
         # Multiple products have "gas" as a symptom, so this correctly returns AMBIGUOUS

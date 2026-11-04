@@ -52,3 +52,28 @@ def test_new_assessment_initial_checkpoint_is_created_in_same_transaction():
     assert assessment_insert < checkpoint_insert < transaction_end
     assert '"state": asdict(new_state)' in endpoint
     assert '"active": True' in endpoint
+
+
+
+def test_resume_reconciles_checkpoint_age_from_customer_profile():
+    source = (ROOT / "app.py").read_text()
+    start = source.index("def _restore_assessment_checkpoint")
+    end = source.index("def _persist_completed_assessment", start)
+    restore = source[start:end]
+    assert "SELECT age FROM customers WHERE customer_id=%s" in restore
+    assert "_reconcile_restored_profile_age(restored_state.symptom_state, profile_age)" in restore
+
+
+def test_resume_returns_deterministic_pending_question():
+    source = (ROOT / "app.py").read_text()
+    start = source.index("def _restore_assessment_checkpoint")
+    end = source.index("def _persist_completed_assessment", start)
+    restore = source[start:end]
+    assert 'pending_payload = (' in restore
+    assert '"pending_question": pending_payload' in restore
+
+
+def test_widget_renders_missing_pending_question_after_resume():
+    source = (ROOT / "gutgpt-widget.js").read_text()
+    assert "const pendingQuestion = resume.pending_question;" in source
+    assert "addMessage(pendingQuestion.text, \"bot\")" in source

@@ -218,7 +218,7 @@ def test_question_schema_has_explicit_ownership_for_all_question_ids():
         seen.add(q[0])
         state.asked_fields.append(q[0])
         # Stop after collecting IDs; conditions are branch/state dependent.
-    assert {"duration", "age", "reflux", "timing", "triggers", "swallowing"} <= set(QUESTION_SCHEMA)
+    assert {"duration", "age", "reflux", "timing", "triggers", "difficulty_swallowing", "persistent_vomiting", "vomiting_blood"} <= set(QUESTION_SCHEMA)
 
 
 def test_unresolved_active_question_blocks_recommendation():

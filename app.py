@@ -46,6 +46,7 @@ from guttify_agent import ConversationManager, SessionState
 from intent_parser import SymptomState
 from dataclasses import asdict
 from symptom_questionnaire import next_question
+from question_schema import next_question_component
 from symptom_summary import build_symptom_summary
 from guttify_chatbot import _deterministic_product_reply, _deterministic_screening_reply
 from safety_checker import pregnancy_lactation_evidence
@@ -53,7 +54,7 @@ BASE_DIR = Path(__file__).resolve().parent
 WIDGET_FILE = BASE_DIR / "gutgpt-widget.js"
 BRISTOL_CHART_FILE = BASE_DIR / "Bristol Stool Chart Infographic.png"
 VERSION_FILE = BASE_DIR / "VERSION.txt"
-QUESTION_FLOW_SCHEMA_VERSION = "v18.1"
+QUESTION_FLOW_SCHEMA_VERSION = "v18.2"
 
 from support_footer import append_human_support_footer
 from groq_service import (
@@ -348,7 +349,7 @@ async def lifespan(application: FastAPI):
     yield
 
 
-app = FastAPI(title="GutGPT API", version="18.4.1-provider-safety-hardening", lifespan=lifespan)
+app = FastAPI(title="GutGPT API", version="18.4.2-individual-question-age-bristol", lifespan=lifespan)
 
 
 # Shopify storefront origins are supplied as a comma-separated environment
@@ -1042,25 +1043,50 @@ def _persist_assessment_checkpoint(session_id: str, completed: bool = False, tur
         conn.close()
 
 
-def _persist_customer_age_correction(session_id: str, age: int) -> bool:
-    """Persist a validated assessment age correction to the bound profile."""
+
+def _validated_customer_age(value) -> int | None:
+    """Accept only whole-number ages in range; never truncate or infer."""
+    if isinstance(value, bool) or value is None:
+        return None
+    if isinstance(value, int):
+        age = value
+    elif isinstance(value, float) and value.is_integer():
+        age = int(value)
+    elif isinstance(value, str) and re.fullmatch(r"\s*\d+\s*", value):
+        age = int(value.strip())
+    else:
+        return None
+    return age if 1 <= age <= 120 else None
+
+
+def _reconcile_restored_profile_age(symptom_state, profile_age) -> None:
+    """Prefer a valid customer-profile age; otherwise retain only a valid snapshot."""
+    authoritative_age = _validated_customer_age(profile_age)
+    if authoritative_age is not None:
+        symptom_state.age = authoritative_age
+    else:
+        symptom_state.age = _validated_customer_age(getattr(symptom_state, "age", None))
+
+
+def _persist_customer_profile_age(session_id: str, age_value) -> bool:
+    """Persist a validated age to the PostgreSQL profile bound to this session."""
     customer_id = SESSION_CUSTOMER_IDS.get(session_id)
-    if not customer_id or isinstance(age, bool) or not isinstance(age, int) or not 1 <= age <= 120:
+    age = _validated_customer_age(age_value)
+    if not customer_id or age is None:
         return False
     conn = _postgres_connect()
     try:
         with conn, conn.cursor() as cur:
-            cur.execute("UPDATE customers SET age=%s, updated_at=NOW() WHERE customer_id=%s", (age, customer_id))
-            updated = cur.rowcount == 1
-        if updated:
-            logger.info("Customer profile age updated from assessment session=%s", session_id[:8])
-        return updated
-    except Exception:
-        logger.exception("Customer profile age update failed session=%s", session_id[:8])
-        return False
+            cur.execute(
+                "UPDATE customers SET age=%s, updated_at=NOW() WHERE customer_id=%s",
+                (age, customer_id),
+            )
+            if getattr(cur, "rowcount", 0) != 1:
+                raise RuntimeError("Bound customer profile was not updated")
+        logger.info("Customer profile age updated session=%s", session_id[:8])
+        return True
     finally:
         conn.close()
-
 
 
 def _restore_assessment_checkpoint(customer_id: str, new_session_id: str) -> dict | None:
@@ -1073,6 +1099,15 @@ def _restore_assessment_checkpoint(customer_id: str, new_session_id: str) -> dic
     conn = _postgres_connect()
     try:
         with conn, conn.cursor() as cur:
+            # Customer profile is authoritative for demographics. Read it in the
+            # same database transaction as the checkpoint so restoration can
+            # reconcile an older assessment snapshot that contains age=null.
+            cur.execute("SELECT age FROM customers WHERE customer_id=%s", (customer_id,))
+            profile_row = cur.fetchone()
+            if profile_row is not None:
+                raw_age = profile_row["age"] if isinstance(profile_row, dict) else profile_row[0]
+                profile_age = _validated_customer_age(raw_age)
+
             cur.execute("""
                 SELECT a.assessment_id, st.checkpoint, st.updated_at
                 FROM customer_assessments a
@@ -1099,9 +1134,6 @@ def _restore_assessment_checkpoint(customer_id: str, new_session_id: str) -> dic
                 message_rows = cur.fetchall()
             else:
                 message_rows = []
-            cur.execute("SELECT age FROM customers WHERE customer_id=%s", (customer_id,))
-            profile_row = cur.fetchone()
-            profile_age = profile_row["age"] if profile_row else None
     except HTTPException:
         raise
     except Exception:
@@ -1137,10 +1169,9 @@ def _restore_assessment_checkpoint(customer_id: str, new_session_id: str) -> dic
         payload = dict(payload)
         payload["symptom_state"] = SymptomState(**payload["symptom_state"])
         restored_state = SessionState(**payload)
-        # The customer profile is authoritative for age. Checkpoints are
-        # assessment snapshots and may predate registration or an age correction.
-        if isinstance(profile_age, int) and 1 <= profile_age <= 120:
-            restored_state.symptom_state.age = profile_age
+        # Never let a stale/null assessment snapshot erase the valid profile age.
+        # If the profile has no valid age, retain only a valid assessment snapshot.
+        _reconcile_restored_profile_age(restored_state.symptom_state, profile_age)
         if not isinstance(history, list):
             history = []
         restored_history = [m for m in history if isinstance(m, dict) and m.get("role") in ("user", "assistant") and isinstance(m.get("content"), str)][-MAX_HISTORY_MESSAGES:]
@@ -1168,7 +1199,40 @@ def _restore_assessment_checkpoint(customer_id: str, new_session_id: str) -> dic
         REGISTERED_CUSTOMER_SESSIONS.add(new_session_id)
     if assessment_id:
         SESSION_ASSESSMENT_IDS[new_session_id] = assessment_id
-    return {"status": "RESUMED", "messages": restored_history, "updated_at": updated_at or checkpoint.get("updated_at"), "assessment_id": assessment_id}
+
+    # The transcript can end before the next prompt was emitted (for example,
+    # if the client refreshed at a question boundary). Return the deterministic
+    # pending prompt as structured resume data so the widget can restore its
+    # Bristol chart marker and any other active question without guessing from
+    # message text.
+    pending = next_question(restored_state.symptom_state)
+    pending_payload = None
+    if isinstance(pending, tuple) and len(pending) == 2:
+        pending_id, pending_text = pending
+        pending_component = next_question_component(pending_id, restored_state.symptom_state)
+        if pending_component:
+            pending_component_id, pending_text = pending_component
+        else:
+            pending_component_id = None
+        # Bind the restored prompt to the same active question/component that
+        # the normal chat path would set before processing the next user turn.
+        restored_state.last_question = pending_id
+        restored_state.active_question_component = pending_component_id
+        if pending_id not in restored_state.symptom_state.asked_fields:
+            restored_state.symptom_state.asked_fields.append(pending_id)
+        pending_payload = {
+            "question_id": pending_id,
+            "component_id": pending_component_id,
+            "text": pending_text,
+            "display_asset": "bristol_stool_chart" if pending_id == "stool_form" else None,
+        }
+    return {
+        "status": "RESUMED",
+        "messages": restored_history,
+        "updated_at": updated_at or checkpoint.get("updated_at"),
+        "assessment_id": assessment_id,
+        "pending_question": pending_payload,
+    }
 
 def _persist_completed_assessment(session_id: str, result: dict) -> None:
     """Store only the likely assessment value on the matching customer row."""
@@ -1275,6 +1339,8 @@ class ChatResponse(BaseModel):
     # True when the current assessment has reached a terminal outcome, including
     # urgent red-flag safety outcomes that must not continue in this session.
     assessment_complete: bool = False
+    # Optional, backward-compatible metadata for question-specific UI assets.
+    question_metadata: dict | None = None
 
 
 def _request_client_key(request: Request) -> str:
@@ -1354,6 +1420,22 @@ def api_root():
     }
 
 
+@app.get("/assets/bristol-stool-chart.png", include_in_schema=False)
+def bristol_stool_chart_asset():
+    """Serve the versioned-in-package Bristol chart used by the Shopify widget."""
+    if not BRISTOL_CHART_FILE.is_file():
+        logger.error("Bristol Stool Chart asset is missing from the application package")
+        raise HTTPException(status_code=404, detail="Bristol Stool Chart asset is unavailable.")
+    return FileResponse(
+        BRISTOL_CHART_FILE,
+        media_type="image/png",
+        headers={
+            "Cache-Control": "public, max-age=86400",
+            "X-Content-Type-Options": "nosniff",
+        },
+    )
+
+
 @app.get("/api/health", response_model=str)
 def health():
     """Simple backend health response."""
@@ -1371,19 +1453,6 @@ def widget():
         WIDGET_FILE,
         media_type="application/javascript",
         headers={"Cache-Control": "no-cache, must-revalidate"},
-    )
-
-
-@app.get("/bristol-stool-chart.png")
-def bristol_stool_chart():
-    """Serve the existing Bristol chart from the same HTTPS origin as the widget."""
-    if not BRISTOL_CHART_FILE.is_file():
-        logger.warning("Bristol Stool Chart asset is unavailable")
-        raise HTTPException(status_code=404, detail="Bristol Stool Chart asset is unavailable.")
-    return FileResponse(
-        BRISTOL_CHART_FILE,
-        media_type="image/png",
-        headers={"Cache-Control": "public, max-age=86400"},
     )
 
 
@@ -1477,7 +1546,7 @@ def register_customer(req: CustomerRegistrationRequest, request: Request = None,
     with conversation_manager._lock:
         session_state = conversation_manager.sessions.get(req.session_id)
         if session_state is not None:
-            session_state.symptom_state.age = record.get("age")
+            session_state.symptom_state.age = _validated_customer_age(record.get("age"))
 
     _set_guest_cookie(response, request, guest_token, GUEST_TOKEN_TTL_SECONDS)
     logger.info("Customer registration saved session=%s", req.session_id[:8])
@@ -1709,7 +1778,7 @@ def restore_customer(req: CustomerRestoreRequest, request: Request = None, respo
         with conversation_manager._lock:
             state = conversation_manager.sessions.get(req.session_id)
             if state is not None:
-                state.symptom_state.age = record.get("age")
+                state.symptom_state.age = _validated_customer_age(record.get("age"))
                 restrictions = record.get("customer_safety_restrictions") or {}
                 pregnancy_restriction = restrictions.get("pregnancy_lactation_product_restriction") if isinstance(restrictions, dict) else None
                 if isinstance(pregnancy_restriction, dict) and pregnancy_restriction.get("active"):
@@ -1890,6 +1959,15 @@ def create_new_assessment_session(req: CustomerRestoreRequest, request: Request 
                 SESSION_CUSTOMER_IDS.pop(new_session_id, None)
                 REGISTERED_CUSTOMER_SESSIONS.discard(new_session_id)
             raise HTTPException(status_code=404, detail="CUSTOMER_RECORD_NOT_FOUND")
+        # A new assessment is a fresh SessionState, not a profile reset. Carry
+        # the authoritative PostgreSQL customer age into it before the initial
+        # checkpoint is written, otherwise the next_question age gate asks a
+        # returning customer to re-enter an already-known value.
+        profile_age = _validated_customer_age(record.get("age"))
+        with conversation_manager._lock:
+            active_new_state = conversation_manager.sessions.get(new_session_id)
+            if active_new_state is not None:
+                active_new_state.symptom_state.age = profile_age
         restrictions = record.get("customer_safety_restrictions") or {}
         pregnancy_restriction = restrictions.get("pregnancy_lactation_product_restriction") if isinstance(restrictions, dict) else None
         if isinstance(pregnancy_restriction, dict) and pregnancy_restriction.get("active"):
@@ -2085,21 +2163,56 @@ def _chat_impl(req: ChatRequest, request: Request = None):
         with _SESSION_LOCK:
             recent_history = list(HISTORY[req.session_id])
         with conversation_manager._lock:
-            existing_session = conversation_manager.sessions.get(req.session_id)
-            age_before_turn = existing_session.symptom_state.age if existing_session else None
+            pre_turn_session = conversation_manager.sessions.get(req.session_id)
+            previous_profile_age = _validated_customer_age(
+                getattr(getattr(pre_turn_session, "symptom_state", None), "age", None)
+            ) if pre_turn_session else None
+            active_question_before = getattr(pre_turn_session, "last_question", None) if pre_turn_session else None
+            was_summary_correction = bool(
+                pre_turn_session and (
+                    pre_turn_session.awaiting_summary_confirmation
+                    or pre_turn_session.summary_correction_mode
+                )
+            )
         result = conversation_manager.handle_message(
             req.session_id, message, conversation_history=recent_history,
         )
+        # A missing-profile age answer and an explicit age correction in the
+        # summary/correction flow must update the one authoritative PostgreSQL
+        # profile value, not just the transient assessment snapshot.
         with conversation_manager._lock:
-            updated_session = conversation_manager.sessions.get(req.session_id)
-            age_after_turn = updated_session.symptom_state.age if updated_session else None
-        if age_after_turn != age_before_turn and age_after_turn is not None:
-            if SESSION_CUSTOMER_IDS.get(req.session_id) and not _persist_customer_age_correction(req.session_id, age_after_turn):
+            post_turn_session = conversation_manager.sessions.get(req.session_id)
+            new_profile_age = _validated_customer_age(
+                getattr(getattr(post_turn_session, "symptom_state", None), "age", None)
+            ) if post_turn_session else None
+        explicit_age_statement = bool(re.search(
+            r"\b(?:i\s*(?:am|'m)|my\s+age\s+is|age\s+is|(?:my\s+)?age\s*[:=]?)\s*\d{1,3}\b|\b\d{1,3}\s+years?\s+old\b",
+            original_message,
+            re.IGNORECASE,
+        ))
+        age_update_is_intentional = (
+            active_question_before == "age"
+            or was_summary_correction
+            or explicit_age_statement
+        )
+        if age_update_is_intentional and new_profile_age is not None and new_profile_age != previous_profile_age:
+            try:
+                persisted = _persist_customer_profile_age(req.session_id, new_profile_age)
+                if not persisted:
+                    raise RuntimeError("No authenticated PostgreSQL customer profile is bound to this session")
+            except Exception:
+                logger.exception("Customer profile age persistence failed session=%s", req.session_id[:8])
                 with conversation_manager._lock:
-                    current_session = conversation_manager.sessions.get(req.session_id)
-                    if current_session is not None:
-                        current_session.symptom_state.age = age_before_turn
-                raise HTTPException(status_code=503, detail="The age correction could not be saved to the customer profile.")
+                    failed_session = conversation_manager.sessions.get(req.session_id)
+                    if failed_session is not None:
+                        failed_session.symptom_state.age = previous_profile_age
+                        failed_session.last_question = "age"
+                        failed_session.active_question_component = None
+                result = {
+                    "status": "ASK",
+                    "message": "I couldn't save that age change to your registered customer profile, so I have paused the assessment. Please enter your age again to retry.",
+                    "recommendations": [],
+                }
         _persist_customer_safety_restriction(req.session_id, original_message)
         logic_ms = (time.perf_counter() - logic_start) * 1000
         status = result["status"]
@@ -2231,11 +2344,22 @@ def _chat_impl(req: ChatRequest, request: Request = None):
         status in ("DIAGNOSIS", "RECOMMENDATION_FOUND", "AMBIGUOUS", "DIAGNOSIS_COMPLETE", "RECOMMENDATION_COMPLETE")
         or urgent_safety_outcome
     )
+    question_metadata = None
+    if status == "ASK":
+        with conversation_manager._lock:
+            active_session = conversation_manager.sessions.get(req.session_id)
+            active_question_id = getattr(active_session, "last_question", None) if active_session else None
+        if active_question_id:
+            question_metadata = {
+                "question_id": active_question_id,
+                "display_asset": "bristol_stool_chart" if active_question_id == "stool_form" else None,
+            }
     response = ChatResponse(
         reply=reply,
         status=status,
         recommendations=(result.get("recommendations") if result else None) or [],
         assessment_complete=assessment_complete,
+        question_metadata=question_metadata,
     )
     _complete_chat_idempotency(req.session_id, req.message_id, response.model_dump())
     return response

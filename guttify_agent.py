@@ -43,7 +43,27 @@ from feature_flags import enabled
 
 SESSION_ENDED_MESSAGE = "This conversation has already wrapped up. Please start a new chat if you'd like help with another question."
 logger = logging.getLogger("gutgpt.nlu")
-MAX_QUESTIONS = 30
+
+
+def _validated_age_value(value):
+    """Accept only whole-number ages from 1 through 120."""
+    if isinstance(value, bool) or value is None:
+        return None
+    if isinstance(value, int):
+        age = value
+    elif isinstance(value, float) and value.is_integer():
+        age = int(value)
+    elif isinstance(value, str) and re.fullmatch(r"\s*\d+\s*", value):
+        age = int(value.strip())
+    else:
+        return None
+    return age if 1 <= age <= 120 else None
+
+
+# The adaptive queue can contain multiple confirmed symptom branches. Keep a
+# generous deterministic ceiling so 3–4 concurrent symptoms can complete,
+# while still bounding malformed or unexpectedly repetitive flows.
+MAX_QUESTIONS = 40
 
 
 PRODUCT_ELIGIBILITY = {
@@ -1068,10 +1088,7 @@ class ConversationManager:
             )
             self._set(data, "abdominal_pain", v)
 
-        elif field in {"symptoms", "food_symptom"}:
-            data["other_symptoms"] = list(dict.fromkeys(
-                list(data.get("other_symptoms") or []) + [text.strip()[:120]]
-            ))
+        elif field == "symptoms":
             # Capture the main symptom categories named in the food-intolerance
             # question so its branch-specific screening can actually advance.
             n2 = normalize(text)
@@ -1342,6 +1359,12 @@ class ConversationManager:
                     discarded[k] = value
         if discarded:
             logger.info("[QUESTION][DISCARDED_UNRELATED_FACTS] field_count=%d", len(discarded))
+        if "age" in merged_data and merged_data.get("age") is not None:
+            validated_age = _validated_age_value(merged_data.get("age"))
+            if validated_age is None:
+                merged_data["age"] = _validated_age_value(s.age)
+            else:
+                merged_data["age"] = validated_age
         merged_state = SymptomState(**merged_data)
         merged_state.red_flags = derive_red_flags(merged_state)
         session.symptom_state = merged_state
@@ -1626,7 +1649,10 @@ class ConversationManager:
             state.duration = duration
             return True
         elif age is not None:
-            state.age = age
+            validated_age = _validated_age_value(age)
+            if validated_age is None:
+                return False
+            state.age = validated_age
             return True
         elif severity not in (None, "unknown"):
             state.severity = severity
@@ -2337,48 +2363,47 @@ class ConversationManager:
                     "age": "What is your age?",
                     "weight_loss": "Have you lost any significant weight?",
                     "weight_loss_duration": "Have you lost any significant weight?",
-                    "mucus": "Have you noticed mucus in your stool?",
-                    "fever": "Have you had a fever?",
-                    "vomiting": "Have you had vomiting?",
-                    "abdominal_distension": "Have you had severe abdominal swelling?",
-                    "night_time_symptoms": "Do your symptoms wake you at night?",
-                    "difficulty_swallowing": "Do you have difficulty or pain swallowing?",
-                    "persistent_vomiting": "Have you had persistent vomiting?",
-                    "vomiting_blood": "Have you vomited blood?",
-                    "recent_worsening": "Has the pain been getting worse recently?",
-                    "bloating": "Are you experiencing abdominal bloating?",
-                    "abdominal_pain": "Are you experiencing abdominal pain?",
-                    "sharp_pain_during_stool": "Is there sharp or tearing pain during or just after a bowel movement?",
-                    "pain_bowel_relation": "Does the pain change after a bowel movement?",
-                    "trigger_food": "Which food or drink seems to trigger it?",
-                    "constipation_symptom": "Are you experiencing constipation?",
-                    "diarrhea_symptom": "Are you experiencing diarrhea or loose motions?",
-                    "food_onset_timing": "How soon after eating does the symptom start?",
-                    "food_symptom": "What symptom do you notice after eating that food?",
                     "blood": "Have you noticed any bleeding or blood around/after a bowel movement?",
                     "blood_colour": "Is the blood bright/fresh red, or dark/black/tarry?",
                     "blood_location": "If it is bright red, is it on tissue, dripping into the toilet, or mixed into the stool?",
                     "anal_pain": "Is there sharp or tearing pain during or just after a bowel movement?",
-                    "hard_stools": "Are you experiencing hard stools or lumpy stools?",
-                    "straining": "Do you need to strain to pass stool?",
-                    "incomplete_evacuation": "Do you often feel that your bowel has not completely emptied after passing stool?",
                     "lump": "Is there a lump or something protruding from the anus?",
-                    "stool_straining": "Are your stools hard or lumpy, and do you need to strain to pass them?",
-                    "constipation": "Do you have hard stools or strain when passing stool?",
+                    "stool_straining": "Are your stools hard or lumpy?",
+                    "constipation": "Are your stools hard or lumpy?",
+                    "hard_stools": "Are your stools hard or lumpy?",
+                    "straining": "Do you need to strain to pass stool?",
+                    "incomplete_evacuation": "After passing stool, do you often feel that your bowel has not completely emptied?",
+                    "abdominal_pain_screen": "Do you have abdominal pain or cramps?",
+                    "pain_bowel_relation": "Does the pain change after a bowel movement?",
+                    "anal_discomfort_screen": "Do you have anal pain or discomfort?",
+                    "sharp_pain_during_stool": "Do you have sharp or tearing pain during or just after a bowel movement?",
+                    "mucus": "Have you noticed mucus in your stool?",
+                    "night_time_symptoms": "Do your symptoms wake you at night?",
+                    "vomiting": "Have you had vomiting?",
+                    "fever": "Have you had a fever?",
+                    "abdominal_distension": "Do you have severe abdominal swelling?",
+                    "difficulty_swallowing": "Do you have difficulty or pain when swallowing?",
+                    "persistent_vomiting": "Have you had persistent or repeated vomiting?",
+                    "vomiting_blood": "Have you vomited blood?",
+                    "gas_screen": "Do you experience excessive gas or flatulence?",
+                    "bloating_screen": "Do you experience abdominal bloating?",
+                    "constipation_screen": "Do you experience constipation?",
+                    "diarrhea_screen": "Do you experience loose motions or diarrhea?",
                     "bowel_frequency": "About how many bowel movements do you usually have in a week? A rough estimate is fine.",
                     "daily_frequency": "About how many loose or watery stools do you have on a typical day? A number or rough range is fine.",
-                    "blood_mucus": "Do you have blood or mucus in the stool?",
-                    "vomiting_fever": "Any vomiting or fever?",
-                    "vomiting_fever_swelling": "Any repeated vomiting, fever, or severe abdominal swelling?",
+                    "blood_mucus": "Have you noticed blood in your stool?",
+                    "vomiting_fever": "Have you had vomiting?",
+                    "vomiting_fever_swelling": "Have you had repeated vomiting?",
                     "reflux": "Do you get a sour taste or acid/food coming back up?",
                     "timing": "How soon after eating does it start?",
                     "triggers": "Do tea/coffee, spicy, oily, or particular foods trigger it?",
                     "food_trigger": "Is it repeatedly linked to dairy, wheat, beans/lentils, or another particular food?",
                     "food_relation": "Is it triggered or worsened by meals?",
                     "trigger": "Which food triggers it, and does it happen repeatedly after the same food?",
-                    "pain_relation": "Is the pain more related to meals or to bowel movements?",
-                    "bowel_pattern": "Do you mainly have constipation, diarrhea, or both at different times?",
-                    "symptoms": "What happens after the food: bloating, gas, diarrhea, cramps, constipation, or something else?",
+                    "pain_relation": "Is the pain related to meals or eating?",
+                    "bowel_pattern": "Do you experience constipation?",
+                    "symptoms": "What is the main symptom you notice after eating that food?",
+                    "stool_form": "[[BRISTOL_STOOL_CHART]]\nWhich Bristol Stool Scale type best matches your stool? Reply with a number from 1 to 7, or say I don't know.",
                 }
                 missing_component = next_question_component(pending_question, session.symptom_state)
                 if missing_component:
@@ -2531,9 +2556,17 @@ class ConversationManager:
                 name, question_text = pending
                 if name not in session.symptom_state.asked_fields:
                     session.symptom_state.asked_fields.append(name)
+                # Bind a compound question's first prompt to its exact state
+                # component before accepting a bare yes/no. This prevents the
+                # first answer from being treated as ambiguous and looping.
+                first_component = next_question_component(name, session.symptom_state)
+                if first_component:
+                    session.active_question_component, question_text = first_component
+                else:
+                    session.active_question_component = None
                 session.last_question = name
                 session.questions_asked += 1
-                logger.info("[QUESTION] next=%s safety_flag_count=%d", name, len(session.symptom_state.red_flags or []))
+                logger.info("[QUESTION] next=%s component=%s safety_flag_count=%d", name, session.active_question_component, len(session.symptom_state.red_flags or []))
                 return {"status": "ASK", "message": _with_diarrhea_guidance(question_text, session.symptom_state, session=session), "recommendations": [], "safety": safety}
 
         if self._can_assess(session, screening):
@@ -2571,9 +2604,14 @@ class ConversationManager:
                 name, question_text = q
                 if name not in session.symptom_state.asked_fields:
                     session.symptom_state.asked_fields.append(name)
+                first_component = next_question_component(name, session.symptom_state)
+                if first_component:
+                    session.active_question_component, question_text = first_component
+                else:
+                    session.active_question_component = None
                 session.last_question = name
                 session.questions_asked += 1
-                logger.info("[QUESTION] next=%s safety_flag_count=%d", name, len(session.symptom_state.red_flags or []))
+                logger.info("[QUESTION] next=%s component=%s safety_flag_count=%d", name, session.active_question_component, len(session.symptom_state.red_flags or []))
                 return {"status": "ASK", "message": _with_diarrhea_guidance(question_text, session.symptom_state, session=session), "recommendations": [], "safety": safety}
 
         safety_unknowns = set(
@@ -2581,7 +2619,7 @@ class ConversationManager:
             + (session.symptom_state.refused_fields or [])
         ) & {
             "blood", "bleeding", "blood_present", "blood_colour", "blood_location",
-            "blood_mucus", "mucus", "anal_pain", "sharp_pain_during_stool", "lump",
+            "blood_mucus", "mucus", "anal_pain", "anal_discomfort_screen", "sharp_pain_during_stool", "lump",
             "lump_or_prolapse", "night_weight_fever", "night_time_symptoms", "weight_loss",
             "vomiting_fever", "vomiting_fever_swelling", "swallowing", "weight_swallow",
             "fever", "vomiting", "persistent_vomiting", "vomiting_blood",

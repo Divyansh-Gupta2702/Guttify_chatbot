@@ -188,7 +188,7 @@ def test_english_symptom_description_starts_assessment(monkeypatch):
 def test_english_confirmation_advances_and_diagnosis_unchanged(monkeypatch):
     _no_persistence(monkeypatch)
     _prepare_session(gutgpt_app, "e6")
-    for message in ENGLISH_FLOW_PREFIX + ["yes", "coffee", "no", "no", "no"]:
+    for message in ENGLISH_FLOW_PREFIX + ["yes", "at night", "coffee", "no"]:
         resp = _chat(gutgpt_app, "e6", message)
     assert resp.status == "SUMMARY_REVIEW"
 

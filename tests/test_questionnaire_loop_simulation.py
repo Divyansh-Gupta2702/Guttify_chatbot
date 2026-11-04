@@ -74,8 +74,7 @@ def test_explicit_blood_correction_updates_state_and_activates_bleeding_followup
     session_id = "loop-audit-corrected-bleeding"
     for response in (
         "I am constipated", "2 weeks", "30", "2 times a week",
-        "no hard stools and no straining", "no incomplete",
-        "no bloating and no abdominal pain", "no blood",
+        "4", "no", "no", "no", "no blood", "no anal discomfort",
     ):
         manager.handle_message(session_id, response)
 
@@ -85,8 +84,8 @@ def test_explicit_blood_correction_updates_state_and_activates_bleeding_followup
 
     manager.handle_message(session_id, "Actually, I noticed blood")
     assert session.symptom_state.blood_present is True
-    # The active anal-pain question is still required; once answered, the
-    # conditional bleeding questions must activate in the same assessment.
+    # The active pain question is completed independently; the bleeding
+    # discriminator then takes priority in the same assessment.
     manager.handle_message(session_id, "no sharp pain")
     assert manager.sessions[session_id].last_question == "blood_colour"
 

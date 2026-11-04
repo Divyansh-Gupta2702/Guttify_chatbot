@@ -1,73 +1,9 @@
 # GutGPT v18.4 Questionnaire Loop Audit
 
-## Dependency map and this revision's pre-edit findings (2026-11-04)
-
-### Data and rendering path
-
-```text
-gutgpt-widget.js customer intake (/api/customer)
-  -> PostgreSQL customers.age
-  -> /api/customer/restore binds authenticated customer and seeds in-memory SymptomState.age
-  -> /api/customer/resume -> _restore_assessment_checkpoint(customer_id, session_id)
-  -> assessment_state.checkpoint JSONB -> SessionState / SymptomState
-  -> ConversationManager.handle_message
-     -> extract_natural_facts (NLU extraction)
-     -> resolve_against_active_question (question_schema.py)
-     -> _apply_answer / state merge (guttify_agent.py + intent_parser.py)
-     -> next_question (symptom_questionnaire.py; question ownership in question_schema.py)
-     -> evaluate_screening (clinical_rule_engine.py)
-     -> check_safety / red-flag gates (safety_checker.py)
-     -> PRODUCT_ELIGIBILITY + recommendation_engine.py / products.json
-  -> /api/chat result text (including [[BRISTOL_STOOL_CHART]] display marker)
-  -> assessment_messages.content + assessment_state.checkpoint in PostgreSQL
-  -> widget addMessage -> renderMarkdown -> Bristol image and type buttons in Shadow DOM
-```
-
-`question_schema.py` maps stable question IDs to owned `SymptomState` fields and
-answer kinds; `symptom_questionnaire.py` chooses one active question based on
-primary symptom, known state and safety priority. `clinical_rule_engine.py`
-contains the deterministic 27 outcome patterns. `safety_checker.py` gates the
-same screening result before `PRODUCT_ELIGIBILITY` and recommendation matching.
-Customer identity/profile fields live in PostgreSQL `customers`; assessment
-transcripts and checkpoints live in `assessment_messages` and `assessment_state`.
-
-### Confirmed findings before implementation
-
-- **Combined questions:** `next_question()` still emits compound prompts in
-  constipation, diarrhea, stomach-pain, indigestion, food-intolerance, and
-  fallback branches. The corresponding legacy IDs in `QUESTION_SCHEMA` own
-  multiple clinical fields. Although the contextual resolver can extract
-  components, an incomplete answer keeps the entire composite active and
-  requires clarification. This is the source of ambiguity/repetition and does
-  not satisfy one-independent-field-per-question.
-- **Age restoration:** registration and `/api/customer/restore` seed age from
-  the customer profile, but `_restore_assessment_checkpoint()` reconstructs the
-  assessment checkpoint without reapplying the authoritative `customers.age`.
-  A checkpoint with a null/stale age can therefore ask for age again after
-  resume. The checkpoint writer serializes the current `SymptomState`, so a
-  corrected age can also be present in assessment state without updating the
-  authoritative customer profile.
-- **Bristol rendering:** the stool question carries a marker in message text;
-  the widget replaces it with an embedded data URI. The embedded bytes start
-  with JPEG magic (`FF D8`) but are declared as `data:image/png`, while the
-  repository asset is a separate PNG. The marker-to-image behavior is therefore
-  coupled to a large mislabeled inline image, with no asset endpoint or image
-  load fallback. Resume replays assistant message content, so it can restore the
-  marker, but there is no server-owned render metadata or verified asset URL.
-- **Question state / shared questions:** `asked_fields` is intentionally only a
-  history; `question_has_progressed()` and `last_question` control completion.
-  Composite ownership currently makes shared concepts hard to reuse atomically.
-  Existing safety unknown/refusal tracking and bleeding-priority routing must
-  remain in force when questions are split.
-
-These findings were recorded before code changes. This revision will retain
-legacy question IDs and resolver mappings for old checkpoints, and add atomic
-IDs for the newly separated prompts; no table or record deletion is required.
-
 ## Scope and inventory
 
 - Source of truth: questionnaire selectors, schema ownership/completion, deterministic NLU resolver, state merge, rule engine, safety checker, checkpoint restore/save, and tests in this checkout.
-- Pre-edit baseline: 38 question IDs were active in `symptom_questionnaire.py`; 18 active IDs had compound/multi-field semantics. The ownership table below documents that baseline; the revised active selectors now emit atomic IDs for those separated prompts, while retaining legacy schema IDs for stored checkpoints.
+- 38 question IDs are active in `symptom_questionnaire.py`; the schema owns 45 IDs, including legacy and non-question entries. 18 active IDs have compound/multi-field semantics.
 - The rule engine returns 27 distinct clinical outcome patterns. Outcomes share questionnaire branches; they are not separate question trees.
 - Active state persists through `SessionState` dataclass serialization into the existing JSONB PostgreSQL checkpoint. New resolver metadata uses existing state fields; no DB migration was added.
 
@@ -143,16 +79,6 @@ IDs for the newly separated prompts; no table or record deletion is required.
 - A stale checkpoint assessment ID owned by another customer could pass through `ON CONFLICT DO NOTHING`, leaving the current customer's checkpoint aimed at an ID it did not own. The writer now checks ownership and allocates a fresh ID on a collision.
 - Repeated identical unrelated answers no longer advance by a fixed clarification count. Required questions remain pending and clarification is targeted to the missing component.
 
-## Implementation and verification (2026-11-04)
-
-- Split the active compound prompts into individually owned questions, including stool hardness vs straining, blood vs mucus, pain vs pain/bowel relation, and separate fever, vomiting, distension, swallowing, and night-symptom checks. Legacy IDs remain mapped for old checkpoint compatibility. The question ceiling is now 30 to allow the additional individual follow-ups.
-- Restored assessment age is overlaid from `customers.age` after checkpoint reconstruction, with the profile value validated to 1–120. A valid user correction updates `customers.age` and `updated_at`; on a failed write for a bound customer, the in-memory age is reverted and the chat returns HTTP 503.
-- Added `/bristol-stool-chart.png` serving the existing repository PNG as `image/png`. The widget loads that hosted asset, falls back to the embedded JPEG with the correct MIME type, and hides the image if both loads fail.
-- Kept the deterministic rule engine, 27 outcome patterns, safety gates, recommendations, authentication, and PostgreSQL persistence model. No schema migration or production deployment was performed.
-- Full local test suite: **588 passed, 8 skipped, 28 subtests passed**. The skipped tests require a disposable PostgreSQL/Groq integration environment (`GROQ_TEST_DATABASE_URL`); no live PostgreSQL integration was run.
-- The Bristol route function and repository PNG signature are covered locally, and widget source fallback behavior is covered. A running HTTP server, production HTTPS origin, Shopify storefront rendering, and customer restore against live PostgreSQL were not available for end-to-end verification.
-- Deployment/rollback: deploy the reviewed commit to the existing API service and restart that service using its configured systemd unit; the repository does not identify the production host or unit name, so an exact host-specific restart command cannot be substantiated here. No database migration is required. For rollback, restore the prior application revision and restart the same unit; the previous widget can continue using its embedded chart. Do not deploy until the production service/unit and normal release procedure are confirmed.
-
 ### Potential risks audited and retained as gates
 
 - Unknown/refused red-flag answers are tracked separately from clinical booleans and block diagnosis/product completion pending clinical review.
@@ -196,3 +122,46 @@ IDs for the newly separated prompts; no table or record deletion is required.
 - The full suite is run with `python -m pytest -q --basetemp <workspace-temp>`.
 - Eight PostgreSQL/Groq integration cases require `GROQ_TEST_DATABASE_URL` to point to a disposable PostgreSQL database; they are skipped when that environment variable is absent. In this run they were not exercised against a real PostgreSQL service.
 - Several of the 27 rule-engine outcomes intentionally share questionnaire branches; the end-to-end simulator covers each of the 10 branch trees, and the matrix covers the individual outcome rules.
+
+---
+
+## v18.4.2 controlled revision — 2026-11-04
+
+### Updated dependency map
+
+```text
+gutgpt-widget.js
+  ├─ POST /api/chat
+  │    └─ ChatResponse.question_metadata
+  │         └─ display_asset=bristol_stool_chart only for question_id=stool_form
+  ├─ POST /api/customer/resume
+  │    └─ app._restore_assessment_checkpoint()
+  │         ├─ PostgreSQL customers.age -> validated profile age
+  │         ├─ assessment_state checkpoint -> restored SessionState
+  │         ├─ profile-age reconciliation
+  │         └─ symptom_questionnaire.next_question()
+  │              └─ pending_question {question_id, component_id, text, display_asset}
+  └─ renderMarkdown()
+       └─ [[BRISTOL_STOOL_CHART]] -> API-origin PNG asset route + type buttons
+
+symptom_questionnaire.next_question()
+  ├─ duration / conditional weight-loss / profile-age gates
+  ├─ safety-prioritized bleeding branch
+  ├─ primary symptom branch
+  ├─ every explicitly reported secondary symptom branch
+  └─ one-field questions -> question_schema.QUESTION_SCHEMA
+       └─ existing state fields / resolver / completion semantics
+            └─ deterministic clinical_rule_engine (unchanged)
+                 └─ safety_checker and recommendation_engine (unchanged)
+```
+
+### New findings addressed
+
+- A fresh assessment created by `/api/session/new-assessment` uses a new `SessionState`. Before this revision, the endpoint reset the session but did not copy the registered customer's age into the new state. It now validates and carries the PostgreSQL profile age before writing the initial checkpoint.
+- The questionnaire previously selected only `primary_symptom` for follow-up sequencing. It now builds a stable queue from the primary and explicitly reported secondary symptoms, with shared state fields preventing redundant follow-ups.
+- New questions use independent question IDs and one-field ownership. Legacy composite IDs remain in `question_schema.py` for saved assessment checkpoints and existing contextual resolver compatibility.
+- Bristol Stool Chart metadata is explicit in both chat and resume responses. The widget still supports the existing marker, but metadata now provides an authoritative question-ID trigger.
+
+### Release caveats
+
+This revision is a reviewable code package, not a production deployment. The test suite has intentionally not been run yet. Do not replace the live application until the next test phase reports actual pass/fail/skip counts and the Shopify widget is verified in a browser against staging HTTPS.
