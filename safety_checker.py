@@ -61,10 +61,6 @@ RED_FLAG_PATTERNS = [
         "diarrhea for more than 2 days", "diarrhoea for more than 2 days",
         "diarrhea for over 2 days", "diarrhoea for over 2 days",
     ]),
-    ("unexplained significant weight loss", [
-        "unexplained weight loss", "losing weight without trying", "weight loss without trying",
-        "significant weight loss", "lost a lot of weight without trying",
-    ]),
     ("persistent fever", ["persistent fever", "fever for days", "high fever for days"]),
     ("difficulty swallowing", ["difficulty swallowing", "trouble swallowing", "painful swallowing"]),
     ("unable to pass stool and gas", [
@@ -212,7 +208,13 @@ def red_flag_evidence(text, reason):
 
 def derive_red_flags(state):
     """Promote structured questionnaire answers into the same safety gate."""
-    flags = list(state.red_flags or [])
+    # Weight loss is still recorded and assessed as a clinical detail, but it
+    # must not by itself trigger the urgent red-flag stop path. Filter the old
+    # reason too, so a session carrying a previously derived flag can resume.
+    flags = [
+        flag for flag in (state.red_flags or [])
+        if flag != "unexplained significant weight loss"
+    ]
     if state.vomiting is True or getattr(state, "persistent_vomiting", False) is True:
         flags.append("persistent vomiting")
     if getattr(state, "vomiting_blood", False) is True:
@@ -221,8 +223,6 @@ def derive_red_flags(state):
         flags.append("difficulty swallowing")
     if state.abdominal_distension is True:
         flags.append("severe abdominal distension")
-    if state.weight_loss is True:
-        flags.append("unexplained significant weight loss")
     if getattr(state, "blood_colour", None) == "black":
         flags.append("black/tarry stool")
     if getattr(state, "blood_present", None) is True and getattr(state, "recent_worsening", None) is True:
