@@ -59,9 +59,17 @@ def test_piles_with_bright_red_blood_and_lump_reaches_piles_pure():
 def test_fissure_pattern_still_routes_to_piloease():
     cm = ConversationManager()
     sid = "fissure"
-    result = None
-    for message in ["I have anal fissure", "2 weeks", "23", "bright red blood", "on tissue", "sharp tearing pain during stool", "no lump", "no hard stools and no straining"]:
-        result = cm.handle_message(sid, message)
+    result = cm.handle_message(sid, "I have anal fissure")
+    answers = {
+        "duration": "2 weeks", "age": "23", "blood": "yes",
+        "blood_colour": "bright red", "blood_location": "on tissue",
+        "anal_discomfort_screen": "yes", "sharp_pain_during_stool": "yes",
+        "lump": "no", "straining": "no",
+    }
+    for _ in range(20):
+        if result.get("status") != "ASK":
+            break
+        result = cm.handle_message(sid, answers[cm.sessions[sid].last_question])
     if result["status"] == "SUMMARY_REVIEW":
         result = cm.handle_message(sid, "yes")
     assert result["screening"]["pattern"] == "Possible anal fissure pattern"

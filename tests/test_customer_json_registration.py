@@ -159,7 +159,10 @@ def test_guest_jwt_tampering_and_wrong_audience_are_rejected(tmp_path, monkeypat
             contact="919876543212", city="Delhi", consent=True,
         ))
         token = registered["guest_token"]
-        tampered = token[:-1] + ("a" if token[-1] != "a" else "b")
+        token_parts = token.split(".")
+        signature = token_parts[2]
+        token_parts[2] = ("a" if signature[0] != "a" else "b") + signature[1:]
+        tampered = ".".join(token_parts)
         with pytest.raises(HTTPException) as error:
             gutgpt_app.restore_customer(gutgpt_app.CustomerRestoreRequest(session_id=make_session(), guest_token=tampered))
         assert error.value.status_code == 401

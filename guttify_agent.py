@@ -1220,6 +1220,11 @@ class ConversationManager:
         # belong to another field are discarded.
         merged = merge_state(SymptomState(**data), text, [])
         merged_data = merged.to_dict()
+        volunteered_severity = contextual.get("severity")
+        if volunteered_severity in {"mild", "moderate", "severe"} and re.search(
+            r"\b(?:mild|moderate|severe)\b", n,
+        ):
+            merged_data["severity"] = volunteered_severity
 
         # Re-assert resolver-owned values after generic merge_state as well;
         # legacy phrase matching must not overturn a validated contextual fact.
@@ -1257,7 +1262,7 @@ class ConversationManager:
             patterns = {
                 "duration": r"\b(?:for|since|started|began|been having|lasting|lasted|ago)\b.{0,80}\b(?:\d+(?:\.\d+)?|one|two|three|four|five|six|seven|eight|nine|ten)\s*(?:hours?|days?|weeks?|months?|years?)\b",
                 "age": r"\b(?:i am|i'm|im|my age is|aged)\s*\d{1,3}\b",
-                "severity": r"\b(?:pain|severity)\s*(?:is|of|around|about)?\s*(?:10|[0-9])(?:\s*/\s*10)?\b",
+                "severity": r"\b(?:mild|moderate|severe|very\s+bad|extreme|worst)\b|\b(?:pain|severity)\s*(?:is|of|around|about)?\s*(?:10|[0-9])(?:\s*/\s*10)?\b",
                 "weight_loss": r"\b(?:lost|losing|loss of|gained|put on)\s+(?:a little\s+|significant\s+|any\s+)?weight\b",
                 "blood_present": r"\b(?:blood|bleeding|blood in stool|rectal bleeding)\b",
                 "blood_colour": r"\b(?:bright red|fresh red|dark|black|tarry)\b",
@@ -1287,6 +1292,7 @@ class ConversationManager:
                 "bowel_frequency_per_week": r"\b\d+(?:\.\d+)?\s*(?:bowel movements?|times?|motions?)\s*(?:per|a)\s*week\b",
                 "bowel_frequency_per_day": r"\b\d+(?:\.\d+)?\s*(?:bowel movements?|times?|stools?|motions?)\s*(?:per|a)\s*day\b",
                 "stool_form": r"\b(?:bristol|stool (?:type|form))\s*[1-7]\b",
+                "severity": r"\b(?:mild|moderate|severe|very\s+bad|extreme|worst)\b",
                 "meal_timing": r"\b(?:after meals?|after eating|right after eating|immediately after eating|\d+(?:\.\d+)?\s*(?:minutes?|hours?) later|when i lie down|at night|not related to meals?)\b",
                 "symptom_onset_after_food": r"\b(?:right after|immediately after|\d+(?:\.\d+)?\s*(?:minutes?|hours?)\s+(?:later|after))\b",
                 "timing_relation": r"\b(?:after meals?|after eating|when i lie down|at night|not related to meals?)\b",
@@ -1338,6 +1344,11 @@ class ConversationManager:
                 x for x in (merged_data.get("secondary_symptoms") or [])
                 if x != "hard stools"
             ]
+        if field == "anal_discomfort_screen" and merged_data.get("anal_pain") is False:
+            # A negative answer to the broad anal-pain screen also rules out
+            # its sharp-pain subtype, avoiding a redundant discriminator while
+            # satisfying the rule engine's explicit negative requirement.
+            merged_data["sharp_pain_during_stool"] = False
         # Final ownership guard: explicit resolver values win over every
         # compatibility parser, including negation-sensitive legacy rules.
         if question_resolution.get("status") == "answered":
@@ -2415,6 +2426,13 @@ class ConversationManager:
                         question_texts.get(pending_question, "Could you answer the question above in a little more detail?")
                     )
                 normalized_reply = normalize(user_message)
+                volunteered_severity = nlu_facts.get("severity") if isinstance(nlu_facts, dict) else None
+                volunteered_symptoms = nlu_facts.get("symptoms") if isinstance(nlu_facts, dict) else None
+                acknowledged_detail = None
+                if volunteered_severity in {"mild", "moderate", "severe"} and volunteered_symptoms:
+                    labels = ", ".join(str(item) for item in volunteered_symptoms if isinstance(item, str))
+                    if labels:
+                        acknowledged_detail = f"I've noted {volunteered_severity} {labels}. "
                 repeated = (
                     session.clarification_question == pending_question
                     and session.clarification_response == normalized_reply
@@ -2429,8 +2447,9 @@ class ConversationManager:
                 )
                 logger.info("[NLU] unanswered_question field=%s; preserving context", pending_question)
                 clarification_intro = (
-                    "I still need an answer to that specific part. "
-                    if repeated else "I want to make sure I understood that. "
+                    acknowledged_detail
+                    or ("I still need an answer to that specific part. "
+                        if repeated else "I want to make sure I understood that. ")
                 )
                 return {
                     "status": "ASK",

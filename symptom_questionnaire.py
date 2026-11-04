@@ -90,12 +90,11 @@ def next_question(state):
         if branch == "bleeding":
             return [
                 q("blood", "Have you noticed any blood in or around your stool?", state.blood_present is None),
-                q("blood_colour", "Is the blood bright/fresh red, or dark/black/tarry?", state.blood_present is True and state.blood_colour is None),
-                q("blood_location", "If it is bright red, where do you notice it?", state.blood_present is True and state.blood_colour == "bright_red" and state.blood_location is None),
+                q("blood_colour", "Is the blood bright/fresh red, or dark/black/tarry?", state.blood_present is True and not question_has_answer(state, "blood_colour")),
+                q("blood_location", "If it is bright red, where do you notice it?", state.blood_present is True and state.blood_colour == "bright_red" and not question_has_answer(state, "blood_location")),
                 q("anal_discomfort_screen", "Do you have anal pain or discomfort?", state.anal_pain is None),
-                q("sharp_pain_during_stool", "Do you have sharp or tearing pain during or just after a bowel movement?", state.sharp_pain_during_stool is None),
+                q("sharp_pain_during_stool", "Do you have sharp or tearing pain during or just after a bowel movement?", state.anal_pain is not False and state.sharp_pain_during_stool is None),
                 q("lump", "Is there a lump or something protruding from the anus?", state.lump_or_prolapse is None),
-                q("stool_form", "What Bristol Stool Scale type best matches your stool?", not question_has_answer(state, "stool_form")),
                 q("straining", "Do you need to strain to pass stool?", state.straining is None),
             ]
         if branch == "constipation":
@@ -110,7 +109,7 @@ def next_question(state):
                 q("pain_bowel_relation", "Does the pain change after a bowel movement?", state.abdominal_pain is True and state.pain_related_to_bowel_movement is None),
                 q("blood", "Have you noticed any blood in or around the stool?", state.blood_present is None),
                 q("anal_discomfort_screen", "Do you have anal pain or discomfort?", state.anal_pain is None),
-                q("sharp_pain_during_stool", "Do you have severe or sharp pain during or just after a bowel movement?", state.sharp_pain_during_stool is None),
+                q("sharp_pain_during_stool", "Do you have severe or sharp pain during or just after a bowel movement?", state.anal_pain is not False and state.sharp_pain_during_stool is None),
                 q("vomiting", "Have you had repeated vomiting?", state.vomiting is None),
                 q("fever", "Have you had a fever?", state.fever is None),
                 q("abdominal_distension", "Do you have severe abdominal swelling?", state.abdominal_distension is None),
@@ -145,12 +144,11 @@ def next_question(state):
             return [
                 q("gas_screen", "Do you also experience excessive gas or flatulence?", state.gas is None and not gas_reported),
                 q("bloating_screen", "Do you also experience abdominal bloating or a swollen feeling?", state.bloating is None and not bloating_reported),
-                q("constipation_screen", "Do you also experience constipation?", state.constipation_explicit is None and not constipation_reported),
-                q("diarrhea_screen", "Do you also experience loose motions or diarrhea?", state.diarrhea_explicit is None and not diarrhea_reported),
+                q("constipation_screen", "Do you also experience constipation?", state.constipation_explicit is None and not constipation_reported and not diarrhea_reported),
+                q("diarrhea_screen", "Do you also experience loose motions or diarrhea?", state.diarrhea_explicit is None and not diarrhea_reported and not constipation_reported),
                 q("food_trigger", "Is the symptom repeatedly linked to a particular food?", state.food_trigger is None and state.food_related is not False),
                 q("abdominal_pain_screen", "Do you have recurring abdominal pain?", state.abdominal_pain is None),
                 q("pain_bowel_relation", "Does the pain change after a bowel movement?", state.abdominal_pain is True and state.pain_related_to_bowel_movement is None),
-                q("stool_form", "What is your usual Bristol stool type, if you know it?", not question_has_answer(state, "stool_form")),
             ]
         if branch == "stomach pain":
             return [
@@ -158,8 +156,8 @@ def next_question(state):
                 q("severity", "How severe is the pain from 0–10?", state.severity == "unknown"),
                 q("food_relation", "Is the pain related to meals or eating?", state.food_related is None),
                 q("pain_bowel_relation", "Does the pain change after a bowel movement?", state.abdominal_pain is True and state.pain_related_to_bowel_movement is None),
-                q("constipation_screen", "Are you also experiencing constipation?", state.constipation_explicit is None and not constipation_reported),
-                q("diarrhea_screen", "Are you also experiencing loose motions or diarrhea?", state.diarrhea_explicit is None and not diarrhea_reported),
+                q("constipation_screen", "Are you also experiencing constipation?", state.constipation_explicit is None and not constipation_reported and not diarrhea_reported),
+                q("diarrhea_screen", "Are you also experiencing loose motions or diarrhea?", state.diarrhea_explicit is None and not diarrhea_reported and not constipation_reported),
                 q("blood", "Have you noticed any blood in your stool?", state.blood_present is None),
                 q("vomiting", "Have you had vomiting?", state.vomiting is None),
                 q("fever", "Have you had a fever?", state.fever is None),
@@ -181,8 +179,8 @@ def next_question(state):
                 q("timing", "How soon after eating does it start?", state.timing_relation is None),
                 q("bloating_screen", "Do you experience abdominal bloating after eating that food?", state.bloating is None),
                 q("gas_screen", "Do you experience excessive gas after eating that food?", state.gas is None),
-                q("diarrhea_screen", "Do you experience loose motions or diarrhea after eating that food?", state.diarrhea_explicit is None and state.diarrhea is None and not diarrhea_reported),
-                q("constipation_screen", "Do you experience constipation after eating that food?", state.constipation_explicit is None and not constipation_reported),
+                q("diarrhea_screen", "Do you experience loose motions or diarrhea after eating that food?", state.diarrhea_explicit is None and state.diarrhea is None and not diarrhea_reported and not constipation_reported),
+                q("constipation_screen", "Do you experience constipation after eating that food?", state.constipation_explicit is None and not constipation_reported and not diarrhea_reported),
                 q("abdominal_pain_screen", "Do you experience abdominal pain or cramps after eating that food?", state.abdominal_pain is None),
                 q("pain_bowel_relation", "Does the pain change after a bowel movement?", state.abdominal_pain is True and state.pain_related_to_bowel_movement is None),
             ]
@@ -190,20 +188,18 @@ def next_question(state):
             return [
                 q("blood", "Have you noticed any bleeding or blood around/after a bowel movement?", state.blood_present is None),
                 q("anal_discomfort_screen", "Do you have anal pain or discomfort?", state.anal_pain is None),
-                q("sharp_pain_during_stool", "Is there sharp or tearing pain during or just after a bowel movement?", state.sharp_pain_during_stool is None),
+                q("sharp_pain_during_stool", "Is there sharp or tearing pain during or just after a bowel movement?", state.anal_pain is not False and state.sharp_pain_during_stool is None),
                 q("lump", "Is there a lump or something protruding from the anus?", state.lump_or_prolapse is None),
-                q("stool_form", "What Bristol Stool Scale type best matches your stool?", not question_has_answer(state, "stool_form")),
                 q("straining", "Do you need to strain to pass stool?", state.straining is None),
             ]
         if branch in ("piles", "anal fissures"):
             return [
                 q("blood", "Have you noticed any bleeding or blood around/after a bowel movement?", state.blood_present is None),
-                q("blood_colour", "Is the blood bright/fresh red, or dark/black/tarry?", state.blood_present is True and state.blood_colour is None),
-                q("blood_location", "If it is bright red, where do you notice it?", state.blood_present is True and state.blood_colour == "bright_red" and state.blood_location is None),
+                q("blood_colour", "Is the blood bright/fresh red, or dark/black/tarry?", state.blood_present is True and not question_has_answer(state, "blood_colour")),
+                q("blood_location", "If it is bright red, where do you notice it?", state.blood_present is True and state.blood_colour == "bright_red" and not question_has_answer(state, "blood_location")),
                 q("anal_discomfort_screen", "Do you have anal pain or discomfort?", state.anal_pain is None),
-                q("sharp_pain_during_stool", "Is there sharp or tearing pain during or just after a bowel movement?", state.sharp_pain_during_stool is None),
+                q("sharp_pain_during_stool", "Is there sharp or tearing pain during or just after a bowel movement?", state.anal_pain is not False and state.sharp_pain_during_stool is None),
                 q("lump", "Is there a lump or something protruding from the anus?", state.lump_or_prolapse is None),
-                q("stool_form", "What Bristol Stool Scale type best matches your stool?", not question_has_answer(state, "stool_form")),
                 q("straining", "Do you need to strain to pass stool?", state.straining is None),
             ]
         return [

@@ -232,7 +232,7 @@ def _component_boolean(message: str, pattern: str) -> bool | None:
     """Return an explicitly mentioned component value, without inferring absence."""
     negative = re.search(
         r"\b(?:no|not|never|without|don't|dont|do not|doesn't|does not|"
-        r"isn't|is not|haven't|have not|hasn't|has not)\b.{0,45}" + pattern,
+        r"isn't|is not|aren't|are not|haven't|have not|hasn't|has not)\b.{0,45}(?:" + pattern + r")",
         message,
     )
     if negative:
@@ -386,6 +386,32 @@ _BARE_BOOL = {
     "food_relation": {"food_related"},
     "anal_pain": {"anal_pain", "sharp_pain_during_stool"},
     "pain": {"abdominal_pain", "pain_related_to_bowel_movement"},
+}
+
+# Natural language answers for one-field boolean questions. The active prompt
+# supplies the context, so a named positive or negative concept is sufficient
+# even when the user doesn't say a bare "yes" or "no".
+_SINGLE_BOOLEAN_PATTERNS = {
+    "hard_stools": r"\b(?:hard|lumpy|firm)\b|\b(?:stools?|poop|poo)\s+(?:are|is)\s+(?:normal|soft)\b|\b(?:normal|soft)\s+(?:stools?|poop|poo)\b",
+    "straining": r"\b(?:strain(?:ing)?|push(?:ing)? hard)\b",
+    "incomplete_evacuation": r"\b(?:incomplete evacuation|not completely empty|not fully empty|still feel like i need to go)\b",
+    "abdominal_pain_screen": r"\b(?:abdominal pain|stomach pain|belly pain|cramps?|stomach ache)\b",
+    "anal_discomfort_screen": r"\b(?:anal\s+)?(?:pain|discomfort|hurt|hurts|soreness|sharp pain|tearing pain)\b",
+    "sharp_pain_during_stool": r"\b(?:(?:sharp|tearing|cutting)\s+)+pain\b|\bpain\s+(?:during|after|when passing)\s+(?:a\s+)?(?:stool|poop|bowel movement)\b",
+    "bloating_screen": r"\b(?:bloating|bloated|bloat|swollen feeling)\b",
+    "gas_screen": r"\b(?:gas|gassy|flatulence|farting|passing gas)\b",
+    "constipation_screen": r"\b(?:constipat(?:ion|ed)|hard stools?|unable to pass stool)\b",
+    "diarrhea_screen": r"\b(?:diarrh(?:ea|oea)|loose stools?|loose motions?|watery stools?)\b",
+    "vomiting": r"\b(?:vomit(?:ing)?|throw(?:ing)? up)\b",
+    "fever": r"\bfever\b",
+    "abdominal_distension": r"\b(?:abdominal|stomach|belly)?\s*(?:swelling|swollen|distension|distention)\b",
+    "difficulty_swallowing": r"\b(?:difficulty|trouble|painful|pain) swallowing\b",
+    "persistent_vomiting": r"\b(?:persistent|repeated|repeatedly|can't stop|cannot stop) vomit(?:ing)?\b",
+    "vomiting_blood": r"\b(?:vomit(?:ing)? blood|throw(?:ing)? up blood|blood in (?:my )?vomit)\b",
+    "mucus": r"\b(?:mucus|mucous)\b",
+    "night_time_symptoms": r"\b(?:wake me|waking me|symptoms? at night|only at night|at night|during the night)\b",
+    "blood": r"\b(?:blood|bleeding|bloody)\b",
+    "lump": r"\b(?:lump|prolapse|protrusion|bulge|bump)\b",
 }
 # These are explicit multi-question safety checks. Bare "no" means none of
 # the listed red-flag concepts; bare "yes" is intentionally unresolved because
@@ -548,13 +574,30 @@ def resolve_against_active_question(
             "source": "deterministic",
         }
 
+    if question_id in _SINGLE_BOOLEAN_PATTERNS:
+        field_name = next(iter(spec.fields))
+        value = _component_boolean(n, _SINGLE_BOOLEAN_PATTERNS[question_id])
+        if value is not None:
+            return {
+                "status": "answered",
+                "values": {field_name: value},
+                "confidence": 0.99,
+                "source": "deterministic",
+            }
+
     if question_id == "upper_symptoms":
         if re.search(r"\b(?:none|no symptoms|none of those|nothing|not experiencing any)\b", n):
             return {"status": "answered", "values": {"upper_symptoms": "none reported"}, "confidence": 0.99, "source": "deterministic"}
         terms = [term for term, pattern in (
+            ("bloating", r"\b(?:bloating|bloated|bloat)\b"),
+            ("gas", r"\b(?:gas|gassy|flatulence|farting)\b"),
+            ("acidity", r"\b(?:acidity|acidic|acid reflux)\b"),
+            ("constipation", r"\b(?:constipation|constipated)\b"),
+            ("diarrhea", r"\b(?:diarrhea|diarrhoea)\b"),
+            ("indigestion", r"\bindigestion\b"),
             ("nausea", r"\b(?:nausea|nauseous|queasy|sick to my stomach)\b"),
             ("fullness", r"\b(?:fullness|full quickly|early satiety|early fullness)\b"),
-            ("burning", r"\b(?:burning|burns|indigestion)\b"),
+            ("burning", r"\b(?:burning|burns)\b"),
             ("belching", r"\b(?:belching|burping|belch|burp)\b"),
             ("upper abdominal discomfort", r"\b(?:upper|epigastric) (?:abdominal )?(?:pain|discomfort|ache)\b"),
         ) if re.search(pattern, n)]
@@ -752,7 +795,7 @@ def resolve_against_active_question(
                 1: (r"\b(?:very\s+hard|separate\s+hard\s+pellets?|pellets?)\b",),
                 2: (r"\b(?:hard|lumpy)\b",),
                 3: (r"\b(?:cracked|sausage)\b",),
-                4: (r"\b(?:smooth|normal|formed)\b",),
+                4: (r"\b(?:smooth|formed)\b",),
                 5: (r"\b(?:soft\s+blobs?|soft\s+pieces?)\b",),
                 6: (r"\b(?:mushy)\b",),
                 7: (r"\b(?:watery)\b",),
@@ -999,6 +1042,10 @@ def validate_question_resolution(resolution: dict | None) -> dict:
     values = resolution.get("values")
     if not isinstance(values, dict):
         values = {}
+    values = {
+        key: value for key, value in values.items()
+        if value is not None and not (isinstance(value, str) and not value.strip())
+    }
 
     normalized = dict(resolution)
     normalized["status"] = status
@@ -1022,7 +1069,7 @@ def get_question_spec(question_id: str | None) -> QuestionSpec | None:
 
 def _has(state: Any, name: str) -> bool:
     value = getattr(state, name, None)
-    return value is not None and value != "unknown"
+    return value is not None and value != "unknown" and not (isinstance(value, str) and not value.strip())
 
 
 def _valid_age(value: Any) -> int | None:
@@ -1118,9 +1165,9 @@ def question_has_answer(state: Any, question_id: str | None) -> bool:
     if question_id in {"blood", "bleeding"}:
         return _has(state, "blood_present")
     if question_id == "blood_colour":
-        return _has(state, "blood_colour")
+        return getattr(state, "blood_colour", None) in {"bright_red", "black"}
     if question_id == "blood_location":
-        return _has(state, "blood_location")
+        return getattr(state, "blood_location", None) in {"tissue", "dripping", "mixed"}
     if question_id == "blood_mucus":
         return _has(state, "blood_present") and _has(state, "mucus")
     if question_id == "anal_pain":
@@ -1147,7 +1194,10 @@ def question_has_answer(state: Any, question_id: str | None) -> bool:
         # "I don't know" is a valid answer to the optional
         # "if you know it" Bristol-type question. The sentinel prevents the
         # questionnaire from looping while remaining clinically non-numeric.
-        return _has(state, "stool_form") or getattr(state, "stool_form", None) == "unknown"
+        value = getattr(state, "stool_form", None)
+        return value == "unknown" or (
+            isinstance(value, int) and not isinstance(value, bool) and 1 <= value <= 7
+        )
     if question_id == "severity":
         return _has(state, "severity")
     if question_id == "pain_location":

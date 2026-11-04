@@ -46,8 +46,8 @@ def test_mismatched_answer_does_not_consume_stool_question(monkeypatch):
         bot.handle_message(sid, message)
     result = bot.handle_message(sid, "no lump")
     assert result["status"] == "ASK"
-    assert "hard stools" in result["message"].lower()
-    assert bot.sessions[sid].last_question == "constipation"
+    assert "strain" in result["message"].lower()
+    assert bot.sessions[sid].last_question == "straining"
 
 
 def test_nlu_model_cannot_invent_duration_or_fissure(monkeypatch):

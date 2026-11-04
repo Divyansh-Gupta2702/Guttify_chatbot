@@ -2196,23 +2196,24 @@ def _chat_impl(req: ChatRequest, request: Request = None):
             or explicit_age_statement
         )
         if age_update_is_intentional and new_profile_age is not None and new_profile_age != previous_profile_age:
-            try:
-                persisted = _persist_customer_profile_age(req.session_id, new_profile_age)
-                if not persisted:
-                    raise RuntimeError("No authenticated PostgreSQL customer profile is bound to this session")
-            except Exception:
-                logger.exception("Customer profile age persistence failed session=%s", req.session_id[:8])
-                with conversation_manager._lock:
-                    failed_session = conversation_manager.sessions.get(req.session_id)
-                    if failed_session is not None:
-                        failed_session.symptom_state.age = previous_profile_age
-                        failed_session.last_question = "age"
-                        failed_session.active_question_component = None
-                result = {
-                    "status": "ASK",
-                    "message": "I couldn't save that age change to your registered customer profile, so I have paused the assessment. Please enter your age again to retry.",
-                    "recommendations": [],
-                }
+            if SESSION_CUSTOMER_IDS.get(req.session_id):
+                try:
+                    persisted = _persist_customer_profile_age(req.session_id, new_profile_age)
+                    if not persisted:
+                        raise RuntimeError("The bound customer profile age was not persisted")
+                except Exception:
+                    logger.exception("Customer profile age persistence failed session=%s", req.session_id[:8])
+                    with conversation_manager._lock:
+                        failed_session = conversation_manager.sessions.get(req.session_id)
+                        if failed_session is not None:
+                            failed_session.symptom_state.age = previous_profile_age
+                            failed_session.last_question = "age"
+                            failed_session.active_question_component = None
+                    result = {
+                        "status": "ASK",
+                        "message": "I couldn't save that age change to your registered customer profile, so I have paused the assessment. Please enter your age again to retry.",
+                        "recommendations": [],
+                    }
         _persist_customer_safety_restriction(req.session_id, original_message)
         logic_ms = (time.perf_counter() - logic_start) * 1000
         status = result["status"]

@@ -80,13 +80,12 @@ def test_explicit_blood_correction_updates_state_and_activates_bleeding_followup
 
     session = manager.sessions[session_id]
     assert session.symptom_state.blood_present is False
-    assert session.last_question == "sharp_pain_during_stool"
+    assert session.last_question == "abdominal_pain_screen"
 
     manager.handle_message(session_id, "Actually, I noticed blood")
     assert session.symptom_state.blood_present is True
-    # The active pain question is completed independently; the bleeding
-    # discriminator then takes priority in the same assessment.
-    manager.handle_message(session_id, "no sharp pain")
+    # Bleeding retains priority once explicitly corrected.
+    manager.handle_message(session_id, "no abdominal pain")
     assert manager.sessions[session_id].last_question == "blood_colour"
 
 

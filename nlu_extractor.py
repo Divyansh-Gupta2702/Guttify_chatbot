@@ -598,6 +598,12 @@ def _question_specific_fallback(message: str, last_question: str | None, state) 
     bare_yes = _contextual_yes(n) or bool(re.search(r"\b(?:yes|yeah|yep|yup|absolutely|definitely|of course|it does|pretty much)\b", n))
     bare_no = _contextual_no(n)
 
+    # Preserve explicit severity adjectives volunteered with any symptom,
+    # including short answers to a free-text symptom question.
+    severity_match = re.search(r"\b(mild|moderate|severe)\b", n)
+    if severity_match:
+        out["severity"] = severity_match.group(1)
+
     # Severity + worsening is a combined question in the existing questionnaire.
     if last_question == "severity":
         sev = _extract_number_0_10(n)
@@ -964,7 +970,7 @@ def _deterministic_context_fallback(message: str, last_question: str | None, sta
         m_age = re.search(r"\b(?:i am|i'm|im|age is|aged)?\s*(\d{1,3})\s*(?:years?\s*old)?\b", n)
         if m_age:
             value = int(m_age.group(1))
-            if 0 <= value <= 120:
+            if 1 <= value <= 120:
                 out["age"] = value
     elif last_question in {"weight_loss", "weight_loss_duration"}:
         out["weight_loss"] = False if generic_negative or re.search(r"\b(?:no|not|never|without|don't|dont|do not|haven't|have not)\b.*\b(?:weight|lost weight)\b", n) or re.search(r"\bgained\s+(?:a little\s+)?weight\b", n) else True if affirmative or re.search(r"\b(?:lost|losing)\s+(?:a lot of\s+|significant\s+)?weight\b", n) else None

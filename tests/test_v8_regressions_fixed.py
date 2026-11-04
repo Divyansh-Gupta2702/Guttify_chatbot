@@ -42,8 +42,16 @@ class TestV8RegressionFixes(unittest.TestCase):
         cm = ConversationManager()
         sid = "gas-route"
         result = None
-        for msg in ["gas", "2 weeks", "23", "no constipation", "no food trigger", "no abdominal pain", "Bristol type 4"]:
-            result = cm.handle_message(sid, msg)
+        result = cm.handle_message(sid, "gas")
+        answers = {
+            "duration": "2 weeks", "age": "23", "bloating_screen": "no",
+            "constipation_screen": "no", "diarrhea_screen": "no",
+            "food_trigger": "no", "abdominal_pain_screen": "no",
+        }
+        for _ in range(20):
+            if result.get("status") != "ASK":
+                break
+            result = cm.handle_message(sid, answers[cm.sessions[sid].last_question])
         if result and result.get("status") == "SUMMARY_REVIEW":
             result = cm.handle_message(sid, "yes")
         # Multiple products have "gas" as a symptom, so this correctly returns AMBIGUOUS

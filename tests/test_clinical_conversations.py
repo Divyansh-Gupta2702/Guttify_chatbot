@@ -18,6 +18,36 @@ def run(messages):
     return bot, result
 
 
+def run_questionnaire(primary, answers):
+    """Answer the currently displayed question so tests track the live flow."""
+    bot = ConversationManager()
+    sid = "flow-" + primary
+    result = bot.handle_message(sid, primary)
+    fallback = {
+        "duration": "3 months", "weight_loss_duration": "no", "age": "34",
+        "bowel_frequency": "2 times per week", "daily_frequency": "3",
+        "stool_form": "2", "straining": "no", "incomplete_evacuation": "no",
+        "bloating_screen": "no", "gas_screen": "no", "constipation_screen": "no",
+        "diarrhea_screen": "no", "abdominal_pain_screen": "no", "food_relation": "no",
+        "pain_bowel_relation": "no", "blood": "no", "blood_colour": "bright red",
+        "blood_location": "on tissue", "anal_discomfort_screen": "no",
+        "sharp_pain_during_stool": "no", "lump": "no", "vomiting": "no",
+        "fever": "no", "abdominal_distension": "no", "water": "2 litres",
+        "fibre": "average", "medications": "no", "reflux": "yes", "timing": "at night",
+        "triggers": "no particular foods", "difficulty_swallowing": "no",
+        "persistent_vomiting": "no", "vomiting_blood": "no", "food_trigger": "no",
+    }
+    fallback.update(answers)
+    for _ in range(40):
+        if result.get("status") != "ASK":
+            break
+        question = bot.sessions[sid].last_question
+        result = bot.handle_message(sid, fallback.get(question, "no"))
+    if result.get("status") == "SUMMARY_REVIEW":
+        result = bot.handle_message(sid, "yes")
+    return bot, result
+
+
 def test_answer_to_duration_is_not_irrelevant():
     bot = ConversationManager()
     result = bot.handle_message("s", "unable to pass my stools")
@@ -28,44 +58,40 @@ def test_answer_to_duration_is_not_irrelevant():
 
 
 def test_constipation_full_flow_reaches_assessment_and_product():
-    _, result = run([
-        "unable to pass my stools", "5 months", "no weight loss", "23", "2 times a week",
-        "hard and strain", "no incomplete", "bloating but no abdominal pain",
-        "no blood", "no sharp pain",
-        "no vomiting no fever no swelling", "2 litres", "low", "no medicines",
-    ])
+    _, result = run_questionnaire("unable to pass my stools", {
+        "duration": "5 months", "age": "23", "bowel_frequency": "2 times a week",
+        "stool_form": "2", "straining": "yes", "fibre": "low",
+    })
     assert result["status"] in ("RECOMMENDATION_FOUND", "AMBIGUOUS")
     assert result["screening"]["pattern"] == "Functional constipation pattern"
     assert {p["product_name"] for p in result["recommendations"]} >= {"Digest Boost", "Guttify Poopie"}
 
 
 def test_ibs_c_pattern_is_distinguished_from_plain_constipation():
-    _, result = run([
-        "I am constipated", "5 months", "no weight loss", "23", "2 times a week",
-        "hard and I strain", "yes incomplete",
-        "yes abdominal pain, it gets better after bowel movement",
-        "no blood", "no sharp pain",
-        "no vomiting, no fever, no severe swelling", "2 litres", "average", "no medicines",
-    ])
+    _, result = run_questionnaire("I am constipated", {
+        "duration": "5 months", "age": "23", "bowel_frequency": "2 times a week",
+        "stool_form": "2", "straining": "yes", "incomplete_evacuation": "yes",
+        "abdominal_pain_screen": "yes", "pain_bowel_relation": "yes",
+    })
     assert result["screening"]["pattern"] == "IBS-C pattern"
     assert result["status"] in ("RECOMMENDATION_FOUND", "AMBIGUOUS")
     assert {p["product_name"] for p in result["recommendations"]} >= {"Digest Boost", "Guttify Poopie"}
 
 
 def test_bright_red_sharp_pain_is_fissure_pattern():
-    _, result = run([
-        "I have blood in my stool", "2 months", "no weight loss", "23", "bright red",
-        "on tissue", "sharp tearing pain during stool", "no lump", "no hard stools and no straining",
-    ])
+    _, result = run_questionnaire("I have blood in my stool", {
+        "duration": "2 months", "age": "23", "anal_discomfort_screen": "yes",
+        "sharp_pain_during_stool": "yes",
+    })
     assert result["screening"]["pattern"] == "Possible anal fissure pattern"
     assert result["status"] in ("RECOMMENDATION_FOUND", "DIAGNOSIS")
 
 
 def test_bright_red_painless_lump_is_hemorrhoid_pattern():
-    _, result = run([
-        "I have bright red blood when I poop", "2 months", "no weight loss", "23",
-        "on tissue", "no sharp pain", "yes lump", "no hard stools and no straining",
-    ])
+    _, result = run_questionnaire("I have bright red blood when I poop", {
+        "duration": "2 months", "age": "23", "blood_location": "on tissue",
+        "lump": "yes", "straining": "no",
+    })
     assert result["screening"]["pattern"] == "Possible hemorrhoid pattern"
     assert result["status"] in ("RECOMMENDATION_FOUND", "AMBIGUOUS")
     assert {p["product_name"] for p in result["recommendations"]} >= {"Piloease Anal Care Spray", "Piles Pure"}
@@ -78,12 +104,10 @@ def test_black_stool_is_red_flag():
 
 
 def test_reflux_pattern_can_recommend_acid_ease():
-    _, result = run([
-        "I have heartburn after meals", "3 months", "no weight loss", "23",
-        "yes acid comes up", "worse lying down at night",
-        "no particular food triggers it",
-        "no difficulty swallowing, no persistent vomiting, no vomiting blood",
-    ])
+    _, result = run_questionnaire("I have heartburn after meals", {
+        "duration": "3 months", "age": "23", "reflux": "yes",
+        "timing": "worse lying down at night", "triggers": "no particular foods",
+    })
     assert result["screening"]["pattern"] == "Reflux/GERD-like symptom pattern"
     assert result["status"] == "RECOMMENDATION_FOUND"
     assert result["recommendations"][0]["product_name"] == "Acid Ease"

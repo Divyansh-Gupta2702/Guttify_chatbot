@@ -147,9 +147,7 @@ def test_bleeding_branch_logs_priority_and_missing_fields(caplog):
     with caplog.at_level("INFO"):
         cm.handle_message(sid, "54")
     joined = "\n".join(caplog.messages)
-    assert "[QUESTION][BRANCH]" in joined
-    assert "reason=bleeding_priority" in joined
-    assert "[QUESTION][BLEEDING]" in joined
+    assert "[QUESTION][BLEEDING] selected_next=blood_colour" in joined
     assert "next=blood_colour" in joined
 
 

@@ -69,11 +69,12 @@ def test_resume_returns_deterministic_pending_question():
     start = source.index("def _restore_assessment_checkpoint")
     end = source.index("def _persist_completed_assessment", start)
     restore = source[start:end]
-    assert 'pending_payload = (' in restore
+    assert "pending_payload = None" in restore
+    assert "pending_payload = {" in restore
     assert '"pending_question": pending_payload' in restore
 
 
 def test_widget_renders_missing_pending_question_after_resume():
-    source = (ROOT / "gutgpt-widget.js").read_text()
+    source = (ROOT / "gutgpt-widget.js").read_text(encoding="utf-8")
     assert "const pendingQuestion = resume.pending_question;" in source
-    assert "addMessage(pendingQuestion.text, \"bot\")" in source
+    assert "addMessage(pendingText, \"bot\")" in source
