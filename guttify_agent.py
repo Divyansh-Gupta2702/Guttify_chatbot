@@ -31,7 +31,10 @@ from safety_checker import (
     check_safety, detect_red_flags, derive_red_flags, is_pregnancy_or_lactation,
     pregnancy_lactation_evidence, red_flag_evidence,
 )
-from recommendation_engine import evaluate as evaluate_product, find_named_product, has_domain_overlap, products as ALL_PRODUCTS
+from recommendation_engine import (
+    DIARRHEA_DISALLOWED_PRODUCTS, evaluate as evaluate_product,
+    find_named_product, has_domain_overlap, products as ALL_PRODUCTS,
+)
 from nlu_extractor import extract_natural_facts
 from question_schema import QUESTION_SCHEMA, QuestionResolution, next_question_component, question_has_answer, question_has_progressed, resolve_against_active_question, validate_question_resolution
 from product_concern_router import detect_product_concerns
@@ -146,20 +149,18 @@ def _approved_names_for_screening(screening, state=None):
     heartburn/acidity/reflux is explicitly present.
     """
     pattern = screening.get("pattern") if isinstance(screening, dict) else None
+    if (isinstance(screening, dict) and screening.get("product_allowed") is False
+            and pattern != "Diarrhea pattern"):
+        return set()
 
-    # None is the legacy "no condition-specific gate" sentinel below. An
-    # affirmative diarrhea context must instead return an explicit empty set:
-    # none of the repository's product documentation establishes eligibility
-    # for acute/chronic diarrhea or IBS-D. This also prevents gas/bloating or
-    # acidity matches from overriding the primary bowel condition.
+    # Diarrhea excludes the two products whose product information does not
+    # support use in that context. Other product eligibility continues to be
+    # determined by the completed clinical pattern and explicit symptoms.
     diarrhea_context = bool(
         _state_reports_diarrhea(state)
         or (isinstance(pattern, str) and "diarrhea" in pattern.lower())
         or (isinstance(screening, dict) and "ibs-d" in str(screening.get("likely_condition", "")).lower())
     )
-    if diarrhea_context:
-        return set()
-
     allowed = set(PRODUCT_ELIGIBILITY.get(pattern) or set())
 
     if pattern == "Upper-abdominal meal-related dyspepsia pattern" and state is not None:
@@ -181,6 +182,24 @@ def _approved_names_for_screening(screening, state=None):
         reported.update(str(x).strip().lower() for x in (state.secondary_symptoms or []))
         for symptom in reported:
             allowed.update(ADDITIONAL_SYMPTOM_PRODUCT_ELIGIBILITY.get(symptom, set()))
+        # A reported anal lump is an independent product-relevant finding,
+        # including when sharp pain makes fissure the leading pattern. Keep
+        # Piles Pure eligible for that co-occurring swelling evidence.
+        if getattr(state, "lump_or_prolapse", None) is True:
+            allowed.add("Piles Pure")
+
+    if diarrhea_context:
+        # A diarrhea-only pattern has no narrow clinical product allow-list;
+        # allow the general catalog to score, then apply the requested two
+        # product exclusions. A red-flag/otherwise disallowed pattern remains
+        # closed through its explicit `product_allowed: false` result.
+        if not allowed:
+            allowed = {
+                product.get("product_name")
+                for product in ALL_PRODUCTS
+                if product.get("status") == "active"
+            }
+        allowed.difference_update(DIARRHEA_DISALLOWED_PRODUCTS)
 
     return allowed or None
 

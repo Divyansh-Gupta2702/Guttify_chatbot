@@ -211,6 +211,10 @@ def score_product(product, state: SymptomState, raw_query: str, match_context=No
     primary = normalize_text(state.primary_symptom) if state.primary_symptom else None
     alias_set = {normalize_text(x) for x in PRODUCT_PRIMARY_ALIASES.get(product.get("product_name"), set())}
     context_terms = {normalize_text(x) for x in CLINICAL_PATTERN_PRODUCT_MATCHES.get(match_context, {}).get(product.get("product_name"), set())}
+    if (match_context == "Possible anal fissure pattern"
+            and product.get("product_name") == "Piles Pure"
+            and getattr(state, "lump_or_prolapse", None) is True):
+        context_terms.add("reported anal lump")
     context_match = bool(match_context and context_terms)
 
     # A clinical context match is valid only when the upstream clinical rule
@@ -450,6 +454,8 @@ NO_MATCH_MESSAGE = (
     "experiencing?"
 )
 
+DIARRHEA_DISALLOWED_PRODUCTS = {"Digest Boost", "Guttify Poopie"}
+
 def evaluate(state: SymptomState, raw_query: str, allowed_names=None, match_context=None):
     """
     Deterministic evaluation over the current structured symptom state.
@@ -461,14 +467,16 @@ def evaluate(state: SymptomState, raw_query: str, allowed_names=None, match_cont
         return {"status": "NO_MATCH", "recommendations": [], "message": NO_MATCH_MESSAGE}
 
     if _has_active_diarrhea_context(state, raw_query):
-        return {
-            "status": "NO_MATCH",
-            "recommendations": [],
-            "message": (
-                "The available product information does not establish a Guttify product as suitable for diarrhea, "
-                "so I can't recommend one for this symptom."
-            ),
-        }
+        # Diarrhea is not an automatic ban on every catalog item. Keep the
+        # caller's clinical-pattern allow-list, or use the active catalog for
+        # direct product matching, and exclude only the two products specified
+        # as ineligible for diarrhea.
+        if allowed_names is None:
+            allowed_names = {
+                product.get("product_name") for product in products
+                if product.get("status") == "active"
+            }
+        allowed_names = set(allowed_names) - DIARRHEA_DISALLOWED_PRODUCTS
 
     candidates = score_all_products(
         state, raw_query, match_context=match_context, allowed_names=allowed_names,

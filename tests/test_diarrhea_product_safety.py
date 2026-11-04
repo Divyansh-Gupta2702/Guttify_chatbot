@@ -31,7 +31,7 @@ def test_diarrhea_wording_is_recognized(message):
 
 
 @pytest.mark.parametrize("secondary", ["bloating", "gas", "acidity", "abdominal pain"])
-def test_diarrhea_blocks_secondary_symptom_products_before_scoring(secondary, monkeypatch):
+def test_diarrhea_excludes_only_named_products_before_scoring(secondary, monkeypatch):
     state = SymptomState(
         primary_symptom="bloating",
         secondary_symptoms=[secondary, "diarrhea"],
@@ -45,7 +45,9 @@ def test_diarrhea_blocks_secondary_symptom_products_before_scoring(secondary, mo
         "product_allowed": True,
     }
     allowed = _approved_names_for_screening(screening, state)
-    assert allowed == set()
+    assert "Digest Boost" not in allowed
+    assert "Guttify Poopie" not in allowed
+    assert allowed
 
     scored = []
     monkeypatch.setattr(
@@ -59,15 +61,18 @@ def test_diarrhea_blocks_secondary_symptom_products_before_scoring(secondary, mo
         allowed_names=allowed,
         match_context=screening["pattern"],
     )
-    assert result["recommendations"] == []
-    assert scored == []
+    assert scored
+    assert set(scored) <= allowed
+    assert all(p["product_name"] not in {"Digest Boost", "Guttify Poopie"}
+               for p in result["recommendations"])
 
 
 def test_raw_mixed_symptom_query_cannot_bypass_diarrhea_eligibility():
     state = SymptomState(primary_symptom="bloating", bloating=True)
     result = evaluate_products(state, "I have diarrhea and bloating")
-    assert result["recommendations"] == []
-    assert "does not establish" in result["message"]
+    assert result["recommendations"]
+    assert all(p["product_name"] not in {"Digest Boost", "Guttify Poopie"}
+               for p in result["recommendations"])
 
 
 @pytest.mark.parametrize("product_name", ["Digest Boost", "Guttify Poopie"])
@@ -201,8 +206,31 @@ def test_non_diarrhea_condition_eligibility_is_preserved(pattern):
     assert allowed == PRODUCT_ELIGIBILITY[pattern]
 
 
-def test_diarrhea_specific_clinical_pattern_has_no_documented_product_eligibility():
+def test_diarrhea_specific_clinical_pattern_allows_catalog_except_two_products():
     state = SymptomState(primary_symptom="diarrhea", diarrhea=True, diarrhea_explicit=True)
     screening = evaluate_screening(state)
     assert screening["pattern"] == "Diarrhea pattern"
-    assert _approved_names_for_screening(screening, state) == set()
+    allowed = _approved_names_for_screening(screening, state)
+    catalog = {p["product_name"] for p in recommendation_engine.products if p.get("status") == "active"}
+    assert allowed == catalog - {"Digest Boost", "Guttify Poopie"}
+
+
+def test_diarrhea_with_fissure_pattern_can_recommend_eligible_anal_products():
+    manager = ConversationManager()
+    session_id = "diarrhea-fissure-products"
+    result = manager.handle_message(session_id, "diarrhea")
+    manager.sessions[session_id].symptom_state.age = 24  # restored profile age
+    for answer in (
+        "2 days", "4", "6", "yes", "yes", "yes", "yes",
+        "bright red", "tissue", "yes", "yes", "yes", "yes",
+        "no", "yes", "yes", "no", "no",
+    ):
+        result = manager.handle_message(session_id, answer)
+    if result["status"] == "SUMMARY_REVIEW":
+        result = manager.handle_message(session_id, "yes")
+
+    names = {product["product_name"] for product in result["recommendations"]}
+    assert result["screening"]["pattern"] == "Possible anal fissure pattern"
+    assert {"Piloease Anal Care Spray", "Piles Pure"} <= names
+    assert "Digest Boost" not in names
+    assert "Guttify Poopie" not in names
