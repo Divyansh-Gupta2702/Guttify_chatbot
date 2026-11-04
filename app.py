@@ -347,7 +347,7 @@ async def lifespan(application: FastAPI):
     yield
 
 
-app = FastAPI(title="GutGPT API", version="18.4-conversation-intelligence", lifespan=lifespan)
+app = FastAPI(title="GutGPT API", version="18.4.1-provider-safety-hardening", lifespan=lifespan)
 
 
 # Shopify storefront origins are supplied as a comma-separated environment
@@ -1573,9 +1573,9 @@ def restore_customer(req: CustomerRestoreRequest, request: Request = None, respo
     # token merely because it was supplied by the client.
     cookie_token = request.cookies.get(GUEST_COOKIE_NAME, "") if request is not None else ""
     token_candidates = []
-    for candidate in (req.guest_token, cookie_token):
-        if candidate and candidate not in token_candidates:
-            token_candidates.append(candidate)
+    for source, candidate in (("request_body", req.guest_token), ("http_only_cookie", cookie_token)):
+        if candidate and not any(existing == candidate for _, existing in token_candidates):
+            token_candidates.append((source, candidate))
     if not token_candidates:
         _delete_guest_cookie(response, request)
         raise HTTPException(status_code=401, detail="GUEST_SESSION_INVALID. Please register again.")
@@ -1587,7 +1587,7 @@ def restore_customer(req: CustomerRestoreRequest, request: Request = None, respo
     last_rejection_reason = "guest_credential_not_found"
     with CUSTOMER_LOCK:
         records = _read_customer_records()
-        for candidate in token_candidates:
+        for candidate_source, candidate in token_candidates:
             candidate_claims = None
             try:
                 candidate_claims = _decode_guest_jwt(candidate)
@@ -1597,6 +1597,8 @@ def restore_customer(req: CustomerRestoreRequest, request: Request = None, respo
                     raise
                 if candidate.count(".") == 2:
                     last_rejection_reason = "jwt_validation_failed"
+                    logger.info("event=guest_restore_credential_rejected source=%s reason=jwt_validation_failed session=%s",
+                                candidate_source, req.session_id[:8])
                     continue
                 logger.info("Guest restore using legacy credential path session=%s", req.session_id[:8])
 
@@ -1618,8 +1620,13 @@ def restore_customer(req: CustomerRestoreRequest, request: Request = None, respo
                 supplied_token = candidate
                 claims = candidate_claims
                 record = candidate_record
+                if candidate_source != "request_body" or len(token_candidates) > 1:
+                    logger.info("event=guest_restore_credential_accepted source=%s session=%s",
+                                candidate_source, req.session_id[:8])
                 break
             last_rejection_reason = candidate_reason
+            logger.info("event=guest_restore_credential_rejected source=%s reason=%s session=%s",
+                        candidate_source, candidate_reason, req.session_id[:8])
 
         if record is None:
             logger.warning("Guest restore rejected reason=%s session=%s", last_rejection_reason, req.session_id[:8])
@@ -2145,10 +2152,14 @@ def _chat_impl(req: ChatRequest, request: Request = None):
         for item in provenance:
             if isinstance(item, dict) and item.get("scope") == "assessment":
                 item["assessment_id"] = assessment_id
+        review_scope = safety.get("scope") or (
+            "assessment" if safety.get("red_flag") or safety.get("reason_code") == "unanswered_safety_question"
+            else "customer"
+        )
         logger.warning("event=safety_review_provenance reason_code=%s scope=%s assessment_id=%s sources=%s",
                        safety.get("reason_code", "unknown"),
-                       "assessment" if safety.get("red_flag") else "customer",
-                       assessment_id if safety.get("red_flag") else "persistent_customer_restriction",
+                       review_scope,
+                       assessment_id if review_scope == "assessment" else "persistent_customer_restriction",
                        ",".join(sorted({str(item.get("source", "unknown")) for item in provenance if isinstance(item, dict)})) or "unknown")
     history_ms = (time.perf_counter() - history_start) * 1000
     logger.info("[PERF][%s] History append: %.2f ms", request_id, history_ms)

@@ -1721,6 +1721,7 @@ class ConversationManager:
         reason_code = safety.get("reason_code") or (
             "urgent_red_flag" if red_flag else "pregnancy_lactation_product_restriction"
         )
+        assessment_scoped_review = red_flag or reason_code == "unanswered_safety_question"
         if red_flag:
             known = {item.get("reason") for item in session.safety_flag_provenance if isinstance(item, dict)}
             for reason in session.symptom_state.red_flags or safety.get("reasons", []):
@@ -1736,13 +1737,14 @@ class ConversationManager:
         else:
             provenance = [session.pregnancy_lactation_provenance] if session.pregnancy_lactation_provenance else []
         safety["reason_code"] = reason_code
+        safety["scope"] = "assessment" if assessment_scoped_review else "customer"
         safety["flag_provenance"] = provenance
         screening = result.get("screening")
         if isinstance(screening, dict):
             screening["safety_reason_code"] = reason_code
             screening["flag_provenance"] = provenance
         logger.warning("event=safety_review reason_code=%s scope=%s sources=%s",
-                       reason_code, "assessment" if red_flag else "customer",
+                       reason_code, safety["scope"],
                        ",".join(sorted({str(item.get("source", "unknown")) for item in provenance if isinstance(item, dict)})) or "unknown")
         return result
 

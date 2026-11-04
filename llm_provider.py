@@ -124,7 +124,14 @@ def _create_groq_client(max_output_tokens: int, output_mode: str):
                "timeout": float(os.getenv("GROQ_NLU_TIMEOUT_SECONDS", "12")),
                "max_retries": 0, "api_key": key}
     if output_mode == "json":
-        options["model_kwargs"] = {"response_format": {"type": "json_object"}}
+        model_kwargs = {"response_format": {"type": "json_object"}}
+        # Groq requires an explicit reasoning_format for GPT-OSS requests that
+        # use JSON mode. Without it, the API rejects otherwise valid NLU calls
+        # with HTTP 400. Keep this model-specific so other Groq models do not
+        # receive an unsupported parameter.
+        if model.lower().startswith("openai/gpt-oss-"):
+            model_kwargs["reasoning_format"] = "hidden"
+        options["model_kwargs"] = model_kwargs
     return ChatGroq(**options)
 
 

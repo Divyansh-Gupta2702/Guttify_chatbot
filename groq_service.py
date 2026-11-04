@@ -342,6 +342,34 @@ def _shared_cooldown(seconds: int = 10) -> None:
         logger.warning("event=groq_shared_cooldown_update_failed")
 
 
+def _safe_provider_error_details(exc: Exception) -> dict[str, str]:
+    """Extract non-sensitive provider diagnostics without logging request data."""
+    body = getattr(exc, "body", None)
+    if not isinstance(body, dict):
+        body = {}
+    error = body.get("error") if isinstance(body.get("error"), dict) else body
+
+    def safe_value(value: Any, limit: int = 180) -> str:
+        if value is None:
+            return "unknown"
+        text = " ".join(str(value).split())
+        # Defensive redaction in case an SDK error ever echoes credentials.
+        import re
+        text = re.sub(r"(?i)\bBearer\s+\S+", "Bearer [REDACTED]", text)
+        text = re.sub(r"\bgsk_[A-Za-z0-9_-]+", "[REDACTED]", text)
+        text = re.sub(r"\bAIza[A-Za-z0-9_-]+", "[REDACTED]", text)
+        text = re.sub(r"\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+", "[REDACTED_JWT]", text)
+        return text[:limit]
+
+    message = error.get("message") if isinstance(error, dict) else None
+    return {
+        "api_error_code": safe_value(error.get("code") if isinstance(error, dict) else None, 80),
+        "api_error_type": safe_value(error.get("type") if isinstance(error, dict) else None, 80),
+        "api_error_param": safe_value(error.get("param") if isinstance(error, dict) else None, 80),
+        "api_error_message": safe_value(message, 180),
+    }
+
+
 def invoke_groq(client: Any, prompt: Any, *, reason: str, request_id: str = "unknown") -> Any:
     """Invoke a configured LangChain Groq client once, with bounded waiting.
 
@@ -388,9 +416,15 @@ def invoke_groq(client: Any, prompt: Any, *, reason: str, request_id: str = "unk
                     _shared_cooldown(int(retry_after) if retry_after else 10)
                 except (TypeError, ValueError):
                     _shared_cooldown(10)
-            logger.warning("event=llm_failure provider=%s request_id=%s task=%s model=%s category=%s status=%s latency_ms=%.1f retry_count=0 breaker_state=%s",
-                           provider_name, request_id, reason, model_name, category, status,
-                           (time.monotonic() - started) * 1000, _breaker_state())
+            details = _safe_provider_error_details(exc)
+            logger.warning(
+                "event=llm_failure provider=%s request_id=%s task=%s model=%s category=%s status=%s "
+                "api_error_code=%s api_error_type=%s api_error_param=%s api_error_message=%s "
+                "latency_ms=%.1f retry_count=0 breaker_state=%s",
+                provider_name, request_id, reason, model_name, category, status,
+                details["api_error_code"], details["api_error_type"],
+                details["api_error_param"], details["api_error_message"],
+                (time.monotonic() - started) * 1000, _breaker_state())
             raise
         _breaker_success()
         in_tokens, out_tokens = _usage(response)
