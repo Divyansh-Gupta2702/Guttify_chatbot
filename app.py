@@ -1205,9 +1205,23 @@ def _restore_assessment_checkpoint(customer_id: str, new_session_id: str) -> dic
     # pending prompt as structured resume data so the widget can restore its
     # Bristol chart marker and any other active question without guessing from
     # message text.
-    pending = next_question(restored_state.symptom_state)
     pending_payload = None
-    if isinstance(pending, tuple) and len(pending) == 2:
+    pending = None
+    restored_symptoms = restored_state.symptom_state
+    if not restored_symptoms.primary_symptom and not (restored_symptoms.secondary_symptoms or []):
+        # A newly created assessment is checkpointed before the customer types
+        # their first concern. On refresh, do not run duration/age gates against
+        # this blank state; restore the initial prompt without assigning a
+        # clinical last_question so the first symptom message routes normally.
+        pending_payload = {
+            "question_id": "assessment_start",
+            "component_id": None,
+            "text": "What digestive concern would you like help with?",
+            "display_asset": None,
+        }
+    else:
+        pending = next_question(restored_symptoms)
+    if pending_payload is None and isinstance(pending, tuple) and len(pending) == 2:
         pending_id, pending_text = pending
         pending_component = next_question_component(pending_id, restored_state.symptom_state)
         if pending_component:
