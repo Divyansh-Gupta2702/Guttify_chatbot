@@ -211,6 +211,30 @@ def evaluate(s):
     chronic = days is not None and days >= 90
     constipation, diarrhea, c_support, d_support = _bowel_patterns(s)
 
+    if primary == "nausea":
+        evidence = ["nausea reported"]
+        if s.vomiting is True:
+            evidence.append("vomiting also reported")
+        if s.abdominal_pain is True:
+            evidence.append("abdominal pain also reported")
+        return _result(
+            "Nausea symptom pattern", "low", evidence,
+            ["reflux or indigestion", "infection", "medication effects", "other causes"],
+            "targeted_questions", False,
+            "Nausea can have many causes. This symptom assessment does not identify a specific condition; seek medical advice if it is severe, persistent, worsening, or accompanied by warning signs."
+        )
+
+    if primary in {"fatigue", "sluggishness"}:
+        evidence = ["fatigue or low energy reported"]
+        if s.upper_symptoms:
+            evidence.append(f"associated digestive symptoms reported: {s.upper_symptoms}")
+        return _result(
+            "Fatigue symptom pattern", "low", evidence,
+            ["sleep or lifestyle factors", "medication effects", "anemia or other medical causes"],
+            "targeted_questions", False,
+            "Fatigue has many possible causes, and this chat cannot diagnose its cause. A clinician can assess persistent or unexplained fatigue."
+        )
+
     # Anal irritation/swelling are supported NLU branches and must not fall
     # through to the generic gut-symptom response when bleeding is absent.
     if primary == "anal burning":

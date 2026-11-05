@@ -62,6 +62,7 @@ def next_question(state):
         "bloating": "gas_bloating", "abdominal bloating": "gas_bloating", "gas": "gas_bloating", "flatulence": "gas_bloating",
         "stomach pain": "stomach pain", "abdominal pain": "stomach pain",
         "indigestion": "indigestion", "food intolerance": "food intolerance",
+        "nausea": "nausea", "fatigue": "fatigue", "sluggishness": "fatigue",
         "anal burning": "anal burning", "anal pain": "anal burning", "anal discomfort": "anal burning", "piles": "piles",
         "fissure": "anal fissures", "anal fissure": "anal fissures", "anal fissures": "anal fissures",
         "bleeding": "bleeding", "blood in stool": "bleeding",
@@ -171,6 +172,21 @@ def next_question(state):
                 q("difficulty_swallowing", "Do you have difficulty or pain when swallowing?", state.difficulty_swallowing is None),
                 q("persistent_vomiting", "Have you had persistent or repeated vomiting?", state.persistent_vomiting is None),
                 q("vomiting_blood", "Have you vomited blood?", state.vomiting_blood is None),
+            ]
+        if branch == "nausea":
+            return [
+                q("vomiting", "Have you also been vomiting?", state.vomiting is None),
+                q("abdominal_pain_screen", "Do you also have abdominal pain or cramps?", state.abdominal_pain is None),
+                q("fever", "Have you had a fever?", state.fever is None),
+                q("blood", "Have you noticed any blood in your stool or vomit?", state.blood_present is None),
+                q("weight_loss", "Have you had unexplained weight loss?", state.weight_loss is None),
+            ]
+        if branch == "fatigue":
+            return [
+                q("upper_symptoms", "What digestive symptoms are you experiencing along with the fatigue?", state.upper_symptoms is None),
+                q("weight_loss", "Have you had unexplained weight loss?", state.weight_loss is None),
+                q("fever", "Have you had a fever?", state.fever is None),
+                q("blood", "Have you noticed any blood in your stool?", state.blood_present is None),
             ]
         if branch == "food intolerance":
             return [

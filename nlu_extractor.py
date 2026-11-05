@@ -39,6 +39,7 @@ ALLOWED_SYMPTOMS = {
     "heartburn", "diarrhea", "stomach pain", "piles", "anal fissures",
     "anal burning", "anal swelling", "bleeding", "indigestion",
     "food intolerance",
+    "nausea", "fatigue",
 }
 
 ALLOWED_BLOOD_COLOURS = {"bright_red", "black", "dark", "unknown"}
@@ -1120,6 +1121,10 @@ def _deterministic_context_fallback(message: str, last_question: str | None, sta
         out["symptoms"].append("acidity")
     if re.search(r"\b(piles|haemorrhoids|hemorrhoids)\b", n):
         out["symptoms"].append("piles")
+    if re.search(r"\b(?:nausea|nauseous|nauseated|queasy|queasiness|feeling sick|feel sick|sick to my stomach|unsettled stomach)\b", n):
+        out["symptoms"].append("nausea")
+    if re.search(r"\b(?:fatigue|tiredness|feeling tired|very tired|sluggishness|sluggish|low energy|lack of energy)\b", n):
+        out["symptoms"].append("fatigue")
     if re.search(r"\b(stomach pain|stomach ache|belly pain|abdominal pain|belly ache)\b", n):
         out["symptoms"].append("stomach pain")
 
@@ -1302,6 +1307,8 @@ def _filter_unrelated_active_question_symptoms(result: dict, message: str, last_
         "anal swelling": r"\b(?:anal\s+swelling|swelling\s+(?:around|near)\s+(?:my\s+)?anus)\b",
         "bleeding": BLEEDING_MENTION_PATTERN,
         "indigestion": r"\bindigestion\b",
+        "nausea": r"\b(?:nausea|nauseous|nauseated|queasy|queasiness|feeling sick|feel sick|sick to my stomach)\b",
+        "fatigue": r"\b(?:fatigue|tiredness|feeling tired|sluggishness|sluggish|low energy|lack of energy)\b",
         "food intolerance": r"\b(?:food\s+intolerance|intolerant\s+to\s+\w+)\b",
     }
 

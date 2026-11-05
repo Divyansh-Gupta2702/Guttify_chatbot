@@ -26,8 +26,7 @@ PRODUCT_CONCERN_ALIASES = {
     "Piles Pure": ["anal swelling", "swelling around anus", "swelling near anus", "swollen anus", "anal discomfort", "piles discomfort"],
     "Piloease Anal Care Spray": ["anal burning", "burning around anus", "burning near anus", "anal irritation", "anal itching", "anal discomfort"],
     "Liver Lift": [
-        "liver support", "liver health", "sluggishness", "sluggish", "digestion concerns",
-        "digestive concerns", "digestion support", "fatigue",
+        "liver support", "liver health", "digestion support",
     ],
 }
 
@@ -52,7 +51,7 @@ def detect_product_concerns(text):
     bundle_terms = {
         "liver": ("liver support", "liver health", "liver concerns"),
         "weight": ("weight management", "weight control", "manage my weight", "weight loss support"),
-        "digestion": ("digestion support", "digestion concerns", "digestive concerns", "indigestion support"),
+        "digestion": ("digestion support", "indigestion support"),
     }
     for bundle, terms in bundle_terms.items():
         if any(_norm(term) in n for term in terms):

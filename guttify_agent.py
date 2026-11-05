@@ -107,6 +107,8 @@ ADDITIONAL_SYMPTOM_PRODUCT_ELIGIBILITY = {
     "acid reflux": {"Acid Ease", "Liver Lift"},
     "indigestion": {"Acid Ease", "Digest Boost", "Liver Lift"},
     "digestion concerns": {"Digest Boost", "Liver Lift"},
+    "fatigue": {"Liver Lift"},
+    "sluggishness": {"Liver Lift"},
     "bloating": {"Digest Boost", "Acid Ease", "Guttify Poopie"},
     "gas": {"Digest Boost", "Acid Ease", "Guttify Poopie"},
     "piles": {"Piles Pure", "Piloease Anal Care Spray", "Guttify Poopie"},
@@ -1345,6 +1347,8 @@ class ConversationManager:
                 "constipation_explicit": r"\b(?:constipation|constipated)\b",
                 "diarrhea": r"\b(?:diarrhea|diarrhoea|loose\s+(?:stools?|motions?)|watery\s+(?:stools?|poop))\b",
                 "diarrhea_explicit": r"\b(?:diarrhea|diarrhoea|loose\s+(?:stools?|motions?)|watery\s+(?:stools?|poop))\b",
+                "nausea": r"\b(?:nausea|nauseous|nauseated|queasy|queasiness|feeling sick|feel sick|sick to my stomach)\b",
+                "fatigue": r"\b(?:fatigue|tiredness|feeling tired|sluggishness|sluggish|low energy|lack of energy)\b",
             }
             pat = patterns.get(f)
             return bool(pat and re.search(pat, normalized))
@@ -1556,6 +1560,9 @@ class ConversationManager:
             # Complete the upper-GI screening questions before diagnosis.
             return next_question(s) is None
 
+        if branch in {"nausea", "fatigue"}:
+            return next_question(s) is None
+
         if branch == "food intolerance":
             # This branch has three dedicated questions; assess only after
             # those questions are answered or already known from the user's
@@ -1644,7 +1651,8 @@ class ConversationManager:
         # concern without preventing that concern from being handled.
         return bool(symptoms & {
             "bleeding", "piles", "anal fissures",
-            "anal burning", "stomach pain", "acidity", "heartburn", "indigestion", "vomiting"
+            "anal burning", "stomach pain", "acidity", "heartburn", "indigestion",
+            "nausea", "fatigue", "vomiting"
         })
 
     @staticmethod
@@ -2061,7 +2069,11 @@ class ConversationManager:
         # "ingredients" and "instructions" must not make a valid follow-up
         # look like a new, irrelevant standalone request.
         named = find_named_product(user_message)
-        if named and not self._clinical_symptom_present(user_message):
+        explicit_product_info_request = bool(re.search(
+            r"\b(?:what is|tell me about|ingredients?|how to use|how do i use|dosage|usage|side effects?|warnings?|precautions?|benefits?|purpose|symptoms?)\b",
+            normalize(user_message),
+        ))
+        if named and (not self._clinical_symptom_present(user_message) or explicit_product_info_request):
             session.last_product = named
             # A product question can temporarily change topics during an
             # assessment. Keep its active question and clinical state intact
