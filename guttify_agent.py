@@ -105,11 +105,13 @@ ADDITIONAL_SYMPTOM_PRODUCT_ELIGIBILITY = {
     "acidity": {"Acid Ease", "Liver Lift"},
     "heartburn": {"Acid Ease", "Liver Lift"},
     "acid reflux": {"Acid Ease", "Liver Lift"},
-    "indigestion": {"Acid Ease", "Digest Boost", "Liver Lift"},
-    "digestion concerns": {"Digest Boost", "Liver Lift"},
+    # Apple Active lists bloating and digestion concerns as product symptoms.
+    # It can therefore be considered when either is explicitly reported.
+    "bloating": {"Digest Boost", "Acid Ease", "Guttify Poopie", "Apple Active"},
+    "indigestion": {"Acid Ease", "Digest Boost", "Liver Lift", "Apple Active"},
+    "digestion concerns": {"Digest Boost", "Liver Lift", "Apple Active"},
     "fatigue": {"Liver Lift"},
     "sluggishness": {"Liver Lift"},
-    "bloating": {"Digest Boost", "Acid Ease", "Guttify Poopie"},
     "gas": {"Digest Boost", "Acid Ease", "Guttify Poopie"},
     "piles": {"Piles Pure", "Piloease Anal Care Spray", "Guttify Poopie"},
     "haemorrhoids": {"Piles Pure", "Piloease Anal Care Spray", "Guttify Poopie"},
@@ -179,7 +181,7 @@ def _approved_names_for_screening(screening, state=None):
     # present in this same assessment. Primary-pattern safety remains intact;
     # this only broadens the product allow-list for already reported symptom
     # clusters.
-    if state is not None:
+    if state is not None and not clinically_disallowed:
         reported = set()
         if state.primary_symptom:
             reported.add(str(state.primary_symptom).strip().lower())
