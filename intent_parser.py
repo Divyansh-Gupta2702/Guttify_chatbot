@@ -109,7 +109,7 @@ SYMPTOM_SYNONYMS = {
         "stomach distension", "abdominal distension",
         "abdomen feels swollen", "stomach feels swollen",
         "belly feels swollen", "belly feels full",
-        "stomach feels full", "full stomach",
+        "stomach feels full", "full stomach", "Fullness",
         "feeling bloated", "feeling of bloating",
         "bloated stomach", "bloated belly",
         "gas and bloating", "bloating and gas",
