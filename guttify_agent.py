@@ -105,11 +105,11 @@ ADDITIONAL_SYMPTOM_PRODUCT_ELIGIBILITY = {
     "acidity": {"Acid Ease", "Liver Lift"},
     "heartburn": {"Acid Ease", "Liver Lift"},
     "acid reflux": {"Acid Ease", "Liver Lift"},
-    # Apple Active lists bloating and digestion concerns as product symptoms.
-    # It can therefore be considered when either is explicitly reported.
-    "bloating": {"Digest Boost", "Acid Ease", "Guttify Poopie", "Apple Active"},
-    "indigestion": {"Acid Ease", "Digest Boost", "Liver Lift", "Apple Active"},
-    "digestion concerns": {"Digest Boost", "Liver Lift", "Apple Active"},
+    # Apple Active is routed for weight-management requests only. A digestive
+    # concern must not make it eligible through a broad catalog symptom tag.
+    "bloating": {"Digest Boost", "Acid Ease", "Guttify Poopie"},
+    "indigestion": {"Acid Ease", "Digest Boost", "Liver Lift"},
+    "digestion concerns": {"Digest Boost", "Liver Lift"},
     "fatigue": {"Liver Lift"},
     "sluggishness": {"Liver Lift"},
     "gas": {"Digest Boost", "Acid Ease", "Guttify Poopie"},
@@ -2181,6 +2181,10 @@ class ConversationManager:
             not session.last_question and not summary_confirmation_turn
             and not explicit_correction and not recognized_primary and not recognized_secondary
         )
+        # A known symptom word inside an educational question ("What causes
+        # bloating?") is a topic, not a report that the user has that symptom.
+        if question_like and not explicit_symptom_report and not session.last_question and not explicit_correction:
+            should_classify = True
         if summary_confirmation_turn:
             should_classify = False
         if detect_product_concerns(user_message):
@@ -2238,7 +2242,7 @@ class ConversationManager:
             if intent == "digestive_problem" and not session.symptom_state.primary_symptom and not (recognized_primary or recognized_secondary):
                 return {"status": "ASK", "message": OPEN_SYMPTOM_REPLY, "recommendations": []}
 
-        elif not session.last_question and question_like and not (recognized_primary or recognized_secondary) and re.search(r"\b(gut|digest|stomach|bowel|gas|bloat|acidity|heartburn|constipat|indigestion|ib s|ibs|food|meal)\w*\b", normalized):
+        elif not session.last_question and question_like and not explicit_symptom_report and re.search(r"\b(gut|digest|stomach|bowel|gas|bloat|acidity|heartburn|constipat|indigestion|ib s|ibs|food|meal)\w*\b", normalized):
             # When routing is unavailable, keep an obvious educational
             # question inside the allowed domain and use a safe answer fallback.
             return {"status": "ANSWER", "message": SAFE_GENERAL_FALLBACK, "recommendations": []}
@@ -2437,7 +2441,7 @@ class ConversationManager:
                     # user means. Never repeat the same multi-option question
                     # verbatim; explicitly request the missing choice.
                     focused_clarifications["timing"] = (
-                        "When do you notice it? Any clear time frame is helpful, such as before or after meals, after waking, at a certain time of day, or after a bowel movement. You can include how many minutes or hours."
+                        "Which is it: before meals/eating, after meals/eating, after waking, at a certain time of day, or after a bowel movement? You can include how many minutes or hours."
                     )
                 # Use the exact question text associated with the pending field.
                 question_texts = {

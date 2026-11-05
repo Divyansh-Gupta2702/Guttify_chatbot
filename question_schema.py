@@ -163,6 +163,7 @@ STATE_FIELD_POLICY = {
     "recent_worsening": "question_owned_or_contextual",
     "red_flags": "safety_derived",
     "asked_fields": "question_engine",
+    "answer_notes": "question_engine",
     "weight_loss_duration_asked": "question_engine",
     "answered_unknown_fields": "question_engine",
     "refused_fields": "question_engine",
@@ -170,9 +171,10 @@ STATE_FIELD_POLICY = {
 
 
 _UNKNOWN_RE = re.compile(
-    r"^(?:(?:well|honestly|i guess|maybe)\s+)?(?:i\s+)?(?:don'?t|do\s+not|dont)\s+(?:really\s+)?know(?:\s+(?:for sure|really|yet))?$|"
+    r"^(?:(?:well|honestly|i guess)\s+)?(?:i\s+)?(?:don'?t|do\s+not|dont)\s+(?:really\s+)?know(?:\s+(?:for sure|really|yet))?$|"
+    r"^(?:i\s+)?(?:don'?t|do\s+not|dont)\s+remember$|^(?:maybe|i\s+guess|i\s+can't\s+say|i\s+cannot\s+say)$|"
     r"^(?:i\s+am|i'?m|im|not|still)\s+(?:not\s+)?(?:sure|certain|positive)(?:\s+(?:about that|yet|really|if|whether).*)?$|"
-    r"^(?:unsure|uncertain|not certain|not positive|hard to say)$|"
+    r"^(?:unsure|uncertain|not certain|not positive|hard to say|i'?m unsure|i am unsure|im unsure)$|"
     r"^(?:i\s+)?can'?t\s+(?:really\s+)?tell$|^no\s+idea$|^i\s+have\s+no\s+idea$|"
     r"^i\s+don'?t\s+remember$|^i\s+can'?t\s+say$|^not that i know(?: of)?$|"
     r"^(?:i\s+)?(?:have\s+)?no clue$|^maybe(?:\s+not)?$|"
@@ -435,6 +437,8 @@ def normalize_answer_text(value: str) -> str:
 
 def classify_answer_status(value: str) -> str:
     n = normalize_answer_text(value)
+    if re.fullmatch(r"(?:no[,]?\s+)?not that i know(?: of)?", n):
+        return "no"
     if re.fullmatch(r"(?:sometimes|occasionally|rarely|once in a while|every now and then|every so often|from time to time)", n):
         return "sometimes"
     if _UNKNOWN_RE.fullmatch(n):
@@ -475,6 +479,8 @@ def resolve_against_active_question(
     n = normalize_answer_text(message)
     status = classify_answer_status(n)
     if status == "sometimes":
+        if question_id == "daily_frequency":
+            return {"status": "clarification_needed", "values": {}, "confidence": 0.99, "source": "deterministic"}
         # A frequency qualifier confirms a one-field yes/no symptom, but it
         # cannot supply a numeric count or resolve a compound question.
         status = "yes" if spec.answer_kind == "boolean" and len(spec.fields) == 1 else "unknown"
@@ -934,6 +940,29 @@ def resolve_against_active_question(
         if re.search(r"\b(?:black|dark|tarry)\b", n):
             return {"status": "answered", "values": {"blood_colour": "black"}, "confidence": 0.99, "source": "deterministic"}
     if question_id == "timing":
+        # Interpret the interval relative to the question's known anchor
+        # (eating) before the broad temporal-expression matcher below.
+        if re.fullmatch(r"(?:right\s+after|immediately\s+after|straight\s+after)\s+(?:i\s+)?eat(?:ing)?", n):
+            return {"status": "answered", "values": {
+                "meal_timing": "immediately_after_eating",
+                "symptom_onset_after_food": "immediately after eating",
+                "timing_relation": "after_eating",
+            }, "confidence": 0.99, "source": "deterministic"}
+        interval = re.fullmatch(
+            r"(?:within\s+)?(\d+(?:\.\d+)?|one|two|three|four|five|six|a\s+few|several)\s*"
+            r"(minutes?|mins?|hours?|hrs?)\s*(?:later|after(?:\s+(?:i\s+)?eat(?:ing)?)?)?", n,
+        )
+        if interval:
+            raw_value, unit = interval.groups()
+            number_words = {"one": "1", "two": "2", "three": "3", "four": "4", "five": "5", "six": "6"}
+            canonical_unit = "minutes" if unit.startswith("min") else "hours"
+            amount = number_words.get(raw_value, raw_value)
+            onset = "several hours after eating" if raw_value in {"a few", "several"} else f"{amount} {canonical_unit} after eating"
+            return {"status": "answered", "values": {
+                "meal_timing": "after_eating",
+                "symptom_onset_after_food": onset,
+                "timing_relation": "after_eating",
+            }, "confidence": 0.99, "source": "deterministic"}
         # This question asks when the symptom occurs, so any clear temporal
         # anchor is a valid answer, even when it is not meal-related. Preserve
         # the user's wording and keep a broad category for downstream rules.
@@ -1069,8 +1098,6 @@ def resolve_against_active_question(
                 "confidence": 0.99,
                 "source": "deterministic",
             }
-        if re.fullmatch(r"(?:sometimes|occasionally|rarely|once in a while)", n):
-            return {"status": "unknown", "values": {}, "confidence": 0.99, "source": "deterministic"}
     if question_id == "severity":
         m = re.search(r"\b([1-9]|10)\b", n)
         if m:

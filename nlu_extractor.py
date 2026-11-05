@@ -1505,8 +1505,7 @@ def extract_natural_facts(message: str, last_question: str | None, state, conver
         last_question, message, extracted=fallback, state=state,
         active_component=active_component,
     ))
-    if (resolution["status"] in {"answered", "partial", "unknown", "refused"}
-            and not unknown_symptom_clauses):
+    if resolution["status"] in {"answered", "partial", "unknown", "refused"}:
         for key, value in resolution["values"].items():
             if value == "unknown":
                 continue
