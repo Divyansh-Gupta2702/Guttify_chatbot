@@ -821,9 +821,10 @@ def resolve_against_active_question(
     if question_id == "duration":
         if extracted and extracted.get("duration"):
             return {"status": "answered", "values": {"duration": extracted["duration"]}, "confidence": 0.99, "source": "deterministic"}
-        m = re.search(r"\b(\d+(?:\.\d+)?)\s*(hours?|days?|weeks?|months?|years?)\b", n)
+        m = re.search(r"\b(\d+(?:\.\d+)?)\s*(minutes?|mins?|min|hours?|days?|weeks?|months?|years?)\b", n)
         if m:
-            return {"status": "answered", "values": {"duration": f"{m.group(1)} {m.group(2)}"}, "confidence": 0.99, "source": "deterministic"}
+            unit = "minutes" if m.group(2).startswith("min") else m.group(2)
+            return {"status": "answered", "values": {"duration": f"{m.group(1)} {unit}"}, "confidence": 0.99, "source": "deterministic"}
 
     if question_id == "stool_form":
         stool = None

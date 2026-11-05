@@ -25,7 +25,7 @@ def _duration_days(duration):
     }
     value = natural.get(value, value)
     m = re.search(
-        r"(\d+(?:\.\d+)?)\s*(hour|hours|day|days|week|weeks|month|months|year|years)",
+        r"(\d+(?:\.\d+)?)\s*(minute|minutes|min|mins|hour|hours|day|days|week|weeks|month|months|year|years)",
         value,
     )
     if not m:
@@ -33,7 +33,8 @@ def _duration_days(duration):
     n = float(m.group(1))
     u = m.group(2)
     return n * (
-        1 / 24 if u.startswith("hour")
+        1 / 1440 if u.startswith("min")
+        else 1 / 24 if u.startswith("hour")
         else 1 if u.startswith("day")
         else 7 if u.startswith("week")
         else 30 if u.startswith("month")

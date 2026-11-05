@@ -611,7 +611,7 @@ def _duration_from_text(n: str):
         "five": 5, "six": 6, "seven": 7, "eight": 8, "nine": 9,
         "ten": 10, "couple": 2, "few": 3, "several": 3,
     }
-    pattern = r"\b(?:(?:for|about|around|roughly|since|last|the last)\s+)?(?:like\s+)?(\d+(?:\.\d+)?|a|an|one|two|three|four|five|six|seven|eight|nine|ten|couple|few|several)(?:\s*(?:-|to|or)\s*(\d+(?:\.\d+)?|two|three|four|five))?\s+(hour|hours|day|days|week|weeks|month|months|year|years)\b(?!\s*(?:old|of\s+age)\b)"
+    pattern = r"\b(?:(?:for|about|around|roughly|since|last|the last)\s+)?(?:like\s+)?(\d+(?:\.\d+)?|a|an|one|two|three|four|five|six|seven|eight|nine|ten|couple|few|several)(?:\s*(?:-|to|or)\s*(\d+(?:\.\d+)?|two|three|four|five))?\s+(minute|minutes|min|mins|hour|hours|day|days|week|weeks|month|months|year|years)\b(?!\s*(?:old|of\s+age)\b)"
 
     def num(x):
         if x is None:
@@ -626,8 +626,10 @@ def _duration_from_text(n: str):
         if n1 is None:
             continue
         if n2 is not None:
-            return f"{n1}-{n2} {m.group(3)}"
-        return f"{n1} {m.group(3)}"
+            unit = "minutes" if m.group(3).startswith("min") else m.group(3)
+            return f"{n1}-{n2} {unit}"
+        unit = "minutes" if m.group(3).startswith("min") else m.group(3)
+        return f"{n1} {unit}"
     return None
 
 
@@ -1327,8 +1329,8 @@ def _needs_llm(message: str, last_question: str | None, fallback: dict) -> bool:
 
     # Very short, unambiguous answers are cheaper and safer to parse locally.
     simple = [
-        r"^\d+(?:\.\d+)?\s*(?:days?|weeks?|months?|years?)$",
-        r"^(?:a|an|one|two|three|four|five|six|seven|eight|nine|ten)\s+(?:days?|weeks?|months?|years?)$",
+        r"^\d+(?:\.\d+)?\s*(?:minutes?|mins?|days?|weeks?|months?|years?)$",
+        r"^(?:a|an|one|two|three|four|five|six|seven|eight|nine|ten)\s+(?:minutes?|mins?|days?|weeks?|months?|years?)$",
         r"^\d{1,3}(?:\s*years?\s*old)?$",
         r"^(?:yes|yeah|yep|yup|no|nope|nah|none|true|false)$",
         r"^(?:bright|fresh|bright red|fresh red|red|black|dark|tarry)(?:\s+(?:red|blood|stool))?$",

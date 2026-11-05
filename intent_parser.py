@@ -632,19 +632,21 @@ def extract_duration(text):
         "one": 1, "two": 2, "three": 3, "four": 4, "five": 5,
         "six": 6, "seven": 7, "eight": 8, "nine": 9, "ten": 10,
     }
-    m_word = re.search(r"\b(?:for\s+)?(one|two|three|four|five|six|seven|eight|nine|ten)\s+(hours?|days?|weeks?|months?|years?)\b", n)
+    m_word = re.search(r"\b(?:for\s+)?(one|two|three|four|five|six|seven|eight|nine|ten)\s+(minutes?|mins?|hours?|days?|weeks?|months?|years?)\b", n)
     if m_word:
-        return f"{word_num[m_word.group(1)]} {m_word.group(2)}"
+        unit = "minutes" if m_word.group(2).startswith("min") else m_word.group(2)
+        return f"{word_num[m_word.group(1)]} {unit}"
 
     # Standard numeric durations, including hour-based answers and ranges.
     m = re.search(
         r"\b(\d+(?:\.\d+)?)\s*(?:-\s*(\d+(?:\.\d+)?))?\s*"
-        r"(hour|hours|day|days|week|weeks|month|months|year|years)\b"
+        r"(minute|minutes|min|mins|hour|hours|day|days|week|weeks|month|months|year|years)\b"
         r"(?!\s*(?:old|of\s+age)\b)",
         n,
     )
     if m:
         first, second, unit = m.group(1), m.group(2), m.group(3)
+        unit = "minutes" if unit.startswith("min") else unit
         return f"{first}-{second} {unit}" if second else f"{first} {unit}"
 
     # Natural conversational duration expressions such as
