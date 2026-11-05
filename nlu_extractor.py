@@ -275,7 +275,7 @@ def _validate(raw: Any, forced_intent: str | None = None) -> dict:
             phrase = item.get("phrase")
             branch = item.get("branch")
             try:
-                branch_confidence = float(item.get("confidence", 0.0))
+                branch_confidence = float(item.get("confidence", raw.get("confidence", 0.0)))
             except (TypeError, ValueError):
                 continue
             if (isinstance(phrase, str) and phrase.strip() and branch in ALLOWED_SYMPTOMS
@@ -378,17 +378,17 @@ Rules:
    weight_loss=false.
 7. "Mostly normal, maybe slightly harder" means hard_stools=true only if the
    user is actually reporting some hardness; preserve nuance in stool_pattern.
- 8. Normalize supported symptoms to the allowed symptom values. When a clear
-    digestive symptom uses wording the local parser may not know, identify the
-    closest existing screening branch only when it is a confident semantic fit.
-    The wording must mean the same symptom as that branch label; do not map a
-    symptom merely because it can occur alongside, or be caused by, that branch.
-    For each such symptom, return an item in symptom_branches with its exact
-    wording as phrase, canonical label as branch, and confidence from 0.0 to
-    1.0. The branch must be one of the allowed symptom values. Also preserve
-    the user's exact short symptom wording in other_symptoms. Do not map a
-    symptom to a disease or force an uncertain symptom into a branch. If no
-    supported branch clearly fits, omit it from symptom_branches.
+ 8. Normalize supported symptoms to the allowed symptom values. For every
+    digestive symptom that the local parser may not recognize, select the
+    closest existing screening branch whose follow-up questions can clarify
+    it. This is conversational routing, not a confirmed symptom or diagnosis.
+    For each one, return an item in symptom_branches with the exact user
+    wording as phrase, the existing canonical symptom label as branch, and
+    confidence from 0.0 to 1.0. For example, post-meal fullness can use the
+    bloating branch so its questions can distinguish fullness from visible
+    bloating. Keep the original wording in other_symptoms. Do not invent a
+    disease or add symptoms the user did not mention. If no branch can
+    reasonably clarify it, omit the mapping and preserve the phrase.
 9. "butt", "back passage", "rectum", "anal area" are body-area descriptions,
    not diagnoses.
 10. Do not diagnose. In particular, do NOT output "anal fissures" or "piles"
@@ -402,10 +402,10 @@ Rules:
 Allowed normalized symptoms:
 {sorted(ALLOWED_SYMPTOMS)}
 
-For unfamiliar symptom wording, symptom_branches selects the matching existing
-screening branch (for example, a clear synonym of nausea maps to nausea). It
-does not diagnose a condition. Only return a branch mapping when confidence is
-at least 0.75; otherwise preserve the user's wording without mapping it.
+For unfamiliar symptom wording, symptom_branches chooses the closest existing
+screening branch to ask about. It does not confirm that branch as a symptom or
+diagnose a condition. Return branch confidence of at least 0.75 when a branch
+is reasonably clear; preserve the wording without mapping if it is not.
 
 Return exactly one sparse JSON object using only these allowed keys:
 {sorted(SCHEMA_KEYS)}
@@ -477,6 +477,46 @@ Return exactly one sparse JSON object using only these allowed keys:
             result["other_symptoms"] + _unrecognized_digestive_symptom_clauses(message)
         ))[:5]
 
+        # Accept common singular model output shapes as well as the preferred
+        # array, then recover omitted mapping objects when the model supplied
+        # one clear unknown phrase and one clear canonical branch label.
+        if not result["symptom_branches"]:
+            singular_branch = raw.get("symptom_branch")
+            if isinstance(singular_branch, dict):
+                branch = singular_branch.get("branch")
+                phrase = singular_branch.get("phrase")
+                try:
+                    branch_confidence = float(singular_branch.get("confidence", result.get("confidence", 0.0)))
+                except (TypeError, ValueError):
+                    branch_confidence = 0.0
+                if isinstance(phrase, str) and branch in ALLOWED_SYMPTOMS:
+                    result["symptom_branches"].append({
+                        "phrase": phrase.strip()[:120], "branch": branch,
+                        "confidence": branch_confidence,
+                    })
+            elif isinstance(singular_branch, str) and singular_branch in ALLOWED_SYMPTOMS:
+                phrase = next(iter(result["other_symptoms"]), None)
+                try:
+                    branch_confidence = float(raw.get("branch_confidence", result.get("confidence", 0.0)))
+                except (TypeError, ValueError):
+                    branch_confidence = 0.0
+                if phrase:
+                    result["symptom_branches"].append({
+                        "phrase": phrase, "branch": singular_branch,
+                        "confidence": branch_confidence,
+                    })
+
+        unknown_clauses = _unrecognized_digestive_symptom_clauses(message)
+        parser_primary, parser_secondary = extract_symptoms(message)
+        parser_labels = set(([parser_primary] if parser_primary else []) + (parser_secondary or []))
+        model_only_labels = [symptom for symptom in result["symptoms"] if symptom not in parser_labels]
+        if (not result["symptom_branches"] and len(unknown_clauses) == 1
+                and len(model_only_labels) == 1 and result.get("confidence", 0.0) >= 0.75):
+            result["symptom_branches"].append({
+                "phrase": unknown_clauses[0], "branch": model_only_labels[0],
+                "confidence": result["confidence"],
+            })
+
         # A proposed branch for unfamiliar wording is accepted only when the
         # model quotes the same symptom phrase from this turn and it is not
         # negated. Each accepted label feeds its existing questionnaire branch.
@@ -484,7 +524,6 @@ Return exactly one sparse JSON object using only these allowed keys:
         for mapping in result.get("symptom_branches", []):
             phrase = mapping["phrase"].casefold()
             if (mapping["confidence"] < 0.75 or phrase not in source_text
-                    or phrase not in {item.casefold() for item in result["other_symptoms"]}
                     or (mapping["branch"] in {"piles", "anal fissures"} and not explicit_condition)
                     or (mapping["branch"] == "food intolerance"
                         and not re.search(r"\b(?:food sensitiv|intoleran|doesn't suit|does not suit|can't tolerate|cannot tolerate)\b", message, re.I))
