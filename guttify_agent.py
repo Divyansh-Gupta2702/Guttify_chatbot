@@ -1531,6 +1531,11 @@ class ConversationManager:
             # bleeding screened before any branch-specific conclusion.
             return s.duration != "unknown" and s.age is not None and s.blood_present is not None
 
+        if branch == "anal swelling":
+            # Use the dedicated lump/swelling screen before the rule engine
+            # returns its conservative medical-review pattern.
+            return next_question(s) is None
+
         if branch == "diarrhea":
             return all([
                 s.duration != "unknown", s.bowel_frequency_per_day is not None,
@@ -2581,6 +2586,18 @@ class ConversationManager:
         # assessment is active. "2 days" is a valid answer to a duration
         # question even though it contains no symptom/product keyword.
         nlu_intent = nlu_facts.get("intent") if isinstance(nlu_facts, dict) else None
+        if not session.symptom_state.primary_symptom and session.symptom_state.other_symptoms:
+            unfamiliar_symptom = str(session.symptom_state.other_symptoms[0]).strip()[:100]
+            if (nlu_intent in {"assessment", "answer_question", "new_symptom"}
+                    or explicit_symptom_report):
+                return {
+                    "status": "ASK",
+                    "message": (
+                        f'I understood that you mentioned "{unfamiliar_symptom}", but I could not confidently match it to a screening branch. '
+                        "Is it mainly pain or cramps, bowel changes, bloating or gas, acidity or reflux, nausea or vomiting, anal discomfort, or something else digestive?"
+                    ),
+                    "recommendations": [],
+                }
         if (
             not session.symptom_state.primary_symptom
             and not has_domain_overlap(user_message)

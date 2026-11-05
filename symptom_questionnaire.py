@@ -64,6 +64,7 @@ def next_question(state):
         "indigestion": "indigestion", "food intolerance": "food intolerance",
         "nausea": "nausea", "fatigue": "fatigue", "sluggishness": "fatigue",
         "anal burning": "anal burning", "anal pain": "anal burning", "anal discomfort": "anal burning", "piles": "piles",
+        "anal swelling": "anal swelling",
         "fissure": "anal fissures", "anal fissure": "anal fissures", "anal fissures": "anal fissures",
         "bleeding": "bleeding", "blood in stool": "bleeding",
     }
@@ -207,6 +208,15 @@ def next_question(state):
                 q("sharp_pain_during_stool", "Is there sharp or tearing pain during or just after a bowel movement?", state.anal_pain is not False and state.sharp_pain_during_stool is None),
                 q("lump", "Is there a lump or something protruding from the anus?", state.lump_or_prolapse is None),
                 q("straining", "Do you need to strain to pass stool?", state.straining is None),
+            ]
+        if branch == "anal swelling":
+            return [
+                q("blood", "Have you noticed any bleeding or blood around/after a bowel movement?", state.blood_present is None),
+                q("blood_colour", "Is the blood bright/fresh red, or dark/black/tarry?", state.blood_present is True and not question_has_answer(state, "blood_colour")),
+                q("blood_location", "If it is bright red, where do you notice it?", state.blood_present is True and state.blood_colour == "bright_red" and not question_has_answer(state, "blood_location")),
+                q("anal_discomfort_screen", "Do you have pain or discomfort around the swollen area?", state.anal_pain is None),
+                q("lump", "Is there a lump or something protruding from the anus?", state.lump_or_prolapse is None),
+                q("fever", "Have you had a fever?", state.fever is None),
             ]
         if branch in ("piles", "anal fissures"):
             return [

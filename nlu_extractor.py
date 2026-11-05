@@ -18,7 +18,7 @@ import re
 from functools import lru_cache
 from typing import Any
 
-from intent_parser import extract_food_trigger, extract_stool_form
+from intent_parser import extract_food_trigger, extract_stool_form, extract_symptoms
 from question_schema import resolve_against_active_question, validate_question_resolution
 from llm_provider import create_client, invoke_provider
 from groq_service import configured_output_tokens, llm_client_cache_fingerprint, is_truncated_finish_reason
@@ -56,7 +56,7 @@ SCHEMA_KEYS = {
     "aggravating_factors", "relieving_factors", "red_flags",
     "new_information", "confidence", "recent_worsening", "gas", "meal_relation", "pain_relation", "bowel_pattern",
     "water_intake", "fibre_intake", "medications", "incomplete_evacuation", "pain_related_to_bowel_movement", "reflux_present", "meal_timing", "symptom_onset_after_food", "timing_relation",
-    "other_symptoms",
+    "other_symptoms", "symptom_branches",
 }
 
 BOOL_FIELDS = {
@@ -146,6 +146,7 @@ def _blank_result(intent="answer_question") -> dict:
         "intent": intent,
         "symptoms": [],
         "other_symptoms": [],
+        "symptom_branches": [],
         "body_areas": [],
         "duration": None,
         "severity": None,
@@ -266,6 +267,25 @@ def _validate(raw: Any, forced_intent: str | None = None) -> dict:
     except (TypeError, ValueError):
         out["confidence"] = 0.0
 
+    candidate_branches = raw.get("symptom_branches")
+    if isinstance(candidate_branches, list):
+        for item in candidate_branches[:5]:
+            if not isinstance(item, dict):
+                continue
+            phrase = item.get("phrase")
+            branch = item.get("branch")
+            try:
+                branch_confidence = float(item.get("confidence", 0.0))
+            except (TypeError, ValueError):
+                continue
+            if (isinstance(phrase, str) and phrase.strip() and branch in ALLOWED_SYMPTOMS
+                    and 0.0 <= branch_confidence <= 1.0):
+                out["symptom_branches"].append({
+                    "phrase": phrase.strip()[:120],
+                    "branch": branch,
+                    "confidence": branch_confidence,
+                })
+
     # "answer_question" is authoritative whenever the caller says a question
     # is pending. This prevents an LLM's generic intent classifier from
     # misclassifying a short answer like "2 days" as unrelated.
@@ -358,9 +378,17 @@ Rules:
    weight_loss=false.
 7. "Mostly normal, maybe slightly harder" means hard_stools=true only if the
    user is actually reporting some hardness; preserve nuance in stool_pattern.
- 8. Normalize supported symptoms to the allowed symptom values. If a clear
-    digestive complaint has no supported label, preserve its short user phrase
-    in other_symptoms; do not map it to a diagnosis or invent a synonym.
+ 8. Normalize supported symptoms to the allowed symptom values. When a clear
+    digestive symptom uses wording the local parser may not know, identify the
+    closest existing screening branch only when it is a confident semantic fit.
+    The wording must mean the same symptom as that branch label; do not map a
+    symptom merely because it can occur alongside, or be caused by, that branch.
+    For each such symptom, return an item in symptom_branches with its exact
+    wording as phrase, canonical label as branch, and confidence from 0.0 to
+    1.0. The branch must be one of the allowed symptom values. Also preserve
+    the user's exact short symptom wording in other_symptoms. Do not map a
+    symptom to a disease or force an uncertain symptom into a branch. If no
+    supported branch clearly fits, omit it from symptom_branches.
 9. "butt", "back passage", "rectum", "anal area" are body-area descriptions,
    not diagnoses.
 10. Do not diagnose. In particular, do NOT output "anal fissures" or "piles"
@@ -373,6 +401,11 @@ Rules:
 
 Allowed normalized symptoms:
 {sorted(ALLOWED_SYMPTOMS)}
+
+For unfamiliar symptom wording, symptom_branches selects the matching existing
+screening branch (for example, a clear synonym of nausea maps to nausea). It
+does not diagnose a condition. Only return a branch mapping when confidence is
+at least 0.75; otherwise preserve the user's wording without mapping it.
 
 Return exactly one sparse JSON object using only these allowed keys:
 {sorted(SCHEMA_KEYS)}
@@ -440,6 +473,31 @@ Return exactly one sparse JSON object using only these allowed keys:
             if isinstance(phrase, str) and len(phrase.strip()) <= 120
             and re.sub(r"\s+", " ", phrase.casefold()).strip() in source_text
         ][:5]
+        result["other_symptoms"] = list(dict.fromkeys(
+            result["other_symptoms"] + _unrecognized_digestive_symptom_clauses(message)
+        ))[:5]
+
+        # A proposed branch for unfamiliar wording is accepted only when the
+        # model quotes the same symptom phrase from this turn and it is not
+        # negated. Each accepted label feeds its existing questionnaire branch.
+        accepted_mappings = []
+        for mapping in result.get("symptom_branches", []):
+            phrase = mapping["phrase"].casefold()
+            if (mapping["confidence"] < 0.75 or phrase not in source_text
+                    or phrase not in {item.casefold() for item in result["other_symptoms"]}
+                    or (mapping["branch"] in {"piles", "anal fissures"} and not explicit_condition)
+                    or (mapping["branch"] == "food intolerance"
+                        and not re.search(r"\b(?:food sensitiv|intoleran|doesn't suit|does not suit|can't tolerate|cannot tolerate)\b", message, re.I))
+                    or re.search(
+                        rf"\b(?:no|not|never|without|don't|dont|do not|haven't|have not|isn't|is not|doesn't|does not)\b.{{0,40}}{re.escape(phrase)}",
+                        source_text,
+                    )):
+                continue
+            accepted_mappings.append(mapping)
+            if mapping["branch"] not in result["symptoms"]:
+                result["symptoms"].append(mapping["branch"])
+        result["symptom_branches"] = accepted_mappings
+        result["_branch_mapped_symptoms"] = accepted_mappings
 
         # Ground high-impact booleans in the actual message. The model may be
         # semantically useful, but it must not manufacture a pain/bleeding/etc.
@@ -1215,6 +1273,12 @@ def _needs_llm(message: str, last_question: str | None, fallback: dict) -> bool:
     if not n:
         return False
 
+    # A message may contain a known symptom plus a second digestive complaint
+    # whose wording is absent from the deterministic parser. Ask the model to
+    # classify that unfamiliar clause instead of silently ignoring it.
+    if _unrecognized_digestive_symptom_clauses(message):
+        return True
+
     if last_question in {"daily_frequency", "bowel_frequency"} and re.fullmatch(
         r"(?:sometimes|occasionally|rarely|once in a while|every (?:other|alternate|second) day|"
         r"once daily|once a day|twice daily|twice a day)",
@@ -1274,6 +1338,32 @@ def _needs_llm(message: str, last_question: str | None, fallback: dict) -> bool:
     return bool(last_question and len(message) > 25)
 
 
+_DIGESTIVE_SYMPTOM_CUE = re.compile(
+    r"\b(?:stomach|belly|tummy|abdomen|abdominal|gut|bowel|stool|stools|poop|poo|motions?|"
+    r"digest\w*|reflux|heartburn|acid|nause\w*|vomit\w*|bloat\w*|gas|cramp\w*|pain|ache|hurts?|discomfort|"
+    r"constipat\w*|diarrh\w*|loose|itch\w*|anal|anus|rect\w*|bleed\w*|blood\s+(?:in|on|around)|"
+    r"swallow\w*|appetite|fullness|full|pressure|heaviness|tightness|tenesmus|steatorrhea|"
+    r"dysphagia|melena|hematochezia|burp\w*|belch\w*|mucus|urgenc\w*|urgently)\b",
+    re.I,
+)
+
+
+def _unrecognized_digestive_symptom_clauses(message: str) -> list[str]:
+    """Return symptom-like clauses not matched by the local canonical parser."""
+    clauses = re.split(r"[,;.!?]|\b(?:and|also|but|plus|along with|as well as)\b", message or "", flags=re.I)
+    unknown = []
+    for clause in clauses:
+        phrase = re.sub(r"\s+", " ", clause).strip(" \t\r\n.,!?;:")
+        if not phrase or not _DIGESTIVE_SYMPTOM_CUE.search(phrase) or _has_negation(phrase):
+            continue
+        primary, secondary = extract_symptoms(phrase)
+        if primary or secondary:
+            continue
+        if len(phrase) <= 120:
+            unknown.append(phrase)
+    return list(dict.fromkeys(unknown))[:5]
+
+
 def _filter_unrelated_active_question_symptoms(result: dict, message: str, last_question: str | None) -> dict:
     """Keep only symptoms explicitly evidenced by the current user message.
 
@@ -1316,7 +1406,14 @@ def _filter_unrelated_active_question_symptoms(result: dict, message: str, last_
     dropped = []
     for symptom in symptoms:
         pat = patterns.get(symptom)
+        mapped_phrase = next((item.get("phrase") for item in (result.get("_branch_mapped_symptoms") or [])
+                              if isinstance(item, dict) and item.get("branch") == symptom), None)
         if pat and re.search(pat, text):
+            kept.append(symptom)
+        elif mapped_phrase and mapped_phrase.casefold() in text and not re.search(
+            rf"\b(?:no|not|never|without|don't|dont|do not|haven't|have not|isn't|is not|doesn't|does not)\b.{{0,40}}{re.escape(mapped_phrase.casefold())}",
+            text,
+        ):
             kept.append(symptom)
         else:
             dropped.append(symptom)
@@ -1351,6 +1448,14 @@ def extract_natural_facts(message: str, last_question: str | None, state, conver
     """
     forced_intent = "answer_question" if last_question else None
     fallback = _deterministic_context_fallback(message, last_question, state)
+    unknown_symptom_clauses = _unrecognized_digestive_symptom_clauses(message)
+    if unknown_symptom_clauses:
+        fallback["other_symptoms"] = list(dict.fromkeys(
+            (fallback.get("other_symptoms") or []) + unknown_symptom_clauses
+        ))[:5]
+        if not last_question:
+            fallback["intent"] = "assessment"
+            fallback["confidence"] = max(float(fallback.get("confidence") or 0.0), 0.5)
 
     # A deterministic question resolution is sufficient by itself. This is
     # especially important for yes/no, unknown, age, duration, stool and food
@@ -1359,7 +1464,8 @@ def extract_natural_facts(message: str, last_question: str | None, state, conver
         last_question, message, extracted=fallback, state=state,
         active_component=active_component,
     ))
-    if resolution["status"] in {"answered", "partial", "unknown", "refused"}:
+    if (resolution["status"] in {"answered", "partial", "unknown", "refused"}
+            and not unknown_symptom_clauses):
         for key, value in resolution["values"].items():
             if value == "unknown":
                 continue
@@ -1462,6 +1568,9 @@ def extract_natural_facts(message: str, last_question: str | None, state, conver
         result["new_information"] = list(dict.fromkeys(
             (result.get("new_information") or []) + (fallback.get("new_information") or [])
         ))
+        result["other_symptoms"] = list(dict.fromkeys(
+            (result.get("other_symptoms") or []) + (fallback.get("other_symptoms") or [])
+        ))[:5]
 
     # A model answer may still be semantically obvious once its validated
     # fields are available. Run the resolver once more without invoking the
