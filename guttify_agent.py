@@ -36,7 +36,7 @@ from recommendation_engine import (
     find_named_product, has_domain_overlap, products as ALL_PRODUCTS,
 )
 from nlu_extractor import extract_natural_facts
-from question_schema import QUESTION_SCHEMA, QuestionResolution, next_question_component, question_has_answer, question_has_progressed, resolve_against_active_question, validate_question_resolution
+from question_schema import QUESTION_SCHEMA, QuestionResolution, next_question_component, question_has_answer, question_has_progressed, validate_question_resolution
 from product_concern_router import detect_product_concerns
 from conversation_intelligence import (
     OPEN_SYMPTOM_REPLY, SAFE_GENERAL_FALLBACK, SCOPE_REPLY,
@@ -1502,6 +1502,11 @@ class ConversationManager:
                     return False
             return s.duration != "unknown" and s.age is not None and s.blood_present is not None
 
+        if branch == "anal burning":
+            # Itching/burning is assessed as an anal irritation symptom, with
+            # bleeding screened before any branch-specific conclusion.
+            return s.duration != "unknown" and s.age is not None and s.blood_present is not None
+
         if branch == "diarrhea":
             return all([
                 s.duration != "unknown", s.bowel_frequency_per_day is not None,
@@ -1621,7 +1626,7 @@ class ConversationManager:
         # concern without preventing that concern from being handled.
         return bool(symptoms & {
             "bleeding", "piles", "anal fissures",
-            "stomach pain", "acidity", "heartburn", "indigestion", "vomiting"
+            "anal burning", "stomach pain", "acidity", "heartburn", "indigestion", "vomiting"
         })
 
     @staticmethod
@@ -2123,14 +2128,9 @@ class ConversationManager:
             else:
                 clarification = "What would you like me to respond to? You can ask about digestion, describe a symptom, or name a Guttify product."
             return {"status": "ASK", "message": clarification, "recommendations": []}
-        active_answer_status = None
-        if session.last_question:
-            active_answer_status = resolve_against_active_question(
-                session.last_question, user_message, state=session.symptom_state,
-            ).get("status")
         should_classify = (
-            question_like and not explicit_symptom_report
-            and (not session.last_question or active_answer_status in {"unresolved", "clarification_needed"})
+            not session.last_question and question_like and not explicit_symptom_report
+            and not (recognized_primary or recognized_secondary)
         ) or (
             not session.last_question and not summary_confirmation_turn
             and not explicit_correction and not recognized_primary and not recognized_secondary
@@ -2192,12 +2192,12 @@ class ConversationManager:
             if intent == "digestive_problem" and not session.symptom_state.primary_symptom and not (recognized_primary or recognized_secondary):
                 return {"status": "ASK", "message": OPEN_SYMPTOM_REPLY, "recommendations": []}
 
-        elif question_like and re.search(r"\b(gut|digest|stomach|bowel|gas|bloat|acidity|heartburn|constipat|indigestion|ib s|ibs|food|meal)\w*\b", normalized):
+        elif not session.last_question and question_like and not (recognized_primary or recognized_secondary) and re.search(r"\b(gut|digest|stomach|bowel|gas|bloat|acidity|heartburn|constipat|indigestion|ib s|ibs|food|meal)\w*\b", normalized):
             # When routing is unavailable, keep an obvious educational
             # question inside the allowed domain and use a safe answer fallback.
             return {"status": "ANSWER", "message": SAFE_GENERAL_FALLBACK, "recommendations": []}
 
-        elif route is None and question_like and not explicit_symptom_report:
+        elif route is None and not session.last_question and question_like and not explicit_symptom_report and not (recognized_primary or recognized_secondary):
             return {"status": "ANSWER", "message": SCOPE_REPLY, "recommendations": []}
 
         # An explicit unsupported symptom should not be mistaken for a
@@ -2391,8 +2391,7 @@ class ConversationManager:
                     # user means. Never repeat the same multi-option question
                     # verbatim; explicitly request the missing choice.
                     focused_clarifications["timing"] = (
-                        "Which is it: after meals/eating, when lying down, or at night? "
-                        'You can also give the timing, for example, "10 minutes" or "immediately".'
+                        "When do you notice it? Any clear time frame is helpful, such as before or after meals, after waking, at a certain time of day, or after a bowel movement. You can include how many minutes or hours."
                     )
                 # Use the exact question text associated with the pending field.
                 question_texts = {

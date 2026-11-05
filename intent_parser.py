@@ -44,6 +44,11 @@ SYMPTOM_SYNONYMS = {
         "bowel problems", "bowel trouble",
         "irregular bowel movements", "irregular bowel movement",
         "irregular stools", "not going regularly",
+        "motions are not regular", "my motions are not regular",
+        "bowel motions are not regular", "bowels are not regular",
+        "stomach isn't clearing out", "stomach is not clearing out",
+        "my stomach isn't clearing out", "my stomach is not clearing out",
+        "bowels aren't clearing out", "bowels are not clearing out",
         "not pooping regularly", "not passing stool regularly",
         "not going to the toilet regularly",
         "feeling backed up", "feeling blocked", "feeling blocked up",
@@ -258,6 +263,9 @@ SYMPTOM_SYNONYMS = {
         "hot sensation around anus",
         "irritation around anus",
         "anal irritation",
+        "itch", "itchy", "itching", "anal itch", "anal itching",
+        "itch around anus", "itching around anus", "itching near anus",
+        "itchy anus", "itchy anal area", "itching in the anal area",
     ],
 
     "anal swelling": [
@@ -514,6 +522,17 @@ def extract_symptoms(text):
             phrase = match.group(0)
             if not is_negated(n, phrase):
                 positions[canonical] = match.start()
+    # Catch natural long-form descriptions where location or severity words
+    # separate "pain" from the body area.
+    pain_match = re.search(
+        r"\b(?:(?:mild|moderate|severe|sharp|dull|aching)\s+)?pain\s+"
+        r"(?:on|in|around)\s+(?:the\s+)?(?:(?:right|left|upper|lower|middle)\s+side\s+"
+        r"(?:of\s+)?(?:my\s+)?(?:stomach|belly|abdomen)|(?:my\s+)?(?:stomach|belly|abdomen))\b|"
+        r"\b(?:my\s+)?(?:stomach|belly|abdomen)\s+(?:hurts?|is hurting)\b",
+        n,
+    )
+    if pain_match and not is_negated(n, pain_match.group(0)):
+        positions.setdefault("stomach pain", pain_match.start())
     if not positions:
         return None, []
     ordered = [name for name, _ in sorted(positions.items(), key=lambda item: item[1])]

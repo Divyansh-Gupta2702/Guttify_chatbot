@@ -527,6 +527,18 @@ def resolve_against_active_question(
         bowel_negative = bool(re.search(r"\b(?:not|never|no|without|isn't|is not)\b.{0,35}\b(?:bowel movements?|stool|poop)\b", n))
         meal_positive = not meal_negative and bool(re.search(r"\b(?:after meals?|after eating|when i eat|triggered by meals?|related to meals?)\b", n))
         bowel_positive = not bowel_negative and bool(re.search(r"\b(?:after (?:a )?(?:bowel movement|stool|poop)|related to (?:bowel movements?|stool)|changes? with (?:bowel movements?|stool))\b", n))
+        no_bowel_change = bool(re.search(
+            r"\b(?:no change|doesn't change|does not change|remains? the same|stays? the same|nothing changes?)\b",
+            n,
+        ))
+        bowel_change = bool(re.search(
+            r"\b(?:changes?|improves?|worsens?|gets? better|gets? worse)\b.{0,35}\b(?:after|with|following)\b.{0,20}\b(?:bowel|stool|poop|motion)",
+            n,
+        ))
+        if no_bowel_change:
+            bowel_negative = True
+        elif bowel_change:
+            bowel_positive = True
         if meal_positive or bowel_positive or meal_negative or bowel_negative:
             if meal_positive:
                 component_values["food_related"] = True
@@ -570,10 +582,25 @@ def resolve_against_active_question(
             r"\brelated to\s+(?:bowel movements?|stool|poop)\b",
             n,
         )
+        meal_link = bool(re.search(r"\b(?:after meals?|after eating|when i eat|triggered by meals?|related to meals?)\b", n))
+        if re.search(r"\b(?:no change|doesn't change|does not change|remains? the same|stays? the same|nothing changes?)\b", n):
+            relation_negative = True
+        elif re.search(r"\b(?:changes?|improves?|worsens?)\b.{0,35}\b(?:after|with|following)\b.{0,20}\b(?:bowel|stool|poop|motion)", n):
+            relation_positive = True
+        elif meal_link:
+            # If pain is explicitly linked to eating and the user says nothing
+            # about bowel movements, answer the active bowel relation as no.
+            relation_negative = True
         if relation_negative:
             component_values["pain_related_to_bowel_movement"] = False
         elif relation_positive:
             component_values["pain_related_to_bowel_movement"] = True
+
+    if question_id == "pain_bowel_relation":
+        if re.search(r"\b(?:no change|doesn't change|does not change|remains? the same|stays? the same|nothing changes?)\b", n):
+            return {"status": "answered", "values": {"pain_related_to_bowel_movement": False}, "confidence": 0.99, "source": "deterministic"}
+        if re.search(r"\b(?:changes?|improves?|worsens?|gets? better|gets? worse)\b.{0,35}\b(?:after|with|following)\b.{0,20}\b(?:bowel|stool|poop|motion)", n):
+            return {"status": "answered", "values": {"pain_related_to_bowel_movement": True}, "confidence": 0.99, "source": "deterministic"}
 
     if component_values:
         complete = _composite_completion(question_id, component_values, state)
@@ -906,6 +933,48 @@ def resolve_against_active_question(
         if re.search(r"\b(?:black|dark|tarry)\b", n):
             return {"status": "answered", "values": {"blood_colour": "black"}, "confidence": 0.99, "source": "deterministic"}
     if question_id == "timing":
+        # This question asks when the symptom occurs, so any clear temporal
+        # anchor is a valid answer, even when it is not meal-related. Preserve
+        # the user's wording and keep a broad category for downstream rules.
+        temporal = re.search(
+            r"\b(?:before|after|during|while|when|upon|at|around|every|since)\b.{0,70}"
+            r"\b(?:meals?|breakfast|lunch|dinner|food|eating|eat|wake(?:s|n|ning)?(?:\s+up)?|wakeup|"
+            r"morning|afternoon|evening|night|bedtime|sleep|bowel movements?|"
+            r"stools?|poop|poo|drinking|water|exercise|work|empty stomach)\b|"
+            r"\b(?:in the\s+)?(?:morning|afternoon|evening|night|daytime|bedtime|first thing)\b|"
+            r"\b\d{1,2}(?::\d{2})?\s?(?:a\.?m\.?|p\.?m\.?)\b|"
+            r"\b(?:within\s+)?(?:one|two|three|four|five|six|few|several|\d+(?:\.\d+)?)\s*"
+            r"(?:minutes?|mins?|hours?|hrs?)\b",
+            n,
+        )
+        if temporal:
+            if re.search(r"\b(?:bowel movements?|stools?|poop|poo)\b", n):
+                relation = "after_bowel_movement" if re.search(r"\bafter\b", n) else (
+                    "before_bowel_movement" if re.search(r"\bbefore\b", n) else "around_bowel_movement"
+                )
+            elif re.search(r"\b(?:wake|waking|wakeup|morning|afternoon|evening|night|bedtime|sleep)\b", n):
+                if re.search(r"\b(?:wake|waking|wakeup)\b", n):
+                    relation = "after_waking" if re.search(r"\bafter\b", n) else (
+                        "before_waking" if re.search(r"\bbefore\b", n) else "around_waking"
+                    )
+                else:
+                    relation = "at_night" if re.search(r"\b(?:night|bedtime|sleep)\b", n) else "time_of_day"
+            elif re.search(r"\b(?:meal|breakfast|lunch|dinner|food|eating|eat|empty stomach)\b", n):
+                relation = "before_meals" if re.search(r"\bbefore\b", n) else (
+                    "after_eating" if re.search(r"\bafter\b", n) else "around_meals"
+                )
+            elif re.search(r"\b\d{1,2}(?::\d{2})?\s?(?:a\.?m\.?|p\.?m\.?)\b", n):
+                relation = "at_specific_time"
+            else:
+                relation = "timing_reported"
+            timing_values = {
+                "meal_timing": n[:160],
+                "timing_relation": relation,
+            }
+            if relation == "after_eating":
+                timing_values["symptom_onset_after_food"] = n[:160]
+            return {"status": "answered", "values": timing_values, "confidence": 0.99, "source": "deterministic"}
+
         # The timing question is context-owned. Short answers such as
         # "10 mins", "soon", and "immediately" are complete answers because
         # the question already establishes that the reference point is eating.
