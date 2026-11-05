@@ -1575,6 +1575,15 @@ class ConversationManager:
 
     @staticmethod
     def _product_screening(product, matched_phrase):
+        message = "This concern matches the product information in the Guttify product database."
+        if (
+            product.get("product_name") == "GloLux GlutaGlow Skin Effervescent Tablets"
+            and re.search(r"\b(?:acne|pimples?|breakouts?|blackheads?|whiteheads?|zits?|blemishes?)\b", matched_phrase or "", re.I)
+        ):
+            message = (
+                "GloLux is listed for general skin brightness, even tone, elasticity and hydration. "
+                "Its product information does not list acne as a treatment, so this is not an acne-treatment recommendation."
+            )
         return {
             "pattern": f"Product concern: {product['product_name']}",
             "likely_condition": f"Product concern: {matched_phrase}",
@@ -1583,7 +1592,7 @@ class ConversationManager:
             "differentials": [],
             "action": "product_support",
             "product_allowed": True,
-            "message": "This concern matches the product information in the Guttify product database.",
+            "message": message,
         }
 
     def _product_concern_result(self, session, text):
