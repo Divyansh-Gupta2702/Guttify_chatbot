@@ -105,7 +105,7 @@ PRODUCT_PRIMARY_ALIASES = {
     "Piloease Anal Care Spray": {"piles", "haemorrhoids", "hemorrhoids", "anal fissures", "anal fissure", "anal discomfort", "itching", "irritation"},
     "GloLux GlutaGlow Skin Effervescent Tablets": {"dull skin", "dry skin", "uneven skin tone", "skin elasticity", "early signs of aging", "skin health"},
     "Apple Active": {"weight management", "metabolism support", "bloating", "digestion concerns"},
-    "Liver Lift": {"fatigue", "sluggishness", "bloating", "digestion concerns", "liver support"},
+    "Liver Lift": {"fatigue", "sluggishness", "bloating", "digestion concerns", "liver support", "acidity", "heartburn", "acid reflux", "indigestion"},
 }
 
 # Clinical-pattern context matches are deliberately separate from the general

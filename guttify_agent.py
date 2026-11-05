@@ -149,9 +149,11 @@ def _approved_names_for_screening(screening, state=None):
     heartburn/acidity/reflux is explicitly present.
     """
     pattern = screening.get("pattern") if isinstance(screening, dict) else None
-    if (isinstance(screening, dict) and screening.get("product_allowed") is False
-            and pattern != "Diarrhea pattern"):
-        return set()
+    clinically_disallowed = bool(
+        isinstance(screening, dict)
+        and screening.get("product_allowed") is False
+        and pattern != "Diarrhea pattern"
+    )
 
     # Diarrhea excludes the two products whose product information does not
     # support use in that context. Other product eligibility continues to be
@@ -161,7 +163,7 @@ def _approved_names_for_screening(screening, state=None):
         or (isinstance(pattern, str) and "diarrhea" in pattern.lower())
         or (isinstance(screening, dict) and "ibs-d" in str(screening.get("likely_condition", "")).lower())
     )
-    allowed = set(PRODUCT_ELIGIBILITY.get(pattern) or set())
+    allowed = set() if clinically_disallowed else set(PRODUCT_ELIGIBILITY.get(pattern) or set())
 
     if pattern == "Upper-abdominal meal-related dyspepsia pattern" and state is not None:
         secondary = {str(x).strip().lower() for x in (state.secondary_symptoms or [])}
@@ -175,11 +177,21 @@ def _approved_names_for_screening(screening, state=None):
     # present in this same assessment. Primary-pattern safety remains intact;
     # this only broadens the product allow-list for already reported symptom
     # clusters.
-    if state is not None and allowed:
+    if state is not None:
         reported = set()
         if state.primary_symptom:
             reported.add(str(state.primary_symptom).strip().lower())
         reported.update(str(x).strip().lower() for x in (state.secondary_symptoms or []))
+        if getattr(state, "constipation_explicit", None) is True:
+            reported.add("constipation")
+        if getattr(state, "hard_stools", None) is True:
+            reported.add("hard stools")
+        if getattr(state, "bloating", None) is True:
+            reported.add("bloating")
+        if getattr(state, "gas", None) is True:
+            reported.add("gas")
+        if getattr(state, "reflux_present", None) is True:
+            reported.add("acid reflux")
         for symptom in reported:
             allowed.update(ADDITIONAL_SYMPTOM_PRODUCT_ELIGIBILITY.get(symptom, set()))
         # A reported anal lump is an independent product-relevant finding,
@@ -193,13 +205,19 @@ def _approved_names_for_screening(screening, state=None):
         # allow the general catalog to score, then apply the requested two
         # product exclusions. A red-flag/otherwise disallowed pattern remains
         # closed through its explicit `product_allowed: false` result.
-        if not allowed:
+        if not allowed and not clinically_disallowed:
             allowed = {
                 product.get("product_name")
                 for product in ALL_PRODUCTS
                 if product.get("status") == "active"
             }
         allowed.difference_update(DIARRHEA_DISALLOWED_PRODUCTS)
+
+    # Preserve an explicit no-product clinical result as a closed allow-list
+    # when none of the separately reported symptoms maps to a product. An
+    # empty set must never become `None`, which would admit the whole catalog.
+    if clinically_disallowed and not allowed:
+        return set()
 
     return allowed or None
 
@@ -2626,11 +2644,15 @@ class ConversationManager:
             # another long diagnosis.
             session.diagnosis_complete = True
 
-            if not screening.get("product_allowed"):
+            allowed = _approved_names_for_screening(screening, session.symptom_state)
+            safety_block = (
+                screening.get("action") == "urgent_medical_evaluation"
+                or bool((safety or {}).get("red_flag"))
+            )
+            if safety_block or (not screening.get("product_allowed") and not allowed):
                 session.diagnosis_complete = True
                 return {"status": "DIAGNOSIS", "message": _with_diarrhea_guidance(screening["message"], session.symptom_state, screening, session), "recommendations": [], "safety": safety, "screening": screening}
 
-            allowed = _approved_names_for_screening(screening, session.symptom_state)
             result = evaluate_product(session.symptom_state, user_message, allowed_names=allowed, match_context=screening.get("pattern"))
             result = _filter_approved_products(result, screening, session.symptom_state)
             result["screening"] = screening
@@ -2732,8 +2754,13 @@ class ConversationManager:
         if screening.get("action") != "urgent_medical_evaluation" and not session.summary_reviewed:
             session.screening = screening
             return self._summary_review_result(session)
-        if screening.get("product_allowed") and screening.get("pattern") in PRODUCT_ELIGIBILITY:
-            allowed = _approved_names_for_screening(screening, session.symptom_state)
+        allowed = _approved_names_for_screening(screening, session.symptom_state)
+        if (screening.get("product_allowed") and screening.get("pattern") in PRODUCT_ELIGIBILITY) or allowed:
+            if screening.get("action") == "urgent_medical_evaluation":
+                allowed = set()
+            if not allowed:
+                session.diagnosis_complete = True
+                return {"status": "DIAGNOSIS", "message": _with_diarrhea_guidance(screening["message"], session.symptom_state, screening, session), "recommendations": [], "safety": safety, "screening": screening}
             result = evaluate_product(session.symptom_state, user_message, allowed_names=allowed, match_context=screening.get("pattern"))
             result = _filter_approved_products(result, screening, session.symptom_state)
             if result.get("status") in ("RECOMMENDATION_FOUND", "AMBIGUOUS"):
