@@ -30,6 +30,17 @@ PRODUCT_CONCERN_ALIASES = {
         "weight management", "weight management support", "manage my weight", "weight control",
         "slow metabolism", "metabolism support", "metabolism", "weight loss support",
         "weight management concerns",
+        "want to lose weight", "wanting to lose weight", "i want to lose weight",
+        "trying to lose weight", "trying to lose some weight", "need to lose weight",
+        "help me lose weight", "help with losing weight", "looking to lose weight",
+        "hoping to lose weight", "wish to lose weight", "goal is to lose weight",
+        "unable to lose weight", "unalble to lose weight", "not able to lose weight",
+        "can't lose weight", "cant lose weight", "cannot lose weight",
+        "not losing weight", "i am not losing weight", "i'm not losing weight",
+        "struggling to lose weight", "having trouble losing weight",
+        "weight loss plateau", "stuck at my weight", "stubborn weight",
+        "lose weight", "losing weight on purpose", "weight reduction",
+        "reduce my weight", "reduce weight", "weight loss goal", "weight goals",
     ],
     "Guttify Poopie": [
         "low fibre intake", "low fiber intake", "low fibre", "low fiber",
@@ -48,7 +59,10 @@ PRODUCT_CONCERN_ALIASES = {
 # symptoms still go through GutGPT's safety/question/clinical-rule pipeline.
 PRODUCT_BUNDLES = {
     "liver": ["Liver Lift", "Guttify Poopie"],
-    "weight": ["Apple Active", "Guttify Poopie", "Liver Lift"],
+    # Weight-loss intent is a product concern, not a clinical diagnosis.
+    # Keep this route limited to Apple Active, which is the catalog's weight
+    # management product; unrelated gut/liver products must not be bundled in.
+    "weight": ["Apple Active"],
     "digestion": ["Digest Boost", "Liver Lift"],
 }
 
@@ -62,7 +76,11 @@ def detect_product_concerns(text):
     matches = []
     bundle_terms = {
         "liver": ("liver support", "liver health", "liver concerns"),
-        "weight": ("weight management", "weight control", "manage my weight", "weight loss support"),
+        "weight": (
+            "weight management", "weight control", "manage my weight", "weight loss support",
+            "want to lose weight", "trying to lose weight", "unable to lose weight",
+            "not losing weight", "weight loss goal", "weight reduction",
+        ),
         "digestion": ("digestion support", "indigestion support"),
     }
     for bundle, terms in bundle_terms.items():
