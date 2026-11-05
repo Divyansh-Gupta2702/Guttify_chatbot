@@ -16,4 +16,5 @@ db-backups
 # Never ship local backups, copied source backups, or runtime caches.
 *.dump
 *.bak
-.pytest_cache/
+.pytest-*
+.pytest_cache

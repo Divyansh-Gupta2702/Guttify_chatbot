@@ -170,11 +170,13 @@ STATE_FIELD_POLICY = {
 
 
 _UNKNOWN_RE = re.compile(
-    r"^(?:i\s+)?(?:don'?t|do\s+not|dont)\s+know$|"
-    r"^(?:i\s+am|i'?m|im)\s+(?:not\s+sure|unsure)$|"
-    r"^not\s+sure$|^unsure$|^uncertain$|^not\s+certain$|"
-    r"^can'?t\s+tell$|^no\s+idea$|^i\s+have\s+no\s+idea$|"
-    r"^i\s+don'?t\s+remember$|^i\s+can'?t\s+say$",
+    r"^(?:(?:well|honestly|i guess|maybe)\s+)?(?:i\s+)?(?:don'?t|do\s+not|dont)\s+(?:really\s+)?know(?:\s+(?:for sure|really|yet))?$|"
+    r"^(?:i\s+am|i'?m|im|not|still)\s+(?:not\s+)?(?:sure|certain|positive)(?:\s+(?:about that|yet|really|if|whether).*)?$|"
+    r"^(?:unsure|uncertain|not certain|not positive|hard to say)$|"
+    r"^(?:i\s+)?can'?t\s+(?:really\s+)?tell$|^no\s+idea$|^i\s+have\s+no\s+idea$|"
+    r"^i\s+don'?t\s+remember$|^i\s+can'?t\s+say$|^not that i know(?: of)?$|"
+    r"^(?:i\s+)?(?:have\s+)?no clue$|^maybe(?:\s+not)?$|"
+    r"^(?:not really sure|i don't think so|i do not think so|i'm not too sure|im not too sure)$",
     re.I,
 )
 _REFUSAL_RE = re.compile(
@@ -186,12 +188,14 @@ _REFUSAL_RE = re.compile(
 _YES_RE = re.compile(
     r"^(?:yes|yeah|yep|yup|correct|that's\s+right|that\s+is\s+right|"
     r"absolutely|sure|definitely|certainly|of\s+course|true|exactly|"
-    r"i\s+do|i\s+have|it\s+does|it\s+is|for\s+sure)$", re.I,
+    r"i\s+do|i\s+have|it\s+does|it\s+is|for\s+sure|"
+    r"i\s+(?:do|have|am)|i\s+(?:experience|get|notice)\s+(?:it|that|them))$", re.I,
 )
 _NO_RE = re.compile(
     r"^(?:no|nope|nah|not\s+really|not\s+at\s+all|false|never|"
     r"i\s+don't|i\s+do\s+not|i\s+haven't|i\s+have\s+not|"
-    r"it\s+doesn't|it\s+does\s+not)$", re.I,
+    r"it\s+doesn't|it\s+does\s+not|not usually|not often|"
+    r"i\s+(?:don't|do not|haven't|have not|never)\s+(?:have|experience|get|notice)\s+(?:it|that|them))$", re.I,
 )
 
 
@@ -431,6 +435,8 @@ def normalize_answer_text(value: str) -> str:
 
 def classify_answer_status(value: str) -> str:
     n = normalize_answer_text(value)
+    if re.fullmatch(r"(?:sometimes|occasionally|rarely|once in a while|every now and then|every so often|from time to time)", n):
+        return "sometimes"
     if _UNKNOWN_RE.fullmatch(n):
         return "unknown"
     if _REFUSAL_RE.fullmatch(n):
@@ -468,6 +474,10 @@ def resolve_against_active_question(
 
     n = normalize_answer_text(message)
     status = classify_answer_status(n)
+    if status == "sometimes":
+        # A frequency qualifier confirms a one-field yes/no symptom, but it
+        # cannot supply a numeric count or resolve a compound question.
+        status = "yes" if spec.answer_kind == "boolean" and len(spec.fields) == 1 else "unknown"
 
     # A clarification can narrow a compound question to one specific field.
     # In that context a short yes/no belongs to that field alone.
@@ -725,6 +735,9 @@ def resolve_against_active_question(
             }
         if status == "no" and question_id == "medications":
             return {"status": "answered", "values": {"medications": "none"}, "confidence": 0.99, "source": "deterministic"}
+        if status == "yes" and question_id == "medications":
+            # A bare yes does not identify what medication or supplement is taken.
+            return {"status": "unresolved", "values": {}, "confidence": 0.0, "source": "unresolved"}
         if status == "no" and question_id in {"triggers", "food_trigger", "trigger"}:
             return {"status": "answered", "values": {"food_related": False}, "confidence": 0.99, "source": "deterministic"}
         if status == "no" and question_id == "infection":
@@ -987,7 +1000,7 @@ def resolve_against_active_question(
                 "source": "deterministic",
             }
         if re.fullmatch(r"(?:sometimes|occasionally|rarely|once in a while)", n):
-            return {"status": "clarification_needed", "values": {}, "confidence": 0.95, "source": "deterministic"}
+            return {"status": "unknown", "values": {}, "confidence": 0.99, "source": "deterministic"}
     if question_id == "severity":
         m = re.search(r"\b([1-9]|10)\b", n)
         if m:

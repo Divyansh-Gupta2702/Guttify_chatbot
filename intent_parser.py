@@ -494,6 +494,8 @@ class SymptomState:
     # pretending the clinical fact is false or true.
     answered_unknown_fields: list = field(default_factory=list)
     refused_fields: list = field(default_factory=list)
+    # Verbatim answers for auditability, especially qualified/uncertain replies.
+    answer_notes: dict = field(default_factory=dict)
     # Track if the conditional weight-loss question (triggered by duration >= 1 month) has been asked
     weight_loss_duration_asked: bool = False
 
@@ -712,7 +714,7 @@ def extract_medications(text):
     n = normalize(text)
     if any(x in n for x in ["no medicines", "no medication", "not taking medicines", "not taking medication", "no regular medicines", "no regular medication", "not on medication"]):
         return "none"
-    if any(x in n for x in ["taking medicine", "taking medication", "taking medicines", "taking supplements", "regular medication", "regular medicines", "on medication", "on medicines", "i take ", "i'm taking ", "im taking "]):
+    if any(x in n for x in ["taking medicine", "taking medication", "taking medicines", "taking supplements", "regular medication", "regular medicines", "on medication", "on medicines", "i take ", "i'm taking ", "im taking ", "i do take ", "i am taking "]):
         return "reported"
     return None
 

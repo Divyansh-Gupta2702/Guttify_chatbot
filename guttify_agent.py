@@ -722,6 +722,9 @@ class ConversationManager:
                 if answer_field and answer_field not in recorded_fields:
                     recorded_fields.append(answer_field)
             setattr(s, target_name, recorded_fields)
+            notes = dict(getattr(s, "answer_notes", {}) or {})
+            notes[field] = text
+            s.answer_notes = notes
             if field == "stool_form":
                 s.stool_form = "unknown"
             s.red_flags = derive_red_flags(s)
@@ -740,6 +743,10 @@ class ConversationManager:
 
         partial_unknowns = question_resolution.get("unknown_fields") or []
         partial_refusals = question_resolution.get("refused_fields") or []
+        if question_resolution.get("status") in {"answered", "partial"}:
+            notes = dict(data.get("answer_notes") or {})
+            notes[field] = text
+            data["answer_notes"] = notes
         for target_name, answer_fields in (
             ("answered_unknown_fields", partial_unknowns),
             ("refused_fields", partial_refusals),

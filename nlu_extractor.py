@@ -1134,7 +1134,7 @@ def _deterministic_context_fallback(message: str, last_question: str | None, sta
             out["water_intake"] = {"one":"1", "two":"2", "three":"3", "four":"4", "five":"5", "six":"6"}[word_litres.group(1)] + " L"
     if re.search(r"\b(?:no medicines|no medication|no medications|not taking medicines|not taking medication|no regular medicines|no regular medication|not on medication)\b", n):
         out["medications"] = "none"
-    elif re.search(r"\b(?:taking medicine|taking medication|taking medicines|taking supplements|regular medication|regular medicines|on medication|on medicines|i take|i'm taking|im taking)\b", n):
+    elif re.search(r"\b(?:taking medicine|taking medication|taking medicines|taking supplements|regular medication|regular medicines|on medication|on medicines|i take|i'm taking|im taking|i do take|i am taking|i do take any)\b", n):
         out["medications"] = "reported"
     if re.search(r"\b(?:low|little|poor)\s+(?:fibre|fiber)\b", n):
         out["fibre_intake"] = "low"
