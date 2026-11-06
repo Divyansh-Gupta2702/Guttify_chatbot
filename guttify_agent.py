@@ -1830,10 +1830,15 @@ class ConversationManager:
 
         new_labels = self._summary_symptom_labels(session.symptom_state) - before_labels
         if new_labels:
+            new_symptoms = [
+                str(label).strip()
+                for label in [session.symptom_state.primary_symptom, *(session.symptom_state.secondary_symptoms or [])]
+                if str(label or "").strip() and str(label).strip().casefold() in new_labels
+            ]
             session.awaiting_summary_confirmation = False
             session.summary_correction_mode = False
             session.last_question = None
-            pending = next_question(session.symptom_state)
+            pending = next_question(session.symptom_state, only_symptoms=new_symptoms)
             if pending:
                 name, question_text = pending
                 if name not in session.symptom_state.asked_fields:

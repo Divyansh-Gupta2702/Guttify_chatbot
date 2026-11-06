@@ -3,6 +3,7 @@ from symptom_summary import build_symptom_summary
 from clinical_rule_engine import _bowel_patterns, evaluate as evaluate_screening
 from guttify_agent import ConversationManager
 import guttify_agent as guttify_agent_module
+from symptom_questionnaire import next_question
 
 
 def test_summary_includes_selected_bristol_type_and_known_symptoms():
@@ -208,6 +209,47 @@ def test_summary_keeps_new_symptom_when_user_also_corrects_duration(monkeypatch)
     assert "gas" in session.symptom_state.secondary_symptoms
     assert session.symptom_state.duration == "3 weeks"
     assert result["status"] in {"ASK", "SUMMARY_REVIEW"}
+
+
+def test_summary_screens_only_new_symptoms_when_several_are_added(monkeypatch):
+    manager = ConversationManager()
+    sid = "phase1-summary-only-new-symptoms"
+    session = _complete_constipation_session(manager, sid)
+    manager.handle_message(sid, "continue")
+    session.symptom_state.stool_form = None
+    session.symptom_state.vomiting = None
+    session.symptom_state.answered_unknown_fields = [
+        field for field in session.symptom_state.answered_unknown_fields
+        if field not in {"stool_form", "vomiting"}
+    ]
+
+    def extract(text, current_question, state, *args, **kwargs):
+        return {
+            "symptoms": ["constipation", "nausea", "heartburn"],
+            "other_symptoms": [], "intent": "assessment", "confidence": 0.9,
+        }
+
+    monkeypatch.setattr(guttify_agent_module, "extract_natural_facts", extract)
+    result = manager.handle_message(sid, "I also have nausea and heartburn")
+
+    assert result["status"] == "ASK"
+    assert session.last_question == "vomiting"
+    assert session.symptom_state.primary_symptom == "constipation"
+    assert {"nausea", "heartburn"}.issubset(set(session.symptom_state.secondary_symptoms))
+
+
+def test_scoped_summary_followup_does_not_requeue_an_existing_bleeding_branch():
+    state = SymptomState(
+        primary_symptom="bleeding",
+        secondary_symptoms=["nausea"],
+        duration="1 week",
+        age=32,
+        blood_present=True,
+        vomiting=None,
+    )
+
+    assert next_question(state, only_symptoms=["nausea"])[0] == "vomiting"
+    assert next_question(state)[0] == "blood_colour"
 
 
 def test_unmatched_summary_symptom_is_classified_through_nlu(monkeypatch):

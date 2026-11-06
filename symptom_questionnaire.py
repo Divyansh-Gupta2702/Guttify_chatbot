@@ -13,7 +13,7 @@ from question_schema import question_has_answer, question_has_progressed
 logger = logging.getLogger("gutgpt.questionnaire")
 
 
-def next_question(state):
+def next_question(state, only_symptoms=None):
     asked = set(state.asked_fields or [])
     unknown_fields = set(getattr(state, "answered_unknown_fields", []) or [])
     refused_fields = set(getattr(state, "refused_fields", []) or [])
@@ -69,18 +69,27 @@ def next_question(state):
         "bleeding": "bleeding", "blood in stool": "bleeding",
     }
     reported = []
-    reported_labels = {
+    symptoms_to_screen = (
+        only_symptoms
+        if only_symptoms is not None
+        else [state.primary_symptom, *(state.secondary_symptoms or [])]
+    )
+    all_reported_labels = {
         str(symptom or "").strip().casefold()
         for symptom in [state.primary_symptom, *(state.secondary_symptoms or [])]
         if str(symptom or "").strip()
     }
-    constipation_reported = bool(reported_labels & {"constipation", "hard stools"}) or state.constipation_explicit is True
-    diarrhea_reported = bool(reported_labels & {"diarrhea", "diarrhoea", "loose motions", "loose stools"}) or state.diarrhea_explicit is True or state.diarrhea is True
-    gas_reported = bool(reported_labels & {"gas", "flatulence"}) or state.gas is True
-    bloating_reported = bool(reported_labels & {"bloating", "abdominal bloating"}) or state.bloating is True
-    if state.blood_present is True:
+    constipation_reported = bool(all_reported_labels & {"constipation", "hard stools"}) or state.constipation_explicit is True
+    diarrhea_reported = bool(all_reported_labels & {"diarrhea", "diarrhoea", "loose motions", "loose stools"}) or state.diarrhea_explicit is True or state.diarrhea is True
+    gas_reported = bool(all_reported_labels & {"gas", "flatulence"}) or state.gas is True
+    bloating_reported = bool(all_reported_labels & {"bloating", "abdominal bloating"}) or state.bloating is True
+    selected_branches = {
+        branch_aliases.get(str(symptom or "").strip().casefold())
+        for symptom in symptoms_to_screen
+    }
+    if state.blood_present is True and (only_symptoms is None or "bleeding" in selected_branches):
         reported.append("bleeding")
-    for symptom in [state.primary_symptom, *(state.secondary_symptoms or [])]:
+    for symptom in symptoms_to_screen:
         label = str(symptom or "").strip().casefold()
         branch_name = branch_aliases.get(label)
         if branch_name and branch_name not in reported:
