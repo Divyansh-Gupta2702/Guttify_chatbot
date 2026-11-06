@@ -17,6 +17,7 @@ def test_restored_messages_keep_their_persisted_timestamps():
     backend = (ROOT / "app.py").read_text(encoding="utf-8")
     assert 'item.created_at || item.timestamp' in widget
     assert "SELECT sequence_no, role, content, created_at FROM assessment_messages" in backend
+    assert "SELECT role, content, created_at FROM (" in backend
     assert '"created_at": r["created_at"].astimezone(INDIA_TZ).isoformat()' in backend
     assert "INSERT INTO assessment_messages (assessment_id, sequence_no, turn_id, role, content, created_at)" in backend
     assert '_to_utc_datetime(item.get("created_at"))' in backend

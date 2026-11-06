@@ -1158,7 +1158,7 @@ def _restore_assessment_checkpoint(customer_id: str, new_session_id: str) -> dic
                     WHERE customer_id=%s
                 """, (assessment_id, new_session_id, customer_id))
                 cur.execute("""
-                    SELECT role, content FROM (
+                    SELECT role, content, created_at FROM (
                         SELECT sequence_no, role, content, created_at FROM assessment_messages
                         WHERE assessment_id=%s ORDER BY sequence_no DESC LIMIT %s
                     ) recent ORDER BY sequence_no ASC
