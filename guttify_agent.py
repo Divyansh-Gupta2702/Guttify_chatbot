@@ -1724,7 +1724,7 @@ class ConversationManager:
     def _is_summary_rejection(text):
         return normalize(text) in {"no", "nope", "not correct", "incorrect", "that's wrong", "that is wrong", "needs correction", "change it"}
 
-    def _apply_summary_correction(self, session, text):
+    def _apply_summary_correction(self, session, text, facts=None):
         """Apply a clearly recognized customer correction, without diagnosing."""
         state = session.symptom_state
         before = state.to_dict()
@@ -1747,10 +1747,16 @@ class ConversationManager:
             state.severity = severity
             return True
         else:
-            # Use the existing deterministic NLU and explicit-negation
-            # reconciliation for symptom corrections. Do not let this helper
-            # make a diagnosis or select products.
-            facts = extract_natural_facts(text, None, state)
+            # Use the same contextual NLU path as a first assessment message.
+            # It can map a less familiar symptom to an existing branch; it
+            # still cannot diagnose or select products here.
+            facts = facts if isinstance(facts, dict) else self._run_nlu(session, text)
+            facts = dict(facts)
+            # Age is immutable during summary review. Duration is handled by
+            # the explicit correction parser above.
+            facts["age"] = None
+            facts["duration"] = None
+            self._apply_nlu_facts(session, facts)
             self._apply_volunteered_symptom_facts(session, text, facts)
             after_facts = session.symptom_state.to_dict()
             if after_facts == before:
@@ -1762,12 +1768,87 @@ class ConversationManager:
     def _summary_review_result(self, session):
         session.awaiting_summary_confirmation = True
         session.summary_correction_mode = False
+        # Summary edits are free-form; do not let the last screening prompt
+        # bias symptom classification as if the user were answering it.
+        session.last_question = None
+        session.active_question_component = None
         return {
             "status": "SUMMARY_REVIEW",
             "message": build_symptom_summary(session.symptom_state),
             "recommendations": [],
             "screening": None,
         }
+
+    @staticmethod
+    def _summary_symptom_labels(state):
+        labels = [getattr(state, "primary_symptom", None), *(getattr(state, "secondary_symptoms", None) or [])]
+        return {str(label).strip().casefold() for label in labels if str(label or "").strip()}
+
+    def _summary_correction_turn(self, session, text, conversation_history=None):
+        """Apply a summary edit, rescreen newly added branches, then review again."""
+        before_labels = self._summary_symptom_labels(session.symptom_state)
+        before_other = set(session.symptom_state.other_symptoms or [])
+        stool_form = extract_stool_form(text)
+        duration = extract_duration(text)
+        severity = extract_severity(text)
+        facts = None
+        if stool_form not in range(1, 8) and not (duration and str(duration).lower() != "unknown") and severity in (None, "unknown"):
+            facts = self._run_nlu(session, text, conversation_history)
+
+        if not self._apply_summary_correction(session, text, facts):
+            return None
+
+        session.summary_reviewed = False
+        if session.symptom_state.red_flags:
+            screening = evaluate_screening(session.symptom_state)
+            safety = {
+                "safe_to_recommend": False, "requires_doctor": True,
+                "red_flag": True, "reasons": session.symptom_state.red_flags,
+                "message": screening["message"],
+            }
+            session.screening = screening
+            session.diagnosis_complete = True
+            return {"status": "SAFETY_REVIEW", "message": screening["message"],
+                    "recommendations": [], "safety": safety, "screening": screening}
+
+        new_labels = self._summary_symptom_labels(session.symptom_state) - before_labels
+        if new_labels:
+            session.awaiting_summary_confirmation = False
+            session.summary_correction_mode = False
+            session.last_question = None
+            pending = next_question(session.symptom_state)
+            if pending:
+                name, question_text = pending
+                if name not in session.symptom_state.asked_fields:
+                    session.symptom_state.asked_fields.append(name)
+                first_component = next_question_component(name, session.symptom_state)
+                if first_component:
+                    session.active_question_component, question_text = first_component
+                else:
+                    session.active_question_component = None
+                session.last_question = name
+                session.questions_asked += 1
+                return {"status": "ASK", "message": _with_diarrhea_guidance(
+                    question_text, session.symptom_state, session=session
+                ), "recommendations": []}
+            return self._summary_review_result(session)
+
+        added_other = [item for item in (session.symptom_state.other_symptoms or []) if item not in before_other]
+        if added_other:
+            session.awaiting_summary_confirmation = False
+            session.summary_correction_mode = True
+            phrase = str(added_other[-1]).strip()[:100]
+            return {
+                "status": "ASK",
+                "message": (
+                    f'I could not confidently match "{phrase}" to a screening branch. '
+                    "Which best describes it: bowel changes, pain or cramps, bloating or gas, "
+                    "acidity or reflux, nausea, or anal discomfort? You can describe it in your own words."
+                ),
+                "recommendations": [],
+            }
+
+        return self._summary_review_result(session)
 
     def _add_bristol_evidence(self, screening, state):
         """Add the selected Bristol type as transparent supporting evidence."""
@@ -1996,54 +2077,28 @@ class ConversationManager:
                     "recommendations": [],
                 }
             else:
-                # Treat any non-confirmation as a proposed correction, but only
-                # accept it if the deterministic correction parser recognizes it.
-                if self._apply_summary_correction(session, user_message):
-                    session.summary_reviewed = False
+                correction_result = self._summary_correction_turn(
+                    session, user_message, conversation_history
+                )
+                if correction_result:
                     logger.info("[SUMMARY][CORRECTION_APPLIED] session=%s", str(sid)[:8])
-                    if session.symptom_state.red_flags:
-                        safety_result = {
-                            "safe_to_recommend": False,
-                            "requires_doctor": True,
-                            "red_flag": True,
-                            "reasons": session.symptom_state.red_flags,
-                            "message": "Your correction includes a warning sign that needs medical evaluation. I won't recommend a product for these symptoms.",
-                        }
-                        screening = {
-                            "pattern": "Red-flag presentation",
-                            "likely_condition": "Red-flag presentation",
-                            "confidence": "high",
-                            "evidence": list(session.symptom_state.red_flags),
-                            "differentials": [],
-                            "action": "urgent_medical_evaluation",
-                            "product_allowed": False,
-                            "message": safety_result["message"],
-                        }
-                        session.screening = screening
-                        session.diagnosis_complete = True
-                        return {"status": "SAFETY_REVIEW", "message": safety_result["message"], "recommendations": [], "safety": safety_result, "screening": screening}
-                    return self._summary_review_result(session)
+                    return correction_result
                 return {
                     "status": "ASK",
-                    "message": "I couldn't identify that correction clearly, so I haven't changed your answers. Age is fixed for this assessment. Please specify a Bristol type from 1 to 7, a duration such as '3 weeks', a severity, or the symptom you want to correct.",
+                    "message": "I couldn't identify that correction clearly, so I haven't changed your answers. Age is fixed for this assessment. Please give a specific Bristol type, duration, severity, or describe the symptom you want to add or correct.",
                     "recommendations": [],
                 }
 
         if session.summary_correction_mode:
-            if self._apply_summary_correction(session, user_message):
-                session.summary_correction_mode = False
-                session.summary_reviewed = False
+            correction_result = self._summary_correction_turn(
+                session, user_message, conversation_history
+            )
+            if correction_result:
                 logger.info("[SUMMARY][CORRECTION_APPLIED] session=%s", str(sid)[:8])
-                if session.symptom_state.red_flags:
-                    screening = evaluate_screening(session.symptom_state)
-                    session.screening = screening
-                    session.diagnosis_complete = True
-                    return {"status": "SAFETY_REVIEW", "message": screening["message"], "recommendations": [], "screening": screening,
-                            "safety": {"safe_to_recommend": False, "requires_doctor": True, "red_flag": True, "reasons": session.symptom_state.red_flags, "message": screening["message"]}}
-                return self._summary_review_result(session)
+                return correction_result
             return {
                 "status": "ASK",
-                "message": "I couldn't identify that correction clearly, and I haven't changed your answers. Age is fixed for this assessment. Please give a specific correction, such as 'Bristol type 4' or 'duration 3 weeks'.",
+                "message": "I couldn't identify that correction clearly, and I haven't changed your answers. Age is fixed for this assessment. Please give a specific Bristol type, duration, severity, or describe the symptom you want to add or correct.",
                 "recommendations": [],
             }
 

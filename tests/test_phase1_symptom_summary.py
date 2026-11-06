@@ -2,6 +2,7 @@ from intent_parser import SymptomState
 from symptom_summary import build_symptom_summary
 from clinical_rule_engine import _bowel_patterns, evaluate as evaluate_screening
 from guttify_agent import ConversationManager
+import guttify_agent as guttify_agent_module
 
 
 def test_summary_includes_selected_bristol_type_and_known_symptoms():
@@ -160,6 +161,51 @@ def test_age_cannot_be_changed_during_summary_review_or_correction():
     assert rejected["status"] == "ASK"
     assert session.symptom_state.age == 32
     assert "Age is fixed" in rejected["message"]
+
+
+def test_summary_can_add_symptom_and_restart_its_screening_branch(monkeypatch):
+    manager = ConversationManager()
+    sid = "phase1-summary-add-symptom"
+    session = _complete_constipation_session(manager, sid)
+    session.symptom_state.secondary_symptoms = ["bloating"]
+    manager.handle_message(sid, "continue")
+
+    calls = []
+
+    def extract(text, current_question, state, *args, **kwargs):
+        calls.append((text, current_question))
+        return {"symptoms": ["gas"], "other_symptoms": [], "intent": "assessment", "confidence": 0.9}
+
+    monkeypatch.setattr(guttify_agent_module, "extract_natural_facts", extract)
+    result = manager.handle_message(sid, "I also have gas")
+
+    assert calls and calls[0][0] == "I also have gas"
+    assert result["status"] == "ASK"
+    assert "gas" in session.symptom_state.secondary_symptoms
+    assert session.last_question is not None
+    assert session.awaiting_summary_confirmation is False
+    assert session.symptom_state.age == 32
+
+
+def test_unmatched_summary_symptom_is_classified_through_nlu(monkeypatch):
+    manager = ConversationManager()
+    sid = "phase1-summary-nlu-symptom"
+    session = _complete_constipation_session(manager, sid)
+    manager.handle_message(sid, "continue")
+
+    calls = []
+
+    def extract(text, current_question, state, *args, **kwargs):
+        calls.append((text, current_question))
+        return {"symptoms": ["nausea"], "other_symptoms": [], "intent": "assessment", "confidence": 0.9}
+
+    monkeypatch.setattr(guttify_agent_module, "extract_natural_facts", extract)
+    result = manager.handle_message(sid, "I feel queasy too")
+
+    assert calls and calls[0][0] == "I feel queasy too"
+    assert "nausea" in session.symptom_state.secondary_symptoms
+    assert result["status"] in {"ASK", "SUMMARY_REVIEW"}
+    assert session.symptom_state.age == 32
 
     manager.handle_message(sid, "no")
     rejected = manager.handle_message(sid, "age 45")
