@@ -78,8 +78,10 @@ def test_hinglish_input_translation_failure_does_not_advance_assessment(monkeypa
 
 def test_translation_service_preserves_structure_and_catalog_fields(monkeypatch):
     monkeypatch.setattr(translation_service, "_get_llm_cached", lambda *args: object())
+    prompts = []
 
     def fake_invoke(_client, _prompt, *, reason):
+        prompts.append(_prompt)
         if reason == "translation_input":
             content = json.dumps({"translation": "I have pain for 2 days"})
         else:
@@ -114,3 +116,8 @@ def test_translation_service_preserves_structure_and_catalog_fields(monkeypatch)
     assert recommendations[0]["product_name"] == "Brand Product"
     assert recommendations[0]["product_url"] == "https://example.test/product"
     assert recommendations[0]["intended_support"] == ["Gas aur bloating support"]
+    output_prompt = prompts[-1].lower()
+    assert "symptom-summary headings" in output_prompt
+    assert "every summary field label and answer" in output_prompt
+    assert "diagnosis/screening explanations" in output_prompt
+    assert "do not use devanagari or leave whole sentences in english" in output_prompt

@@ -107,7 +107,10 @@ def translate_chat_output(reply: str, recommendations: list[dict] | None = None)
         reason="translation_output",
         instructions=(
             "Translate English into natural Hinglish: Hindi phrasing written in Latin/Roman letters, "
-            "with familiar English medical terms where clearer. Do not use Devanagari. Preserve the "
+            "using familiar English medical words only where people commonly use them in Hinglish. "
+            "Do not use Devanagari or leave whole sentences in English. Translate all user-facing "
+            "content, including symptom-summary headings, every summary field label and answer, "
+            "diagnosis/screening explanations, disclaimers, and follow-up questions. Preserve the "
             "meaning, negations, numbers, Markdown structure, and every question. Keep product/brand "
             "names and URLs exactly as written. Translate every string in reply and recommendation "
             "fields, preserving array lengths and JSON structure. Do not add advice or omit any content."
