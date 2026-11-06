@@ -1523,7 +1523,20 @@ def extract_natural_facts(message: str, last_question: str | None, state, conver
         return _filter_unrelated_active_question_symptoms(fallback, message, last_question)
 
     llm_result = None
-    if _needs_llm(message, last_question, fallback):
+    # Every unanswered active question gets one contextual LLM attempt. The
+    # general heuristic is useful for free-form turns, but it can see an
+    # unrelated extracted fact and incorrectly decide that an ambiguous answer
+    # is already understood. Resolved, unknown, and refused answers returned
+    # above, so this only runs when deterministic question resolution failed.
+    should_try_question_fallback = bool(
+        last_question and resolution["status"] in {"unresolved", "clarification_needed"}
+        # A qualitative frequency such as "sometimes" is understood, but it
+        # cannot safely provide the numeric count this question requires.
+        # Keep the deterministic request for a number instead of asking the
+        # model to guess one.
+        and not (last_question == "daily_frequency" and resolution["status"] == "clarification_needed")
+    )
+    if should_try_question_fallback or _needs_llm(message, last_question, fallback):
         llm_result = _llm_extract(message, last_question, state, forced_intent, conversation_history)
 
     if llm_result is None:

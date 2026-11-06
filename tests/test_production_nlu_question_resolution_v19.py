@@ -316,6 +316,40 @@ def test_bowel_frequency_short_answer_does_not_call_llm(monkeypatch):
     assert calls == []
 
 
+def test_unresolved_active_question_always_gets_llm_fallback(monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        nlu_extractor,
+        "_llm_extract",
+        lambda *args, **kwargs: calls.append((args, kwargs)) or None,
+    )
+
+    facts = extract_natural_facts(
+        "I also have gas", "blood", SymptomState(primary_symptom="stomach pain")
+    )
+
+    assert len(calls) == 1
+    assert calls[0][0][1] == "blood"
+    assert facts["_answer_status"] == "unresolved"
+
+
+def test_deterministically_resolved_active_question_skips_llm(monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        nlu_extractor,
+        "_llm_extract",
+        lambda *args, **kwargs: calls.append((args, kwargs)) or None,
+    )
+
+    facts = extract_natural_facts(
+        "no", "blood", SymptomState(primary_symptom="stomach pain")
+    )
+
+    assert facts["_answer_status"] == "answered"
+    assert facts["_resolver_source"] == "deterministic"
+    assert calls == []
+
+
 def test_open_symptom_prompts_do_not_store_yes_no_or_neutral_as_symptoms():
     positive = resolve_against_active_question("symptoms", "gas", state=SymptomState())
     assert positive["status"] == "answered"
