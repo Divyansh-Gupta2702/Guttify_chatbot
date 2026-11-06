@@ -274,6 +274,14 @@
         white-space: pre-wrap;
         overflow-wrap: anywhere;
       }
+      .msg-time {
+        display: block;
+        margin-top: 5px;
+        font-size: 10px;
+        line-height: 1;
+        text-align: right;
+        opacity: .72;
+      }
 
       .bot {
         align-self: flex-start;
@@ -610,7 +618,16 @@
     return html;
   }
 
-  function addMessage(text, sender, variant = "") {
+  function formatMessageTime(value) {
+    const date = value ? new Date(value) : new Date();
+    const validDate = Number.isNaN(date.getTime()) ? new Date() : date;
+    return {
+      label: validDate.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }),
+      iso: validDate.toISOString(),
+    };
+  }
+
+  function addMessage(text, sender, variant = "", timestamp = null) {
     const el = document.createElement("div");
     el.className = `msg ${sender} ${variant}`.trim();
 
@@ -619,6 +636,13 @@
     } else {
       el.textContent = text;
     }
+
+    const time = formatMessageTime(timestamp);
+    const timeElement = document.createElement("time");
+    timeElement.className = "msg-time";
+    timeElement.dateTime = time.iso;
+    timeElement.textContent = time.label;
+    el.appendChild(timeElement);
 
     messages.appendChild(el);
     messages.scrollTop = messages.scrollHeight;
@@ -846,7 +870,7 @@
         addMessage(currentText().resumed(safeName), "bot");
         for (const item of resume.messages) {
           if (item && (item.role === "user" || item.role === "assistant") && typeof item.content === "string") {
-            addMessage(item.content, item.role === "assistant" ? "bot" : "user");
+            addMessage(item.content, item.role === "assistant" ? "bot" : "user", "", item.created_at || item.timestamp);
           }
         }
         // A checkpoint may contain an active next question that was not yet
@@ -1054,6 +1078,12 @@
           const bubble = document.createElement("div");
           bubble.className = `history-message ${message.role === "user" ? "user" : "assistant"}`;
           bubble.textContent = message.content || "";
+          const time = formatMessageTime(message.created_at);
+          const timeElement = document.createElement("time");
+          timeElement.className = "msg-time";
+          timeElement.dateTime = time.iso;
+          timeElement.textContent = time.label;
+          bubble.appendChild(timeElement);
           historyTranscript.appendChild(bubble);
         }
       }

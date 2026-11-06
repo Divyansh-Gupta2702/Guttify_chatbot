@@ -1128,7 +1128,7 @@ def _restore_assessment_checkpoint(customer_id: str, new_session_id: str) -> dic
                 """, (assessment_id, new_session_id, customer_id))
                 cur.execute("""
                     SELECT role, content FROM (
-                        SELECT sequence_no, role, content FROM assessment_messages
+                        SELECT sequence_no, role, content, created_at FROM assessment_messages
                         WHERE assessment_id=%s ORDER BY sequence_no DESC LIMIT %s
                     ) recent ORDER BY sequence_no ASC
                 """, (assessment_id, MAX_HISTORY_MESSAGES))
@@ -1160,7 +1160,11 @@ def _restore_assessment_checkpoint(customer_id: str, new_session_id: str) -> dic
             return None
         history = checkpoint.get("history", [])
     else:
-        history = [{"role": r["role"], "content": r["content"]} for r in message_rows]
+        history = [{
+            "role": r["role"],
+            "content": r["content"],
+            "created_at": r["created_at"].astimezone(INDIA_TZ).isoformat() if r.get("created_at") else None,
+        } for r in message_rows]
 
     payload = checkpoint.get("state")
     if not isinstance(payload, dict) or not isinstance(payload.get("symptom_state"), dict):
