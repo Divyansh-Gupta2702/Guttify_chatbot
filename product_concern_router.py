@@ -6,6 +6,7 @@ support reach the product database without pretending those concerns are
 medical diagnoses.
 """
 import re
+from intent_parser import is_negated
 
 PRODUCT_CONCERN_ALIASES = {
     "GloLux GlutaGlow Skin Effervescent Tablets": [
@@ -84,11 +85,12 @@ def detect_product_concerns(text):
         "digestion": ("digestion support", "indigestion support"),
     }
     for bundle, terms in bundle_terms.items():
-        if any(_norm(term) in n for term in terms):
+        matched_terms = [term for term in terms if _norm(term) in n and not is_negated(text, term)]
+        if matched_terms:
             for product_name in PRODUCT_BUNDLES[bundle]:
-                matches.append((product_name, next(term for term in terms if _norm(term) in n)))
+                matches.append((product_name, matched_terms[0]))
     for product, aliases in PRODUCT_CONCERN_ALIASES.items():
-        found = [a for a in aliases if _norm(a) in n]
+        found = [a for a in aliases if _norm(a) in n and not is_negated(text, a)]
         if found:
             matches.append((product, max(found, key=len)))
     matches.sort(key=lambda x: len(x[1]), reverse=True)

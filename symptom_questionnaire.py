@@ -75,9 +75,9 @@ def next_question(state):
         if str(symptom or "").strip()
     }
     constipation_reported = bool(reported_labels & {"constipation", "hard stools"}) or state.constipation_explicit is True
-    diarrhea_reported = bool(reported_labels & {"diarrhea", "diarrhoea", "loose motions"}) or state.diarrhea_explicit is True or state.diarrhea is True
-    gas_reported = "gas" in reported_labels or state.gas is True
-    bloating_reported = "bloating" in reported_labels or state.bloating is True
+    diarrhea_reported = bool(reported_labels & {"diarrhea", "diarrhoea", "loose motions", "loose stools"}) or state.diarrhea_explicit is True or state.diarrhea is True
+    gas_reported = bool(reported_labels & {"gas", "flatulence"}) or state.gas is True
+    bloating_reported = bool(reported_labels & {"bloating", "abdominal bloating"}) or state.bloating is True
     if state.blood_present is True:
         reported.append("bleeding")
     for symptom in [state.primary_symptom, *(state.secondary_symptoms or [])]:

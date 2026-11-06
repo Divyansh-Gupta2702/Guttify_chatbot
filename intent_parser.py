@@ -443,31 +443,38 @@ def normalize(text):
 
 
 NEGATION_WORD_RE = re.compile(
-    r"\b(?:no|not|never|without|don't|dont|doesn't|doesnt|isn't|isnt|aren't|arent)\b"
+    r"\b(?:no|not|never|without|don't|dont|doesn't|doesnt|isn't|isnt|aren't|arent|"
+    r"haven't|havent|hasn't|hasnt|hadn't|hadnt)\b"
 )
 
 
 def is_negated(text, phrase):
     """Return True when a symptom/trigger occurrence is locally negated."""
-    n = normalize(text)
+    # Preserve punctuation as a temporary token because normalize() otherwise
+    # removes commas/full stops that separate an earlier negative from a new
+    # positive clause.
+    raw = re.sub(r"[,;.!?]", " clauseboundary ", (text or "").lower())
+    n = normalize(raw)
     phrase_n = normalize(phrase)
     if not phrase_n:
         return False
-    match = re.search(r"(?P<prefix>.*?)(?P<phrase>" + re.escape(phrase_n) + r")\b", n)
-    if not match:
+    matches = list(re.finditer(r"(?<!\w)" + re.escape(phrase_n) + r"(?!\w)", n))
+    if not matches:
         return False
-    prefix = match.group("prefix")[-100:]
-    negations = list(NEGATION_WORD_RE.finditer(prefix))
-    if not negations:
-        return False
-    after = prefix[negations[-1].end():].strip()
-    if not after:
-        return True
-    words = after.split()
-    if len(words) > 3:
-        return False
-    if any(w in {"but", "however", "though", "although", "except"} for w in words):
-        return False
+    for match in matches:
+        prefix_start = 0
+        # Negation from an earlier clause must not suppress a later positive
+        # mention, such as "no pain before, but pain now".
+        for boundary in re.finditer(r"\bclauseboundary\b|\b(?:but|however|though|although|except|yet)\b", n[:match.start()]):
+            prefix_start = boundary.end()
+        prefix = n[max(prefix_start, match.start() - 100):match.start()]
+        negations = list(NEGATION_WORD_RE.finditer(prefix))
+        if not negations:
+            return False
+        after = prefix[negations[-1].end():].strip()
+        words = after.split()
+        if len(words) > 3 or any(w in {"but", "however", "though", "although", "except", "yet"} for w in words):
+            return False
     return True
 
 
@@ -568,7 +575,7 @@ def extract_symptoms(text):
         match = pattern.search(n)
         if match:
             phrase = match.group(0)
-            if not is_negated(n, phrase):
+            if not is_negated(text, phrase):
                 positions[canonical] = match.start()
     # Catch natural long-form descriptions where location or severity words
     # separate "pain" from the body area.
@@ -579,7 +586,7 @@ def extract_symptoms(text):
         r"\b(?:my\s+)?(?:stomach|belly|abdomen)\s+(?:hurts?|is hurting)\b",
         n,
     )
-    if pain_match and not is_negated(n, pain_match.group(0)):
+    if pain_match and not is_negated(text, pain_match.group(0)):
         positions.setdefault("stomach pain", pain_match.start())
     if not positions:
         return None, []
@@ -592,7 +599,7 @@ def extract_food_trigger(text):
     for trigger, patterns in _FOOD_PATTERNS.items():
         for p in patterns:
             match = p.search(n)
-            if match and not is_negated(n, match.group(0)):
+            if match and not is_negated(text, match.group(0)):
                 return trigger
     return None
 

@@ -7,6 +7,7 @@ not perform diagnosis or recommendation.
 from dataclasses import dataclass, field
 from typing import Any, Callable, Optional
 import re
+from intent_parser import is_negated
 
 
 @dataclass(frozen=True)
@@ -236,16 +237,12 @@ _COMPOUND_COMPONENT_PATTERNS = {
 
 def _component_boolean(message: str, pattern: str) -> bool | None:
     """Return an explicitly mentioned component value, without inferring absence."""
-    negative = re.search(
-        r"\b(?:no|not|never|without|don't|dont|do not|doesn't|does not|"
-        r"isn't|is not|aren't|are not|haven't|have not|hasn't|has not)\b.{0,45}(?:" + pattern + r")",
-        message,
-    )
-    if negative:
-        return False
-    if re.search(pattern, message):
-        return True
-    return None
+    matches = list(re.finditer(pattern, message))
+    if not matches:
+        return None
+    # A negated mention must not override a separate affirmative mention in
+    # the same turn (for example, "no bleeding before, but blood today").
+    return any(not is_negated(message, match.group(0)) for match in matches)
 
 
 def _composite_completion(question_id: str, values: dict, state=None) -> bool:

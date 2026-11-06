@@ -1896,7 +1896,7 @@ def get_customer_assessment_detail(req: AssessmentHistoryDetailRequest, request:
         if isinstance(symptom_payload, dict):
             try:
                 summary_state = SymptomState(**symptom_payload)
-                symptom_summary = build_symptom_summary(summary_state).split("\\nReply **yes**", 1)[0]
+                symptom_summary = build_symptom_summary(summary_state).split("\nReply **yes**", 1)[0]
             except (TypeError, ValueError):
                 logger.warning("Could not format saved symptom summary assessment=%s", req.assessment_id[:8])
         return {

@@ -18,7 +18,7 @@ import re
 from functools import lru_cache
 from typing import Any
 
-from intent_parser import extract_food_trigger, extract_stool_form, extract_symptoms
+from intent_parser import extract_food_trigger, extract_stool_form, extract_symptoms, is_negated
 from question_schema import resolve_against_active_question, validate_question_resolution
 from llm_provider import create_client, invoke_provider
 from groq_service import configured_output_tokens, llm_client_cache_fingerprint, is_truncated_finish_reason
@@ -1423,6 +1423,9 @@ def _filter_unrelated_active_question_symptoms(result: dict, message: str, last_
     if not isinstance(symptoms, list):
         return result
 
+    def has_unnegated_match(pattern: str) -> bool:
+        return any(not is_negated(text, match.group(0)) for match in re.finditer(pattern, text))
+
     patterns = {
         "constipation": r"\b(?:constipat(?:ion|ed)|can't\s+poop|cant\s+poop|hard\s+stools?)\b",
         "hard stools": r"\b(?:hard|lumpy|firm)\s+(?:stools?|poop|poo)\b",
@@ -1449,24 +1452,19 @@ def _filter_unrelated_active_question_symptoms(result: dict, message: str, last_
         pat = patterns.get(symptom)
         mapped_phrase = next((item.get("phrase") for item in (result.get("_branch_mapped_symptoms") or [])
                               if isinstance(item, dict) and item.get("branch") == symptom), None)
-        if pat and re.search(pat, text):
+        if pat and has_unnegated_match(pat):
             kept.append(symptom)
-        elif mapped_phrase and mapped_phrase.casefold() in text and not re.search(
-            rf"\b(?:no|not|never|without|don't|dont|do not|haven't|have not|isn't|is not|doesn't|does not)\b.{{0,40}}{re.escape(mapped_phrase.casefold())}",
-            text,
-        ):
+        elif mapped_phrase and mapped_phrase.casefold() in text and not is_negated(text, mapped_phrase):
             kept.append(symptom)
         else:
             dropped.append(symptom)
 
     # Preserve genuinely volunteered symptoms even when the deterministic
     # resolver returned early and the generic symptom parser never ran.
-    # Negative mentions are excluded so "no gas" cannot become gas=True.
+    # Negative mentions are excluded so "no gas" cannot become gas=True,
+    # while a later affirmative mention in the same turn remains usable.
     for symptom, pat in patterns.items():
-        if not re.search(pat, text):
-            continue
-        negative_pat = rf"\b(?:no|not|never|without|don't|dont|do not|haven't|have not)\b.{{0,35}}(?:{pat})"
-        if re.search(negative_pat, text):
+        if not has_unnegated_match(pat):
             continue
         if symptom not in kept:
             kept.append(symptom)

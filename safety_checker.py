@@ -164,13 +164,30 @@ def is_pregnancy_or_lactation(text):
     n = re.sub(r"\s+", " ", (text or "").lower()).strip()
     if not n:
         return False
-    # Explicit negatives/corrections must not set a session-long caution.
-    if re.search(r"\b(?:not|never|no longer|stopped|quit|finished)\b.{0,35}\b(?:pregnant|pregnancy|breastfeeding|breast feeding|lactating|lactation)\b", n):
-        return False
-    # A disclosure about someone else is not the current user's status.
-    if re.search(r"\b(?:my wife|my partner|my girlfriend|my sister|my mother|my friend|she|her)\b.{0,45}\b(?:pregnant|pregnancy|breastfeeding|breast feeding|lactating|lactation)\b", n):
-        return False
-    return bool(re.search(r"\b(?:pregnant|pregnancy|breastfeeding|breast feeding|lactating|lactation)\b", n))
+    status = re.compile(r"\b(?:pregnant|pregnancy|breastfeeding|breast\s+feeding|lactating|lactation)\b", re.I)
+    # Evaluate each mention in its own clause. A negative pregnancy correction
+    # or a relative's status must not mask the user's separate disclosure.
+    clauses = re.split(
+        r"[,;.!?]+|\b(?:but|however|although|while|yet)\b|"
+        r"\band\s+(?=(?:i|i'm|im|we|pregnant|pregnancy|breastfeeding|breast\s+feeding|lactating|lactation)\b)",
+        n,
+    )
+    negative_before = re.compile(
+        r"\b(?:not|isn't|isnt|aren't|arent|never|no longer|stopped|quit|finished|"
+        r"don't|dont|doesn't|doesnt|haven't|havent|hasn't|hasnt|hadn't|hadnt)\b"
+        r"(?:\s+\w+){0,4}\s*$", re.I
+    )
+    third_party_before = re.compile(
+        r"\b(?:my\s+(?:wife|partner|girlfriend|sister|mother|friend)|she|her)"
+        r"(?:\s+\w+){0,5}\s*$", re.I
+    )
+    for clause in clauses:
+        for match in status.finditer(clause):
+            preceding = clause[:match.start()]
+            if negative_before.search(preceding) or third_party_before.search(preceding):
+                continue
+            return True
+    return False
 
 
 def pregnancy_lactation_evidence(text):
