@@ -31,6 +31,39 @@ def test_summary_does_not_invent_unknown_bristol_type():
     assert "Type None" not in summary
 
 
+def test_summary_preserves_bleeding_details_and_other_confirmed_branch_answers():
+    state = SymptomState(
+        primary_symptom="stomach pain",
+        duration="2 days",
+        age=9,
+        severity="5",
+        pain_location="upper stomach",
+        food_related=True,
+        pain_related_to_bowel_movement=True,
+        constipation_explicit=True,
+        blood_present=True,
+        blood_colour="bright_red",
+        blood_location="tissue",
+        anal_pain=True,
+        sharp_pain_during_stool=True,
+        lump_or_prolapse=True,
+        straining=True,
+        vomiting=False,
+        fever=False,
+    )
+
+    summary = build_symptom_summary(state)
+
+    assert "Symptoms reported: stomach pain, constipation, anal pain, anal lump/protrusion" in summary
+    assert "Blood colour: Bright/fresh red" in summary
+    assert "Blood location: On tissue/toilet paper" in summary
+    assert "Anal pain/discomfort: Yes" in summary
+    assert "Sharp/tearing pain during or after stool: Yes" in summary
+    assert "Pain location: upper stomach" in summary
+    assert "Symptoms related to meals: Yes" in summary
+    assert "Pain changes after a bowel movement: Yes" in summary
+
+
 def test_bristol_types_support_existing_bowel_pattern_rules_conservatively():
     hard = SymptomState(stool_form=2, straining=True)
     normal = SymptomState(stool_form=4)
