@@ -150,6 +150,24 @@ def test_summary_no_then_specific_correction_reopens_review():
     assert "Bristol Stool Chart: Type 6" in corrected["message"]
 
 
+def test_age_cannot_be_changed_during_summary_review_or_correction():
+    manager = ConversationManager()
+    sid = "phase1-summary-age-locked"
+    session = _complete_constipation_session(manager, sid)
+    manager.handle_message(sid, "continue")
+
+    rejected = manager.handle_message(sid, "I am 45")
+    assert rejected["status"] == "ASK"
+    assert session.symptom_state.age == 32
+    assert "Age is fixed" in rejected["message"]
+
+    manager.handle_message(sid, "no")
+    rejected = manager.handle_message(sid, "age 45")
+    assert rejected["status"] == "ASK"
+    assert session.symptom_state.age == 32
+    assert "Age is fixed" in rejected["message"]
+
+
 def test_bristol_selection_can_change_supporting_pattern_with_other_symptoms():
     # Stool form is supporting evidence: it changes the bowel-pattern assessment
     # only in combination with symptoms such as straining, not as a standalone diagnosis.

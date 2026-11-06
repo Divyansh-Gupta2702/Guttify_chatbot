@@ -1730,7 +1730,6 @@ class ConversationManager:
         before = state.to_dict()
         stool_form = extract_stool_form(text)
         duration = extract_duration(text)
-        age = extract_age(text)
         severity = extract_severity(text)
 
         if stool_form in range(1, 8):
@@ -1743,12 +1742,6 @@ class ConversationManager:
             return True
         elif duration and str(duration).lower() != "unknown":
             state.duration = duration
-            return True
-        elif age is not None:
-            validated_age = _validated_age_value(age)
-            if validated_age is None:
-                return False
-            state.age = validated_age
             return True
         elif severity not in (None, "unknown"):
             state.severity = severity
@@ -1999,7 +1992,7 @@ class ConversationManager:
                 session.summary_correction_mode = True
                 return {
                     "status": "ASK",
-                    "message": "What would you like to correct? You can update your symptom, duration, age, severity, or Bristol Stool Chart type (1–7). I will review the summary again before completing the assessment.",
+                    "message": "What would you like to correct? You can update your symptom, duration, severity, or Bristol Stool Chart type (1–7). Age is fixed for this assessment. I will review the summary again before completing it.",
                     "recommendations": [],
                 }
             else:
@@ -2032,7 +2025,7 @@ class ConversationManager:
                     return self._summary_review_result(session)
                 return {
                     "status": "ASK",
-                    "message": "I couldn't identify the correction clearly, so I haven't changed your answers. Please specify a Bristol type from 1 to 7, a duration such as '3 weeks', an age, a severity, or the symptom you want to correct.",
+                    "message": "I couldn't identify that correction clearly, so I haven't changed your answers. Age is fixed for this assessment. Please specify a Bristol type from 1 to 7, a duration such as '3 weeks', a severity, or the symptom you want to correct.",
                     "recommendations": [],
                 }
 
@@ -2050,7 +2043,7 @@ class ConversationManager:
                 return self._summary_review_result(session)
             return {
                 "status": "ASK",
-                "message": "I couldn't identify that correction clearly, and I haven't changed your answers. Please give a specific correction, such as 'Bristol type 4' or 'duration 3 weeks'.",
+                "message": "I couldn't identify that correction clearly, and I haven't changed your answers. Age is fixed for this assessment. Please give a specific correction, such as 'Bristol type 4' or 'duration 3 weeks'.",
                 "recommendations": [],
             }
 

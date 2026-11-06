@@ -2191,9 +2191,8 @@ def _chat_impl(req: ChatRequest, request: Request = None):
         result = conversation_manager.handle_message(
             req.session_id, message, conversation_history=recent_history,
         )
-        # A missing-profile age answer and an explicit age correction in the
-        # summary/correction flow must update the one authoritative PostgreSQL
-        # profile value, not just the transient assessment snapshot.
+        # Only an age prompt or an explicit age statement outside summary
+        # review may update the authoritative PostgreSQL profile value.
         with conversation_manager._lock:
             post_turn_session = conversation_manager.sessions.get(req.session_id)
             new_profile_age = _validated_customer_age(
@@ -2205,9 +2204,8 @@ def _chat_impl(req: ChatRequest, request: Request = None):
             re.IGNORECASE,
         ))
         age_update_is_intentional = (
-            active_question_before == "age"
-            or was_summary_correction
-            or explicit_age_statement
+            not was_summary_correction
+            and (active_question_before == "age" or explicit_age_statement)
         )
         if age_update_is_intentional and new_profile_age is not None and new_profile_age != previous_profile_age:
             if SESSION_CUSTOMER_IDS.get(req.session_id):
