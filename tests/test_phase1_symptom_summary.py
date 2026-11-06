@@ -162,6 +162,12 @@ def test_age_cannot_be_changed_during_summary_review_or_correction():
     assert session.symptom_state.age == 32
     assert "Age is fixed" in rejected["message"]
 
+    manager.handle_message(sid, "no")
+    rejected = manager.handle_message(sid, "age 45")
+    assert rejected["status"] == "ASK"
+    assert session.symptom_state.age == 32
+    assert "Age is fixed" in rejected["message"]
+
 
 def test_summary_can_add_symptom_and_restart_its_screening_branch(monkeypatch):
     manager = ConversationManager()
@@ -187,6 +193,23 @@ def test_summary_can_add_symptom_and_restart_its_screening_branch(monkeypatch):
     assert session.symptom_state.age == 32
 
 
+def test_summary_keeps_new_symptom_when_user_also_corrects_duration(monkeypatch):
+    manager = ConversationManager()
+    sid = "phase1-summary-symptom-and-duration"
+    session = _complete_constipation_session(manager, sid)
+    manager.handle_message(sid, "continue")
+
+    def extract(text, current_question, state, *args, **kwargs):
+        return {"symptoms": ["gas"], "other_symptoms": [], "intent": "assessment", "confidence": 0.9}
+
+    monkeypatch.setattr(guttify_agent_module, "extract_natural_facts", extract)
+    result = manager.handle_message(sid, "I also have gas for three weeks")
+
+    assert "gas" in session.symptom_state.secondary_symptoms
+    assert session.symptom_state.duration == "3 weeks"
+    assert result["status"] in {"ASK", "SUMMARY_REVIEW"}
+
+
 def test_unmatched_summary_symptom_is_classified_through_nlu(monkeypatch):
     manager = ConversationManager()
     sid = "phase1-summary-nlu-symptom"
@@ -206,12 +229,6 @@ def test_unmatched_summary_symptom_is_classified_through_nlu(monkeypatch):
     assert "nausea" in session.symptom_state.secondary_symptoms
     assert result["status"] in {"ASK", "SUMMARY_REVIEW"}
     assert session.symptom_state.age == 32
-
-    manager.handle_message(sid, "no")
-    rejected = manager.handle_message(sid, "age 45")
-    assert rejected["status"] == "ASK"
-    assert session.symptom_state.age == 32
-    assert "Age is fixed" in rejected["message"]
 
 
 def test_bristol_selection_can_change_supporting_pattern_with_other_symptoms():

@@ -1731,6 +1731,7 @@ class ConversationManager:
         stool_form = extract_stool_form(text)
         duration = extract_duration(text)
         severity = extract_severity(text)
+        has_scalar_correction = False
 
         if stool_form in range(1, 8):
             state.stool_form = stool_form
@@ -1738,15 +1739,15 @@ class ConversationManager:
                 field for field in (state.answered_unknown_fields or []) if field != "stool_form"
             ]
             state.asked_fields = list(dict.fromkeys((state.asked_fields or []) + ["stool_form"]))
-            state.red_flags = derive_red_flags(state)
-            return True
-        elif duration and str(duration).lower() != "unknown":
+            has_scalar_correction = True
+        if duration and str(duration).lower() != "unknown":
             state.duration = duration
-            return True
-        elif severity not in (None, "unknown"):
+            has_scalar_correction = True
+        if severity not in (None, "unknown"):
             state.severity = severity
-            return True
-        else:
+            has_scalar_correction = True
+
+        if isinstance(facts, dict) or not has_scalar_correction:
             # Use the same contextual NLU path as a first assessment message.
             # It can map a less familiar symptom to an existing branch; it
             # still cannot diagnose or select products here.
@@ -1792,7 +1793,23 @@ class ConversationManager:
         duration = extract_duration(text)
         severity = extract_severity(text)
         facts = None
-        if stool_form not in range(1, 8) and not (duration and str(duration).lower() != "unknown") and severity in (None, "unknown"):
+        symptom, additional_symptoms = extract_symptoms(text)
+        known_symptom_mentioned = bool(symptom or additional_symptoms)
+        normalized_text = normalize(text)
+        scalar_only = bool(
+            re.fullmatch(
+                r"(?:bristol(?: stool(?: chart)?)?(?: type| scale)?|stool (?:type|form))?\s*[1-7]",
+                normalized_text,
+            )
+            or re.fullmatch(
+                r"(?:duration(?: is|:)?\s*)?(?:for\s+)?"
+                r"(?:\d+(?:\.\d+)?(?:-\d+(?:\.\d+)?)?\s*(?:minutes?|mins?|hours?|days?|weeks?|months?|years?)|"
+                r"(?:one|two|three|four|five|six|seven|eight|nine|ten)\s+(?:minutes?|mins?|hours?|days?|weeks?|months?|years?))",
+                normalized_text,
+            )
+            or re.fullmatch(r"(?:(?:pain|severity)(?: is| of)?\s*)?\d{1,2}(?:\s*/\s*10)?", normalized_text)
+        )
+        if known_symptom_mentioned or not scalar_only:
             facts = self._run_nlu(session, text, conversation_history)
 
         if not self._apply_summary_correction(session, text, facts):
