@@ -34,11 +34,11 @@ class TestV7ProductCoverage(unittest.TestCase):
         self.assertEqual(r["status"], "RECOMMENDATION_FOUND")
         self.assert_rec(r, "Liver Lift")
 
-    def test_fatigue_recommends_liver_lift_directly(self):
-        """Fatigue should directly recommend Liver Lift (the only remaining fatigue-related product)."""
+    def test_fatigue_starts_safety_screening_before_product_discussion(self):
+        """Fatigue has possible medical causes, so do not recommend on one symptom alone."""
         r = ConversationManager().handle_message("fatigue", "I have fatigue")
-        self.assertEqual(r["status"], "RECOMMENDATION_FOUND")
-        self.assert_rec(r, "Liver Lift")
+        self.assertEqual(r["status"], "ASK")
+        self.assertEqual(r["recommendations"], [])
 
     def test_constipation_maps_to_digest_products(self):
         s = SymptomState(primary_symptom="constipation")

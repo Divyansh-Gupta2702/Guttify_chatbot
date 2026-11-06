@@ -197,6 +197,18 @@ def _approved_names_for_screening(screening, state=None):
         if getattr(state, "reflux_present", None) is True:
             reported.add("acid reflux")
         for symptom in reported:
+            # For upper meal-related pain, these acid symptoms are the very
+            # evidence used above to select Acid Ease over Digest Boost. Do
+            # not re-expand that narrowed route through the broader symptom
+            # map (which would also reintroduce Liver Lift for heartburn).
+            if (
+                pattern in {
+                    "Upper-abdominal meal-related dyspepsia pattern",
+                    "Reflux/GERD-like symptom pattern",
+                }
+                and symptom in {"acidity", "heartburn", "acid reflux"}
+            ):
+                continue
             allowed.update(ADDITIONAL_SYMPTOM_PRODUCT_ELIGIBILITY.get(symptom, set()))
         # A reported anal lump is an independent product-relevant finding,
         # including when sharp pain makes fissure the leading pattern. Keep

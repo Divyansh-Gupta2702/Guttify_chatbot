@@ -59,10 +59,10 @@ class TestV8RegressionFixes(unittest.TestCase):
         self.assertEqual(result["status"], "AMBIGUOUS")
         self.assertIn("Acid Ease", [p["product_name"] for p in result["recommendations"]])
 
-    def test_anal_burning_reaches_piloease(self):
+    def test_anal_burning_is_screened_before_any_product_recommendation(self):
         r = ConversationManager().handle_message("anal-burning", "I have anal burning")
-        self.assertEqual(r["status"], "RECOMMENDATION_FOUND")
-        self.assertIn("Piloease Anal Care Spray", [p["product_name"] for p in r["recommendations"]])
+        self.assertEqual(r["status"], "ASK")
+        self.assertEqual(r["recommendations"], [])
 
     def test_anal_swelling_reaches_piles_pure(self):
         r = ConversationManager().handle_message("anal-swelling", "I have anal swelling")
@@ -74,13 +74,13 @@ class TestV8RegressionFixes(unittest.TestCase):
         self.assertNotEqual(r["status"], "PRODUCT_INFO_FOUND")
         self.assertEqual(r["status"], "ASK")
 
-    def test_product_concern_still_works_after_clarifying_question(self):
-        """Fatigue should directly recommend Liver Lift since Boost Vitamin B12 was removed."""
+    def test_fatigue_assessment_does_not_skip_safety_questions(self):
         cm = ConversationManager()
         sid = "fatigue-clarify"
         first = cm.handle_message(sid, "I have fatigue")
-        self.assertEqual(first["status"], "RECOMMENDATION_FOUND")
-        self.assertIn("Liver Lift", [p["product_name"] for p in first["recommendations"]])
+        self.assertEqual(first["status"], "ASK")
+        self.assertEqual(first["recommendations"], [])
+        self.assertIsNotNone(cm.sessions[sid].last_question)
 
 
     def test_recommendation_does_not_repeat_after_follow_up(self):

@@ -314,3 +314,63 @@ def test_bowel_frequency_short_answer_does_not_call_llm(monkeypatch):
     assert facts["bowel_frequency_per_week"] == 3
     assert facts["_answer_status"] == "answered"
     assert calls == []
+
+
+def test_open_symptom_prompts_do_not_store_yes_no_or_neutral_as_symptoms():
+    positive = resolve_against_active_question("symptoms", "gas", state=SymptomState())
+    assert positive["status"] == "answered"
+    assert positive["values"]["gas"] is True
+
+    negative = resolve_against_active_question("symptoms", "no", state=SymptomState())
+    assert negative["status"] == "answered"
+    assert negative["values"]["other_symptoms"] == ["none reported"]
+
+    for message in ("yes", "I don't know", "maybe", "prefer not to say"):
+        result = resolve_against_active_question("symptoms", message, state=SymptomState())
+        assert not any(key in result.get("values", {}) for key in ("gas", "other_symptoms")), (message, result)
+
+
+def test_open_upper_symptom_prompt_accepts_negative_and_neutral_answers():
+    negative = resolve_against_active_question("upper_symptoms", "no", state=SymptomState())
+    assert negative["status"] == "answered"
+    assert negative["values"]["upper_symptoms"] == "none reported"
+
+    unknown = resolve_against_active_question("upper_symptoms", "I don't know", state=SymptomState())
+    assert unknown["status"] == "unknown"
+
+
+@pytest.mark.parametrize("answer,expected", [
+    ("bright", "bright_red"), ("fresh red", "bright_red"), ("dark", "black"),
+    ("black", "black"), ("tarry", "black"),
+])
+def test_all_blood_colour_options_are_accepted(answer, expected):
+    facts = extract_natural_facts(answer, "blood_colour", SymptomState())
+    assert facts["_answer_status"] == "answered"
+    assert facts["blood_colour"] == expected
+
+
+@pytest.mark.parametrize("answer,expected", [
+    ("on tissue", "tissue"), ("dripping into the toilet", "dripping"),
+    ("mixed into the stool", "mixed"),
+])
+def test_all_blood_location_options_are_accepted(answer, expected):
+    facts = extract_natural_facts(answer, "blood_location", SymptomState())
+    assert facts["_answer_status"] == "answered"
+    assert facts["blood_location"] == expected
+
+
+@pytest.mark.parametrize("answer,expected", [
+    ("low", "low"), ("average", "average"), ("high", "high"),
+    ("normal", "average"), ("good", "high"),
+])
+def test_fibre_choice_options_are_accepted_and_normalized(answer, expected):
+    facts = extract_natural_facts(answer, "fibre", SymptomState())
+    assert facts["_answer_status"] == "answered"
+    assert facts["fibre_intake"] == expected
+
+
+@pytest.mark.parametrize("answer,expected", [(str(value), value) for value in range(1, 8)])
+def test_every_bristol_chart_number_is_accepted(answer, expected):
+    facts = extract_natural_facts(answer, "stool_form", SymptomState())
+    assert facts["_answer_status"] == "answered"
+    assert facts["stool_form"] == expected

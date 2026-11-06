@@ -240,6 +240,16 @@ def _component_boolean(message: str, pattern: str) -> bool | None:
     matches = list(re.finditer(pattern, message))
     if not matches:
         return None
+    if pattern == _SINGLE_BOOLEAN_PATTERNS.get("hard_stools"):
+        # Normal/soft stool wording is an explicit negative alias for hard
+        # stools; it is not a positive symptom phrase merely because it has
+        # no grammatical negation word.
+        values = [
+            not bool(re.search(r"\b(?:normal|soft)\b", match.group(0)))
+            and not is_negated(message, match.group(0))
+            for match in matches
+        ]
+        return any(values)
     # A negated mention must not override a separate affirmative mention in
     # the same turn (for example, "no bleeding before, but blood today").
     return any(not is_negated(message, match.group(0)) for match in matches)
@@ -626,8 +636,10 @@ def resolve_against_active_question(
             }
 
     if question_id == "upper_symptoms":
-        if re.search(r"\b(?:none|no symptoms|none of those|nothing|not experiencing any)\b", n):
+        if status == "no" or re.search(r"\b(?:none|no symptoms|none of those|nothing|not experiencing any)\b", n):
             return {"status": "answered", "values": {"upper_symptoms": "none reported"}, "confidence": 0.99, "source": "deterministic"}
+        if status == "yes":
+            return {"status": "clarification_needed", "values": {}, "confidence": 0.99, "source": "deterministic"}
         terms = [term for term, pattern in (
             ("bloating", r"\b(?:bloating|bloated|bloat)\b"),
             ("gas", r"\b(?:gas|gassy|flatulence|farting)\b"),
@@ -645,6 +657,21 @@ def resolve_against_active_question(
             return {"status": "answered", "values": {"upper_symptoms": ", ".join(terms)}, "confidence": 0.99, "source": "deterministic"}
 
     if question_id == "symptoms":
+        # This is an open prompt asking the user to name symptoms. Bare yes/no
+        # and neutral replies are not symptom descriptions and must not be
+        # stored as volunteered symptoms.
+        if n == "maybe":
+            return {"status": "clarification_needed", "values": {}, "confidence": 0.99, "source": "deterministic"}
+        if status == "unknown":
+            return {"status": "unknown", "values": {}, "unknown_fields": [question_id], "confidence": 0.99, "source": "deterministic"}
+        if status == "refused":
+            return {"status": "refused", "values": {}, "refused_fields": [question_id], "confidence": 0.99, "source": "deterministic"}
+        if status == "no":
+            return {"status": "answered", "values": {"other_symptoms": ["none reported"]}, "confidence": 0.99, "source": "deterministic"}
+        if status == "yes":
+            return {"status": "clarification_needed", "values": {}, "confidence": 0.99, "source": "deterministic"}
+        if re.fullmatch(r"(?:none|no symptoms|none of those|nothing)", n):
+            return {"status": "answered", "values": {"other_symptoms": ["none reported"]}, "confidence": 0.99, "source": "deterministic"}
         values = {}
         for field_name, pattern in (
             ("bloating", r"\b(?:bloating|bloated|bloat)\b"),
@@ -1102,7 +1129,8 @@ def resolve_against_active_question(
     if question_id == "fibre":
         m = re.search(r"\b(low|average|normal|high|good)\b(?:\s+(?:fibre|fiber))?", n)
         if m:
-            return {"status": "answered", "values": {"fibre_intake": m.group(1)}, "confidence": 0.99, "source": "deterministic"}
+            value = {"normal": "average", "good": "high"}.get(m.group(1), m.group(1))
+            return {"status": "answered", "values": {"fibre_intake": value}, "confidence": 0.99, "source": "deterministic"}
     if question_id == "infection" and re.search(r"\b(?:no|not|never|without)\b.{0,25}\b(?:infection|infected|stomach bug|gastro)\b", n):
         return {"status": "answered", "values": {"recent_infection": False}, "confidence": 0.99, "source": "deterministic"}
     if question_id == "medications" and re.fullmatch(r"(?:no|nope|nah|no medicines?|no medication|none)", n):

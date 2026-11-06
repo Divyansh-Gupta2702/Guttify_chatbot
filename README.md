@@ -7,7 +7,34 @@ product data, LLM, and conversation logic remain in the Python modules.
 
 ## Architecture
 
-Shopify website → `gutgpt-widget.js` → FastAPI backend → GutGPT logic → LLM/product data
+Shopify website → `gutgpt-widget.js` → FastAPI backend → deterministic conversation,
+clinical-safety and product rules + optional Gemini/Groq language model
+
+## Hybrid conversation model
+
+GutGPT uses deterministic rules for symptom screening, question flow, safety
+checks, and product eligibility. The configured language model helps interpret
+free-form answers and handle supported general, company, and research questions;
+it does not make diagnoses or override the safety and product rules. This is a
+hybrid rules-plus-model design. It does not train itself on customer chats.
+
+The backend supports Gemini and Groq. To use Gemini, set these values in the
+backend environment (for example, `.env`) after creating a Gemini API key in
+Google AI Studio and linking billing to that API project:
+
+```text
+GUTGPT_LLM_PROVIDER=gemini
+GEMINI_API_KEY=your-server-side-key
+GEMINI_PAID_TIER_CONFIRMED=true
+GEMINI_MODEL=gemini-3.8-flash
+GEMINI_FALLBACK_MODEL=gemini-3.5-flash-lite
+```
+
+Keep the key on the backend; never add it to the Shopify widget or commit it.
+The paid-tier confirmation is a production startup guard because this app may
+process customer health information. Check Gemini usage and billing limits in
+Google AI Studio. The Gemini API has separate API billing; a Google AI or
+Gemini consumer subscription is not the same thing as API billing.
 
 
 ## Widget-only local architecture
@@ -104,7 +131,7 @@ Redis.
 
 ## Secrets
 
-Never put `GROQ_API_KEY` or any other provider credential into
+Never put `GROQ_API_KEY`, `GEMINI_API_KEY`, or any other provider credential into
 `gutgpt-widget.js`. Secrets belong only in the backend server environment.
 
 ## Files
@@ -125,7 +152,11 @@ The important runtime files are:
 
 The final website deployment requires these backend environment variables:
 
-- `GROQ_API_KEY` — required by the GutGPT backend where applicable.
+- `GUTGPT_LLM_PROVIDER` — `groq` (default) or `gemini`.
+- `GROQ_API_KEY` — required when Groq is selected.
+- `GEMINI_API_KEY` and `GEMINI_PAID_TIER_CONFIRMED=true` — required when Gemini
+  is selected for production. `GEMINI_MODEL` and `GEMINI_FALLBACK_MODEL` are
+  optional; see the Gemini setup above.
 - `JWT_SECRET_KEY` — required; a unique URL-safe secret generated from at least 32 random bytes (43 or more characters).
 - `JWT_ISSUER` — defaults to `gutgpt-api`.
 - `JWT_AUDIENCE` — defaults to `gutgpt-guest-session`.
@@ -136,7 +167,7 @@ The final website deployment requires these backend environment variables:
 - `DATABASE_URL` — required PostgreSQL connection URL; for native PostgreSQL on Ubuntu the default port is usually `5432` (verify the actual server configuration).
 - `GUTGPT_ADMIN_TOKEN` — a unique random secret of at least 32 bytes for protected admin endpoints.
 
-The production app fails startup if required production configuration, including `GROQ_API_KEY`, `DATABASE_URL`, a valid `JWT_SECRET_KEY`, or `ALLOWED_ORIGINS`, is missing or invalid. Admin endpoints fail closed unless `GUTGPT_ADMIN_TOKEN` is configured with at least 32 bytes of random secret material. The application accepts English only; non-English input receives a fixed English notice and does not enter the clinical rule engine.
+The production app fails startup if required production configuration, including the selected provider's production settings, `DATABASE_URL`, a valid `JWT_SECRET_KEY`, or `ALLOWED_ORIGINS`, is missing or invalid. Admin endpoints fail closed unless `GUTGPT_ADMIN_TOKEN` is configured with at least 32 bytes of random secret material. The application accepts English only; non-English input receives a fixed English notice and does not enter the clinical rule engine.
 
 Session state is bounded by TTL and maximum-session limits. The production deployment should remain single-worker unless session state is moved to a shared store such as Redis.
 
