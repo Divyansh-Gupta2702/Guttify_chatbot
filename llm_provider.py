@@ -105,7 +105,7 @@ def create_client(max_output_tokens: int, *, output_mode: str = "text"):
             return None
         else:
             model = os.getenv("GEMINI_MODEL", "gemini-3.8-flash")
-            return _GeminiClient(model, max(96, min(600, int(max_output_tokens))), output_mode)
+            return _GeminiClient(model, max(96, min(1200, int(max_output_tokens))), output_mode)
 
     if provider == "groq":
         return _create_groq_client(max_output_tokens, output_mode)

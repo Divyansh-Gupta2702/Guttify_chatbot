@@ -138,6 +138,16 @@
       }
 
       .head-actions { display: flex; align-items: center; gap: 7px; }
+      .language-select {
+        max-width: 112px;
+        border: 1px solid rgba(255,255,255,.65);
+        border-radius: 8px;
+        padding: 6px 8px;
+        color: #fff;
+        background: rgba(64,28,91,.28);
+        font: 600 11px/1.2 inherit;
+      }
+      .language-select option { color: #241f2b; background: #fff; }
       .close {
         border: 0;
         background: transparent;
@@ -404,6 +414,10 @@
           <p>Guttify's gut-health assistant</p>
         </div>
         <div class="head-actions">
+          <select class="language-select" aria-label="Chat language" title="Chat language" hidden>
+            <option value="en">English</option>
+            <option value="hinglish">Hinglish</option>
+          </select>
           <button class="close" type="button" aria-label="Close GutGPT">×</button>
         </div>
       </header>
@@ -474,9 +488,22 @@
   const input = $(".composer input");
   const sendButton = $(".send");
   const status = $(".status");
-  // GutGPT is English-only. The widget always sends English and never
-  // translates user messages or bot responses.
-  const language = "en";
+  const languageSelect = $(".language-select");
+  const LANGUAGE_STORAGE_KEY = "gutgpt_chat_language_v1";
+  function getStoredLanguage() {
+    try {
+      return window.localStorage.getItem(LANGUAGE_STORAGE_KEY) === "hinglish" ? "hinglish" : "en";
+    } catch (_) { return "en"; }
+  }
+  // Language controls become available after registration, before the first
+  // assessment turn. Keep the registration experience in English.
+  let language = "en";
+  function enableLanguageSelection() {
+    language = getStoredLanguage();
+    languageSelect.value = language;
+    languageSelect.hidden = false;
+    applyLanguage();
+  }
 
   const UI_TEXT = {
     en: {
@@ -488,12 +515,36 @@
       retry: "I couldn't safely restore your GutGPT session right now. Please retry.",
       intakeTitle: "Before we begin", intakeCopy: "Please share a few details so GutGPT can start your gut-health assessment.",
       labels: ["Full name", "Age", "Contact number", "Location"], consent: "I agree to have these details stored to support this assessment.",
+      newAssessment: "＋ Start a New Assessment", assessmentHistory: "Assessment History",
       save: "Save details and continue", restored: (name) => `Welcome back, ${name}! Your profile is restored. You can start a new assessment.`,
       resumed: (name) => `Welcome back, ${name}! I've restored your unfinished assessment so you can continue.`,
-      retryAssessment: "I couldn't recover your assessment progress. Your assessment has not been restarted. Please retry."
+      retryAssessment: "I couldn't recover your assessment progress. Your assessment has not been restarted. Please retry.",
+      thinking: "Thinking…", productLink: "View Product"
+    },
+    hinglish: {
+      greeting: (name) => `Namaste ${name}! Main GutGPT hoon, Guttify ka gut-health assistant. Aapko kya takleef ho rahi hai, batayein.`,
+      placeholder: "Aapko kya takleef ho rahi hai, batayein…",
+      aria: "GutGPT ko message bhejein",
+      saving: "Aapki details save ho rahi hain…",
+      validation: "Kripya sabhi details bharein aur storage notice se sahmat hon.",
+      retry: "Aapka GutGPT session abhi restore nahi ho paya. Kripya dobara koshish karein.",
+      intakeTitle: "Shuru karne se pehle", intakeCopy: "Assessment shuru karne ke liye kuch details dein.",
+      labels: ["Poora naam", "Umar", "Contact number", "Shehar"],
+      consent: "Main is assessment ke liye apni details save karne ki sahmati deta/deti hoon.",
+      newAssessment: "＋ Naya assessment shuru karein", assessmentHistory: "Assessment history",
+      save: "Details save karke aage badhein",
+      restored: (name) => `Namaste ${name}! Aapki profile restore ho gayi hai. Naya assessment shuru kar sakte hain.`,
+      resumed: (name) => `Namaste ${name}! Aapka adhura assessment restore ho gaya hai. Aap yahin se jaari rakh sakte hain.`,
+      retryAssessment: "Aapka assessment progress restore nahi ho paya. Assessment restart nahi hua hai. Kripya dobara koshish karein.",
+      thinking: "Soch raha hoon…", productLink: "Product dekhein"
     }
   };
   function currentText() { return UI_TEXT[language] || UI_TEXT.en; }
+  languageSelect.addEventListener("change", () => {
+    language = languageSelect.value === "hinglish" ? "hinglish" : "en";
+    try { window.localStorage.setItem(LANGUAGE_STORAGE_KEY, language); } catch (_) {}
+    applyLanguage();
+  });
   function applyLanguage() {
     const t = currentText();
     input.placeholder = t.placeholder;
@@ -509,6 +560,8 @@
     const consent = intakeForm.querySelector(".consent-row span");
     if (consent) consent.textContent = t.consent;
     if (intakeSubmit) intakeSubmit.textContent = t.save;
+    if (newAssessmentButton) newAssessmentButton.textContent = t.newAssessment;
+    if (historyButton) historyButton.textContent = t.assessmentHistory;
   }
   applyLanguage();
 
@@ -599,7 +652,7 @@
         link.href = url;
         link.target = "_blank";
         link.rel = "noopener noreferrer";
-        link.textContent = "View Product";
+        link.textContent = currentText().productLink;
         card.appendChild(link);
       }
 
@@ -745,6 +798,7 @@
 
       clearLegacyGuestToken();
       customerRegistered = true;
+      enableLanguageSelection();
       intake.hidden = true;
       messages.hidden = false;
       assessmentActions.hidden = false;
@@ -756,7 +810,7 @@
         resume = await fetchJson("/api/customer/resume", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ session_id: sessionId }),
+          body: JSON.stringify({ session_id: sessionId, language }),
         });
       } catch (resumeError) {
         console.error("GutGPT assessment resume failed", resumeError);
@@ -900,8 +954,10 @@
       if (data.status !== "REGISTERED") throw new Error("REGISTRATION_FAILED");
       customerRegistered = true;
       clearLegacyGuestToken();
+      enableLanguageSelection();
       intake.hidden = true;
       messages.hidden = false;
+      assessmentActions.hidden = false;
       form.hidden = false;
       input.disabled = false;
       sendButton.disabled = false;
@@ -1069,11 +1125,16 @@
       assessmentHistory.hidden = true;
       historyDetail.hidden = true;
       messages.hidden = false;
+      const hasPreviousConversation = messages.querySelectorAll(".msg.user").length > 0;
       messages.replaceChildren();
-      addMessage(
-        "Your previous assessment has been preserved. Let's begin a new assessment. What digestive concern would you like help with?",
-        "bot"
-      );
+      const opening = language === "hinglish"
+        ? (hasPreviousConversation
+          ? "Aapka pichhla assessment surakshit hai. Chaliye naya assessment shuru karte hain. Aapko digestion se judi kya dikkat hai?"
+          : "Chaliye aapka assessment shuru karte hain. Aapko digestion se judi kya dikkat hai?")
+        : (hasPreviousConversation
+          ? "Your previous assessment has been preserved. Let's begin a new assessment. What digestive concern would you like help with?"
+          : "Let's begin your assessment. What digestive concern would you like help with?");
+      addMessage(opening, "bot");
       form.hidden = false;
       input.disabled = false;
       status.textContent = "";
@@ -1122,7 +1183,7 @@
     input.value = "";
     setBusy(true);
 
-    const thinking = addMessage("Thinking…", "bot", "thinking");
+    const thinking = addMessage(currentText().thinking, "bot", "thinking");
 
     try {
       const data = await fetchJson("/api/chat", {

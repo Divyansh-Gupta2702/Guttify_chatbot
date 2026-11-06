@@ -42,8 +42,10 @@ def test_runtime_manifests_declare_direct_runtime_dependencies():
         assert dependency in requirements
 
 
-def test_documentation_matches_english_only_postgres_production_mode():
+def test_documentation_matches_language_switch_and_postgres_production_mode():
     readme = (ROOT / "README.md").read_text(encoding="utf-8").lower()
-    assert "english only" in readme
+    assert "english is the default chat language" in readme
+    assert "switch to hinglish" in readme
+    assert "translated to english" in readme
     assert "database_url" in readme
     assert "supported indian-language codes" not in readme

@@ -50,6 +50,7 @@ from question_schema import next_question_component
 from symptom_summary import build_symptom_summary
 from guttify_chatbot import _deterministic_product_reply, _deterministic_screening_reply
 from safety_checker import pregnancy_lactation_evidence
+from translation_service import translate_input_to_english, translate_chat_output
 BASE_DIR = Path(__file__).resolve().parent
 WIDGET_FILE = BASE_DIR / "gutgpt-widget.js"
 BRISTOL_CHART_FILE = BASE_DIR / "Bristol Stool Chart Infographic.png"
@@ -64,16 +65,16 @@ from groq_service import (
 MAX_MESSAGE_LENGTH = max(256, min(10000, int(os.getenv("MAX_MESSAGE_LENGTH", "4000"))))
 MAX_HISTORY_MESSAGES = 100
 
-# GutGPT communicates exclusively in English. There is no language detection,
-# no automatic translation, and no multilingual response rendering. Messages
-# that are clearly not in English (Hindi, Hinglish, other scripts, or
-# non-English confirmation words) receive a fixed English notice and are never
-# run through the clinical engine, so a non-English "yes"/"no" can never
-# advance an assessment as though it were English.
+# English is the default. Users may select Hinglish at any time; those turns
+# are translated to English before the clinical logic and translated back for
+# display, without resetting the existing assessment state.
 ENGLISH_ONLY_FALLBACK = (
     "I can assist you in English only. Please describe your symptoms in English so I can help you."
 )
 NON_ENGLISH_STATUS = "NON_ENGLISH"
+HINGLISH_TRANSLATION_FALLBACK = (
+    "Maaf kijiye, main is jawab ko abhi samajh nahi paaya. Kripya ise thoda aur simple Hinglish mein likhein, ya language ko English par switch karein."
+)
 
 # Non-Latin scripts are never part of an English GutGPT message.
 _NON_LATIN_SCRIPT_RANGES = (
@@ -1328,6 +1329,7 @@ class CustomerRegistrationRequest(BaseModel):
 class CustomerRestoreRequest(BaseModel):
     session_id: str = Field(min_length=1, max_length=128)
     guest_token: str = Field(default="", max_length=2048)
+    language: str = Field(default="en", max_length=16, pattern="^(en|hinglish)$")
 
 
 class AssessmentHistoryDetailRequest(BaseModel):
@@ -1340,9 +1342,8 @@ class ChatRequest(BaseModel):
     # Keep Pydantic above the production UX limit so we can return a friendly
     # application-level message instead of an opaque 422 validation error.
     message: str = Field(min_length=1, max_length=MAX_MESSAGE_LENGTH)
-    # Accepted for backward-compatible widget payloads; GutGPT is English-only
-    # and this value never changes how a message is processed or answered.
-    language: str = Field(default="en", max_length=16)
+    # Language is selected per turn so users can switch without restarting.
+    language: str = Field(default="en", max_length=16, pattern="^(en|hinglish)$")
     message_id: str = Field(default="", max_length=128)
 
 
@@ -2065,7 +2066,18 @@ def resume_customer_assessment(req: CustomerRestoreRequest, request: Request = N
         raise HTTPException(status_code=403, detail="CUSTOMER_REGISTRATION_REQUIRED")
     resumed = _restore_assessment_checkpoint(customer_id, req.session_id)
     # Only an explicit absence of an active assessment permits a fresh assessment.
-    return resumed if resumed is not None else {"status": "NO_ACTIVE_ASSESSMENT", "messages": []}
+    if resumed is None:
+        return {"status": "NO_ACTIVE_ASSESSMENT", "messages": []}
+    if req.language == "hinglish" and isinstance(resumed.get("pending_question"), dict):
+        pending = resumed["pending_question"]
+        pending_text = pending.get("text")
+        if isinstance(pending_text, str) and pending_text.strip():
+            try:
+                with message_call_budget(uuid.uuid4().hex[:8], max_calls=1):
+                    pending["text"], _ = translate_chat_output(pending_text, [])
+            except Exception as exc:
+                logger.warning("event=translation_unavailable direction=resume_output session=%s category=%s", req.session_id[:8], type(exc).__name__)
+    return resumed
 
 
 
@@ -2136,6 +2148,7 @@ def _chat_impl(req: ChatRequest, request: Request = None):
     turn_id = uuid.uuid4().hex
     total_start = time.perf_counter()
     original_message = req.message.strip()
+    language = req.language.strip().lower()
     # Pydantic rejects an empty string before reaching here, but keep the
     # guard because whitespace-only input becomes empty after stripping.
     if not original_message:
@@ -2165,15 +2178,28 @@ def _chat_impl(req: ChatRequest, request: Request = None):
     if cached is not None:
         return ChatResponse(**cached)
 
-    # GutGPT communicates exclusively in English. The message is processed as
-    # English exactly as written; it is never translated. Clearly non-English
-    # input receives a fixed English notice and never enters the clinical engine.
-    if _is_non_english(original_message):
+    message = original_message
+    blocked_input = False
+    if language == "hinglish":
+        try:
+            message = translate_input_to_english(original_message)
+        except Exception as exc:
+            logger.warning("event=translation_unavailable direction=input session=%s category=%s", req.session_id[:8], type(exc).__name__)
+            reply = HINGLISH_TRANSLATION_FALLBACK
+            status = "TRANSLATION_UNAVAILABLE"
+            result = None
+            blocked_input = True
+    elif _is_non_english(original_message):
         reply = ENGLISH_ONLY_FALLBACK
         status = NON_ENGLISH_STATUS
         result = None
+        blocked_input = True
+
+    if blocked_input:
+        # Translation/input-language failures are handled without changing
+        # assessment state. English-only fallback remains unchanged.
+        pass
     else:
-        message = original_message
         with _SESSION_LOCK:
             recent_history = list(HISTORY[req.session_id])
         with conversation_manager._lock:
@@ -2200,7 +2226,7 @@ def _chat_impl(req: ChatRequest, request: Request = None):
             ) if post_turn_session else None
         explicit_age_statement = bool(re.search(
             r"\b(?:i\s*(?:am|'m)|my\s+age\s+is|age\s+is|(?:my\s+)?age\s*[:=]?)\s*\d{1,3}\b|\b\d{1,3}\s+years?\s+old\b",
-            original_message,
+            message,
             re.IGNORECASE,
         ))
         age_update_is_intentional = (
@@ -2226,7 +2252,7 @@ def _chat_impl(req: ChatRequest, request: Request = None):
                         "message": "I couldn't save that age change to your registered customer profile, so I have paused the assessment. Please enter your age again to retry.",
                         "recommendations": [],
                     }
-        _persist_customer_safety_restriction(req.session_id, original_message)
+        _persist_customer_safety_restriction(req.session_id, message)
         logic_ms = (time.perf_counter() - logic_start) * 1000
         status = result["status"]
         logger.info(
@@ -2244,8 +2270,8 @@ def _chat_impl(req: ChatRequest, request: Request = None):
     history_ms = (time.perf_counter() - history_start) * 1000
     logger.info("[PERF][%s] Session/history lookup: %.2f ms", request_id, history_ms)
 
-    # Non-English turns already have their English-only fallback reply and
-    # skip the rule-engine reply selection entirely (result is None).
+    # Input translation failures and unsupported non-English English-mode
+    # turns already have a safe fallback and do not enter the rule engine.
     if result is not None:
         if status in (
             "GIBBERISH",
@@ -2290,6 +2316,16 @@ def _chat_impl(req: ChatRequest, request: Request = None):
     # questions, safety reviews, greetings, or later acknowledgements.
     if status in ("DIAGNOSIS", "RECOMMENDATION_FOUND", "AMBIGUOUS"):
         reply = append_human_support_footer(reply)
+
+    response_recommendations = (result.get("recommendations") if result else None) or []
+    if language == "hinglish" and result is not None:
+        try:
+            reply, response_recommendations = translate_chat_output(reply, response_recommendations)
+        except Exception as exc:
+            # Keep the already-produced deterministic answer visible if the
+            # output translation provider is unavailable. The assessment
+            # remains on its valid next question and can continue in English.
+            logger.warning("event=translation_unavailable direction=output session=%s category=%s", req.session_id[:8], type(exc).__name__)
 
     # Persist urgent safety outcomes as well as completed routine assessments.
     if status in ("DIAGNOSIS", "RECOMMENDATION_FOUND", "AMBIGUOUS") or (
@@ -2370,7 +2406,7 @@ def _chat_impl(req: ChatRequest, request: Request = None):
     response = ChatResponse(
         reply=reply,
         status=status,
-        recommendations=(result.get("recommendations") if result else None) or [],
+        recommendations=response_recommendations,
         assessment_complete=assessment_complete,
         question_metadata=question_metadata,
     )
@@ -2380,12 +2416,11 @@ def _chat_impl(req: ChatRequest, request: Request = None):
 
 @app.post("/api/chat", response_model=ChatResponse)
 def chat(req: ChatRequest, request: Request = None):
-    """Apply one shared Groq-call budget to the entire incoming chat turn."""
+    """Apply one shared model-call budget to the entire incoming chat turn."""
     request_id = uuid.uuid4().hex[:8]
-    # GutGPT is English-only. The bounded budget covers contextual intent
-    # routing plus at most one extraction or general-answer call; deterministic
-    # safety, assessment and product replies consume no model call.
-    budget = configured_message_budget()
+    # Hinglish turns reserve calls for input/output translation and the usual
+    # bounded intent/extraction work; explicit operator budgets remain honored.
+    budget = configured_message_budget(req.language)
     try:
         with message_call_budget(request_id, max_calls=budget):
             return _chat_impl(req, request)

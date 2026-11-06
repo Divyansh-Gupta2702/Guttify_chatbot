@@ -167,7 +167,7 @@ The final website deployment requires these backend environment variables:
 - `DATABASE_URL` — required PostgreSQL connection URL; for native PostgreSQL on Ubuntu the default port is usually `5432` (verify the actual server configuration).
 - `GUTGPT_ADMIN_TOKEN` — a unique random secret of at least 32 bytes for protected admin endpoints.
 
-The production app fails startup if required production configuration, including the selected provider's production settings, `DATABASE_URL`, a valid `JWT_SECRET_KEY`, or `ALLOWED_ORIGINS`, is missing or invalid. Admin endpoints fail closed unless `GUTGPT_ADMIN_TOKEN` is configured with at least 32 bytes of random secret material. The application accepts English only; non-English input receives a fixed English notice and does not enter the clinical rule engine.
+The production app fails startup if required production configuration, including the selected provider's production settings, `DATABASE_URL`, a valid `JWT_SECRET_KEY`, or `ALLOWED_ORIGINS`, is missing or invalid. Admin endpoints fail closed unless `GUTGPT_ADMIN_TOKEN` is configured with at least 32 bytes of random secret material. English is the default chat language; users can switch to Hinglish at any time without restarting an assessment. Hinglish turns are translated to English for the deterministic assessment logic and translated back for display using the configured LLM provider. Configure `GROQ_MAX_HINGLISH_CALLS_PER_MESSAGE` and the translation output-token settings to match provider limits.
 
 Session state is bounded by TTL and maximum-session limits. The production deployment should remain single-worker unless session state is moved to a shared store such as Redis.
 

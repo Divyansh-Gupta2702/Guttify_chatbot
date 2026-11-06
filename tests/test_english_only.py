@@ -1,14 +1,13 @@
-"""English-only communication regression tests for GutGPT v18.3.
+"""English-mode communication regression tests for GutGPT.
 
-GutGPT now communicates exclusively in English:
+When the language selector is set to English:
 - English greetings, symptom descriptions and assessment answers work normally.
 - English "yes"/"no" confirmations advance assessments.
 - Hindi, Hinglish and other clearly non-English messages (including
   non-English confirmation words such as "haan", "ji", "nahi") receive the
-  fixed English-only fallback and are never translated or run through the
-  clinical engine, so they can never advance an assessment.
-- The multilingual modules (multilingual, language_service) are removed; no
-  language detection or translation call exists on the request path.
+  fixed English-mode fallback and never enter the clinical engine. Selecting
+  Hinglish uses a separate LLM-backed translation path, covered by
+  test_hinglish_language.py.
 """
 
 import app as gutgpt_app

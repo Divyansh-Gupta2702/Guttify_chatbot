@@ -64,6 +64,23 @@ def test_summary_preserves_bleeding_details_and_other_confirmed_branch_answers()
     assert "Pain changes after a bowel movement: Yes" in summary
 
 
+def test_food_trigger_question_includes_open_food_types_and_examples():
+    state = SymptomState(
+        primary_symptom="acidity",
+        duration="2 weeks",
+        age=34,
+        reflux_present=False,
+        timing_relation="after meals",
+    )
+
+    question_id, question_text = next_question(state)
+
+    assert question_id == "triggers"
+    assert "any particular foods or food types" in question_text
+    assert "dairy" in question_text and "wheat" in question_text
+    assert "beans/lentils" in question_text and "something else" in question_text
+
+
 def test_bristol_types_support_existing_bowel_pattern_rules_conservatively():
     hard = SymptomState(stool_form=2, straining=True)
     normal = SymptomState(stool_form=4)

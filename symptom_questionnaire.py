@@ -146,7 +146,7 @@ def next_question(state, only_symptoms=None):
             return [
                 q("reflux", "Do you get a sour taste or acid/food coming back up?", state.reflux_present is None),
                 q("timing", "When do you notice the acidity most often?", state.timing_relation is None),
-                q("triggers", "Do particular foods or drinks trigger it?", state.food_trigger is None and state.food_related is not False),
+                q("triggers", "Do any particular foods or food types trigger it, such as dairy, wheat, beans/lentils, spicy foods, or something else?", state.food_trigger is None and state.food_related is not False),
                 q("difficulty_swallowing", "Do you have difficulty or pain when swallowing?", state.difficulty_swallowing is None),
                 q("persistent_vomiting", "Have you had persistent or repeated vomiting?", state.persistent_vomiting is None),
                 q("vomiting_blood", "Have you vomited blood?", state.vomiting_blood is None),
@@ -157,7 +157,7 @@ def next_question(state, only_symptoms=None):
                 q("bloating_screen", "Do you also experience abdominal bloating or a swollen feeling?", state.bloating is None and not bloating_reported),
                 q("constipation_screen", "Do you also experience constipation?", state.constipation_explicit is None and not constipation_reported and not diarrhea_reported),
                 q("diarrhea_screen", "Do you also experience loose motions or diarrhea?", state.diarrhea_explicit is None and not diarrhea_reported and not constipation_reported),
-                q("food_trigger", "Is the symptom repeatedly linked to a particular food?", state.food_trigger is None and state.food_related is not False),
+                q("food_trigger", "Is the symptom repeatedly linked to any particular food or food type, such as dairy, wheat, beans/lentils, spicy foods, or something else?", state.food_trigger is None and state.food_related is not False),
                 q("abdominal_pain_screen", "Do you have recurring abdominal pain?", state.abdominal_pain is None),
                 q("pain_bowel_relation", "Does the pain change after a bowel movement?", state.abdominal_pain is True and state.pain_related_to_bowel_movement is None),
             ]

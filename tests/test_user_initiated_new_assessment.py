@@ -6,9 +6,16 @@ ROOT = Path(__file__).resolve().parents[1]
 def test_widget_exposes_user_initiated_new_assessment_control():
     source = (ROOT / "gutgpt-widget.js").read_text(encoding="utf-8")
     assert 'class="new-assessment-button"' in source
+    assert 'class="language-select"' in source
+    assert 'class="language-select" aria-label="Chat language" title="Chat language" hidden' in source
+    assert "function enableLanguageSelection()" in source
     assert '"/api/session/new-assessment"' in source
     assert "Your previous assessment has been preserved" in source
-    assert "assessmentActions.hidden = false" in source
+    registration = source[source.index('intakeForm.addEventListener("submit"'):source.index("function formatHistoryDate")]
+    assert "assessmentActions.hidden = false" in registration
+    assert "enableLanguageSelection()" in registration
+    assert "language === \"hinglish\"" in source
+    assert "newAssessment: \"＋ Naya assessment shuru karein\"" in source
 
 
 def test_backend_creates_new_session_without_replacing_previous_assessment():

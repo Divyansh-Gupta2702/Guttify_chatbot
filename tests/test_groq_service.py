@@ -105,6 +105,18 @@ def test_configured_budget_has_minimum_of_one(monkeypatch):
         monkeypatch.delenv("GROQ_MAX_CALLS_PER_MESSAGE", raising=False)
 
 
+def test_hinglish_budget_reserves_translation_calls_without_changing_english_budget(monkeypatch):
+    import groq_service
+
+    monkeypatch.setenv("GROQ_MAX_CALLS_PER_MESSAGE", "2")
+    monkeypatch.delenv("GROQ_MAX_HINGLISH_CALLS_PER_MESSAGE", raising=False)
+    assert groq_service.configured_message_budget("en") == 2
+    assert groq_service.configured_message_budget("hinglish") == 4
+
+    monkeypatch.setenv("GROQ_MAX_HINGLISH_CALLS_PER_MESSAGE", "3")
+    assert groq_service.configured_message_budget("hinglish") == 3
+
+
 def _put_breaker_half_open(groq_service):
     with groq_service._breaker_lock:
         groq_service._breaker_failures = groq_service._BREAKER_THRESHOLD

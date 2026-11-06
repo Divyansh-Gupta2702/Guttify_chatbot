@@ -58,15 +58,21 @@ def message_call_budget(request_id: str, max_calls: int | None = None) -> Iterat
         _budget.reset(token)
 
 
-def configured_message_budget() -> int:
+def configured_message_budget(language: str = "en") -> int:
     """Return the bounded per-message Groq call budget.
 
-    GutGPT is English-only: no input or output translation calls are made, so
-    one budget covers the turn (NLU model resolution when the contextual
-    resolver requires it; the deterministic reply path uses none). The
-    configured floor of one call remains available for essential NLU.
+    English turns retain the existing default. Hinglish turns reserve enough
+    calls for input translation, optional NLU/intent resolution, and output
+    translation. An explicit environment setting remains authoritative.
     """
-    return max(1, int(os.getenv("GROQ_MAX_CALLS_PER_MESSAGE", "2")))
+    normalized_language = str(language).strip().lower()
+    if normalized_language == "hinglish":
+        configured = os.getenv("GROQ_MAX_HINGLISH_CALLS_PER_MESSAGE")
+        default = 4
+    else:
+        configured = os.getenv("GROQ_MAX_CALLS_PER_MESSAGE")
+        default = 2
+    return max(1, int(configured if configured is not None else default))
 
 
 def _bounded_int_env(name: str, default: int, minimum: int, maximum: int) -> int:
@@ -87,6 +93,8 @@ def configured_output_tokens(reason: str) -> int:
     configured = {
         "conversation_intent": ("GROQ_INTENT_MAX_OUTPUT_TOKENS", 260, 96),
         "nlu_extraction": ("GROQ_NLU_MAX_TOKENS", 350, 160),
+        "translation_input": ("GROQ_TRANSLATION_INPUT_MAX_TOKENS", 700, 160),
+        "translation_output": ("GROQ_TRANSLATION_OUTPUT_MAX_TOKENS", 1000, 160),
         "general_knowledge_answer": ("GROQ_GENERAL_ANSWER_MAX_OUTPUT_TOKENS", 800, 96),
         "company_knowledge_answer": ("GROQ_COMPANY_ANSWER_MAX_OUTPUT_TOKENS", 800, 96),
         "research_summary_answer": ("GROQ_RESEARCH_ANSWER_MAX_OUTPUT_TOKENS", 900, 96),
@@ -104,8 +112,10 @@ def llm_client_cache_fingerprint(output_mode: str) -> str:
     """Hash non-secret provider settings so cached clients expire on config change."""
     names = (
         "GUTGPT_LLM_PROVIDER", "GROQ_API_KEY", "GROQ_CONVERSATION_MODEL",
+        "GEMINI_API_KEY", "GEMINI_MODEL", "GEMINI_FALLBACK_MODEL",
         "GROQ_NLU_MODEL", "GROQ_NLU_TIMEOUT_SECONDS", "GROQ_OUTPUT_TOKEN_HARD_MAX",
         "GROQ_INTENT_MAX_OUTPUT_TOKENS", "GROQ_NLU_MAX_TOKENS",
+        "GROQ_TRANSLATION_INPUT_MAX_TOKENS", "GROQ_TRANSLATION_OUTPUT_MAX_TOKENS",
         "GROQ_GENERAL_ANSWER_MAX_OUTPUT_TOKENS",
         "GROQ_COMPANY_ANSWER_MAX_OUTPUT_TOKENS",
         "GROQ_RESEARCH_ANSWER_MAX_OUTPUT_TOKENS",
