@@ -622,9 +622,25 @@
     const date = value ? new Date(value) : new Date();
     const validDate = Number.isNaN(date.getTime()) ? new Date() : date;
     return {
-      label: validDate.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }),
+      label: validDate.toLocaleString([], {
+        month: "short", day: "numeric", year: "numeric",
+        hour: "numeric", minute: "2-digit",
+      }),
       iso: validDate.toISOString(),
     };
+  }
+
+  function setMessageTime(messageElement, value) {
+    if (!messageElement) return;
+    const time = formatMessageTime(value);
+    let timeElement = messageElement.querySelector(".msg-time");
+    if (!timeElement) {
+      timeElement = document.createElement("time");
+      timeElement.className = "msg-time";
+      messageElement.appendChild(timeElement);
+    }
+    timeElement.dateTime = time.iso;
+    timeElement.textContent = time.label;
   }
 
   function addMessage(text, sender, variant = "", timestamp = null) {
@@ -637,12 +653,7 @@
       el.textContent = text;
     }
 
-    const time = formatMessageTime(timestamp);
-    const timeElement = document.createElement("time");
-    timeElement.className = "msg-time";
-    timeElement.dateTime = time.iso;
-    timeElement.textContent = time.label;
-    el.appendChild(timeElement);
+    setMessageTime(el, timestamp);
 
     messages.appendChild(el);
     messages.scrollTop = messages.scrollHeight;
@@ -1078,12 +1089,7 @@
           const bubble = document.createElement("div");
           bubble.className = `history-message ${message.role === "user" ? "user" : "assistant"}`;
           bubble.textContent = message.content || "";
-          const time = formatMessageTime(message.created_at);
-          const timeElement = document.createElement("time");
-          timeElement.className = "msg-time";
-          timeElement.dateTime = time.iso;
-          timeElement.textContent = time.label;
-          bubble.appendChild(timeElement);
+          setMessageTime(bubble, message.created_at);
           historyTranscript.appendChild(bubble);
         }
       }
@@ -1209,7 +1215,7 @@
       ? globalThis.crypto.randomUUID()
       : ("msg-" + Date.now().toString(36) + "-" + Math.random().toString(36).slice(2));
 
-    addMessage(message, "user");
+    const userBubble = addMessage(message, "user");
     input.value = "";
     setBusy(true);
 
@@ -1231,6 +1237,7 @@
         throw new Error("INVALID_RESPONSE");
       }
 
+      setMessageTime(userBubble, data.user_message_at);
       thinking.remove();
       let replyText = data.reply;
       if (data.question_metadata && data.question_metadata.display_asset === "bristol_stool_chart"
@@ -1240,7 +1247,8 @@
       const botReply = addMessage(
         replyText,
         "bot",
-        data.status === "SAFETY_REVIEW" ? "error" : ""
+        data.status === "SAFETY_REVIEW" ? "error" : "",
+        data.assistant_message_at
       );
 
       if (

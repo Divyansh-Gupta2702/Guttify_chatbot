@@ -1011,10 +1011,11 @@ def _persist_assessment_checkpoint(session_id: str, completed: bool = False, tur
                 if not isinstance(item, dict) or item.get("role") not in ("user", "assistant") or not isinstance(item.get("content"), str):
                     continue
                 cur.execute("""
-                    INSERT INTO assessment_messages (assessment_id, sequence_no, turn_id, role, content)
-                    VALUES (%s,%s,%s,%s,%s)
+                    INSERT INTO assessment_messages (assessment_id, sequence_no, turn_id, role, content, created_at)
+                    VALUES (%s,%s,%s,%s,%s,COALESCE(%s,NOW()))
                     ON CONFLICT (assessment_id, turn_id, role) DO NOTHING
-                """, (assessment_id, sequence_no + 1, turn_id, item["role"], item["content"]))
+                """, (assessment_id, sequence_no + 1, turn_id, item["role"], item["content"],
+                      _to_utc_datetime(item.get("created_at"))))
                 if cur.rowcount:
                     sequence_no += 1
             cur.execute("""
@@ -1354,6 +1355,8 @@ class ChatRequest(BaseModel):
 class ChatResponse(BaseModel):
     reply: str
     status: str
+    user_message_at: str | None = None
+    assistant_message_at: str | None = None
     recommendations: list[dict] = Field(default_factory=list)
     # True when the current assessment has reached a terminal outcome, including
     # urgent red-flag safety outcomes that must not continue in this session.
@@ -2181,6 +2184,7 @@ def _chat_impl(req: ChatRequest, request: Request = None):
     cached = _begin_chat_idempotency(req.session_id, req.message_id)
     if cached is not None:
         return ChatResponse(**cached)
+    user_message_at = datetime.now(timezone.utc)
 
     message = original_message
     blocked_input = False
@@ -2351,8 +2355,15 @@ def _chat_impl(req: ChatRequest, request: Request = None):
     history_start = time.perf_counter()
 
     with _SESSION_LOCK:
-        history.append({"role": "user", "content": original_message})
-        history.append({"role": "assistant", "content": reply})
+        assistant_message_at = datetime.now(timezone.utc)
+        history.append({
+            "role": "user", "content": original_message,
+            "created_at": user_message_at.isoformat(),
+        })
+        history.append({
+            "role": "assistant", "content": reply,
+            "created_at": assistant_message_at.isoformat(),
+        })
         # Keep per-session memory bounded even for a continuously active client.
         if len(history) > MAX_HISTORY_MESSAGES:
             del history[:-MAX_HISTORY_MESSAGES]
@@ -2410,6 +2421,8 @@ def _chat_impl(req: ChatRequest, request: Request = None):
     response = ChatResponse(
         reply=reply,
         status=status,
+        user_message_at=user_message_at.isoformat(),
+        assistant_message_at=assistant_message_at.isoformat(),
         recommendations=response_recommendations,
         assessment_complete=assessment_complete,
         question_metadata=question_metadata,
