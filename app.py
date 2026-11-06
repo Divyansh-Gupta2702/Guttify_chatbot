@@ -69,9 +69,15 @@ MAX_HISTORY_MESSAGES = 100
 # are translated to English before the clinical logic and translated back for
 # display, without resetting the existing assessment state.
 ENGLISH_ONLY_FALLBACK = (
-    "I can assist you in English only. Please describe your symptoms in English so I can help you."
+    "This chat is set to English, but your message appears to be in Hinglish or Hindi. "
+    "Please switch the language selector to Hinglish, then send your answer again."
 )
 NON_ENGLISH_STATUS = "NON_ENGLISH"
+HINGLISH_ENGLISH_FALLBACK = (
+    "This chat is set to Hinglish, but your answer appears to be in English. "
+    "Please switch the language selector to English, then send your answer again."
+)
+LANGUAGE_MISMATCH_STATUS = "LANGUAGE_MISMATCH"
 HINGLISH_TRANSLATION_FALLBACK = (
     "Maaf kijiye, main is jawab ko abhi samajh nahi paaya. Kripya ise thoda aur simple Hinglish mein likhein, ya language ko English par switch karein."
 )
@@ -137,6 +143,30 @@ def _is_non_english(text: str) -> bool:
     if len(tokens) <= 3:
         return marker_count >= 1
     return marker_count >= 2
+
+
+def _is_clearly_english_sentence(text: str) -> bool:
+    """Conservatively catch English sentences in Hinglish mode.
+
+    Short answers and ordinary English symptom terms remain valid in Hinglish
+    conversations. Roman Hindi/Hinglish markers and Hindi scripts also remain
+    valid; only clear English sentence structure prompts a setting change.
+    """
+    if not text or _is_non_english(text):
+        return False
+    normalized = re.sub(r"[^a-z0-9\s']", " ", text.lower())
+    tokens = normalized.split()
+    if any(token in _HINDI_HINGLISH_MARKERS for token in tokens):
+        return False
+    if re.match(r"\s*(?:i['’](?:m|ve|d)|we['’](?:re|ve)|you['’](?:re|ve)|it['’]s|he['’]s|she['’]s)\b", text.lower()):
+        return True
+    if len(tokens) < 3:
+        return False
+    if len(tokens) >= 4:
+        return True
+    subjects = r"(?:i|we|you|he|she|it|they|my|the pain|this pain|that pain)"
+    verbs = r"(?:am|is|are|was|were|have|has|had|do|does|did|can|could|will|would|feel|feels|felt|hurt|hurts|started|stopped|noticed|see|saw|experience|experiencing|getting|having)"
+    return bool(re.search(rf"\b{subjects}\b(?:\s+\w+){{0,3}}\s+\b{verbs}\b", normalized))
 
 DATABASE_URL = os.getenv("DATABASE_URL", "").strip()
 GUEST_TOKEN_TTL_SECONDS = 30 * 24 * 60 * 60
@@ -2189,14 +2219,20 @@ def _chat_impl(req: ChatRequest, request: Request = None):
     message = original_message
     blocked_input = False
     if language == "hinglish":
-        try:
-            message = translate_input_to_english(original_message)
-        except Exception as exc:
-            logger.warning("event=translation_unavailable direction=input session=%s category=%s", req.session_id[:8], type(exc).__name__)
-            reply = HINGLISH_TRANSLATION_FALLBACK
-            status = "TRANSLATION_UNAVAILABLE"
+        if _is_clearly_english_sentence(original_message):
+            reply = HINGLISH_ENGLISH_FALLBACK
+            status = LANGUAGE_MISMATCH_STATUS
             result = None
             blocked_input = True
+        else:
+            try:
+                message = translate_input_to_english(original_message)
+            except Exception as exc:
+                logger.warning("event=translation_unavailable direction=input session=%s category=%s", req.session_id[:8], type(exc).__name__)
+                reply = HINGLISH_TRANSLATION_FALLBACK
+                status = "TRANSLATION_UNAVAILABLE"
+                result = None
+                blocked_input = True
     elif _is_non_english(original_message):
         reply = ENGLISH_ONLY_FALLBACK
         status = NON_ENGLISH_STATUS

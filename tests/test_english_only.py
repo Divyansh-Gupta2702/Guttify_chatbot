@@ -120,6 +120,7 @@ def test_non_english_opening_message_gets_english_fallback(monkeypatch):
     resp = _chat(gutgpt_app, "e1", "नमस्ते, मेरा पेट दर्द है")
     assert resp.status == NON_ENGLISH_STATUS
     assert resp.reply == ENGLISH_ONLY_FALLBACK
+    assert "switch the language selector to Hinglish" in resp.reply
     assert "नमस्ते" not in resp.reply
     # No clinical state was started by the non-English message.
     assert gutgpt_app.conversation_manager.sessions["e1"].symptom_state.primary_symptom is None

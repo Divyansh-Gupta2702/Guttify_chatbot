@@ -76,6 +76,36 @@ def test_hinglish_input_translation_failure_does_not_advance_assessment(monkeypa
     assert session.symptom_state.primary_symptom is None
 
 
+def test_english_sentence_in_hinglish_mode_prompts_setting_switch_without_advancing(monkeypatch):
+    _prepare_session(monkeypatch, "hinglish-language-mismatch")
+
+    def unexpected_translation(_text):
+        raise AssertionError("clear English should be rejected before translation")
+
+    monkeypatch.setattr(gutgpt_app, "translate_input_to_english", unexpected_translation)
+
+    result = _chat(
+        "hinglish-language-mismatch",
+        "I have stomach pain after eating",
+        "hinglish",
+    )
+
+    session = gutgpt_app.conversation_manager.sessions["hinglish-language-mismatch"]
+    assert result.status == gutgpt_app.LANGUAGE_MISMATCH_STATUS
+    assert "switch the language selector to English" in result.reply
+    assert session.symptom_state.primary_symptom is None
+
+
+def test_short_english_answers_and_hinglish_text_are_not_misclassified():
+    for message in (
+        "yes", "no", "bright red", "upper stomach", "dard after khana",
+        "mujhe pain after eating", "haan I have pain after eating",
+    ):
+        assert gutgpt_app._is_clearly_english_sentence(message) is False, message
+    assert gutgpt_app._is_clearly_english_sentence("I have pain after meals") is True
+    assert gutgpt_app._is_clearly_english_sentence("I'm bloated") is True
+
+
 def test_translation_service_preserves_structure_and_catalog_fields(monkeypatch):
     monkeypatch.setattr(translation_service, "_get_llm_cached", lambda *args: object())
     prompts = []
