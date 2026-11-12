@@ -312,33 +312,89 @@
         width: 100%;
         display: flex;
         flex-direction: column;
-        gap: 9px;
+        gap: 8px;
       }
 
       .product-card {
+        width: 100%;
+        box-sizing: border-box;
         background: #fff;
         border: 1px solid #e7ddea;
-        border-radius: 12px;
-        padding: 10px;
+        border-radius: 14px;
+        padding: 9px;
+        display: grid;
+        grid-template-columns: 68px minmax(0, 1fr);
+        gap: 10px;
+        align-items: start;
+      }
+
+      .product-image {
+        display: block;
+        width: 68px;
+        height: 68px;
+        object-fit: contain;
+        border-radius: 10px;
+        background: #faf8fb;
+        border: 1px solid #f0eaf3;
+      }
+
+      .product-content { min-width: 0; }
+      .product-card.no-image { grid-template-columns: minmax(0, 1fr); }
+
+      .product-category {
+        display: block;
+        margin: 0 0 3px;
+        color: #766b7d;
+        font-size: 10px;
+        line-height: 1.3;
       }
 
       .product-card h3 {
-        margin: 0 0 4px;
+        margin: 0 0 3px;
+        color: #302638;
         font-size: 13px;
+        line-height: 1.3;
+        overflow-wrap: anywhere;
+      }
+
+      .product-price {
+        margin: 0 0 5px;
+        color: #542282;
+        font-size: 14px;
+        font-weight: 700;
+        line-height: 1.3;
       }
 
       .product-card p {
-        margin: 0 0 7px;
+        margin: 0 0 8px;
         color: #665f70;
         font-size: 11px;
+        line-height: 1.4;
       }
 
-      .product-card a {
-        display: inline-block;
+      .product-buy-button {
+        display: flex;
+        width: 100%;
+        min-height: 34px;
+        box-sizing: border-box;
+        align-items: center;
+        justify-content: center;
+        border-radius: 8px;
+        padding: 7px 10px;
+        color: #fff !important;
+        background: #6a3f96;
         text-decoration: none;
         font-weight: 600;
-        font-size: 11px;
-        color: #a82e78;
+        font-size: 12px;
+        line-height: 1.2;
+      }
+
+      .product-buy-button:hover { background: #542d7c; }
+
+      @media (max-width: 360px) {
+        .messages { padding: 12px; }
+        .product-card { grid-template-columns: 58px minmax(0, 1fr); gap: 8px; }
+        .product-image { width: 58px; height: 58px; }
       }
 
       form {
@@ -527,7 +583,7 @@
       save: "Save details and continue", restored: (name) => `Welcome back, ${name}! Your profile is restored. You can start a new assessment.`,
       resumed: (name) => `Welcome back, ${name}! I've restored your unfinished assessment so you can continue.`,
       retryAssessment: "I couldn't recover your assessment progress. Your assessment has not been restarted. Please retry.",
-      thinking: "Thinking…", productLink: "View Product"
+      thinking: "Thinking…", productLink: "Buy Now"
     },
     hinglish: {
       greeting: (name) => `Namaste ${name}! Main GutGPT hoon, Guttify ka gut-health assistant. Aapko kya takleef ho rahi hai, batayein.`,
@@ -544,7 +600,7 @@
       restored: (name) => `Namaste ${name}! Aapki profile restore ho gayi hai. Naya assessment shuru kar sakte hain.`,
       resumed: (name) => `Namaste ${name}! Aapka adhura assessment restore ho gaya hai. Aap yahin se jaari rakh sakte hain.`,
       retryAssessment: "Aapka assessment progress restore nahi ho paya. Assessment restart nahi hua hai. Kripya dobara koshish karein.",
-      thinking: "Soch raha hoon…", productLink: "Product dekhein"
+      thinking: "Soch raha hoon…", productLink: "Abhi kharidein"
     }
   };
   function currentText() { return UI_TEXT[language] || UI_TEXT.en; }
@@ -670,27 +726,53 @@
       const card = document.createElement("article");
       card.className = "product-card";
 
+      const imageUrl = product.image_url || product.image;
+      if (typeof imageUrl === "string" && /^https:\/\//i.test(imageUrl)) {
+        const image = document.createElement("img");
+        image.className = "product-image";
+        image.src = imageUrl;
+        image.alt = product.product_name ? `${product.product_name} product` : "Guttify product";
+        image.loading = "lazy";
+        image.decoding = "async";
+        card.appendChild(image);
+      } else card.classList.add("no-image");
+
+      const content = document.createElement("div");
+      content.className = "product-content";
+
+      if (product.category) {
+        const category = document.createElement("span");
+        category.className = "product-category";
+        category.textContent = product.category;
+        content.appendChild(category);
+      }
+
       const title = document.createElement("h3");
       title.textContent = product.product_name || "Guttify product";
+      content.appendChild(title);
+
+      const price = document.createElement("div");
+      price.className = "product-price";
+      price.textContent = product.price || "Price unavailable";
+      content.appendChild(price);
 
       const description = document.createElement("p");
-      const support = Array.isArray(product.intended_support)
-        ? product.intended_support[0]
-        : "";
-      description.textContent = support || "";
-
-      card.append(title, description);
+      const support = Array.isArray(product.intended_support) ? product.intended_support[0] : "";
+      description.textContent = product.description || support || "";
+      if (description.textContent) content.appendChild(description);
 
       const url = product.product_url || product.url;
-      if (typeof url === "string" && /^https?:\/\//i.test(url)) {
+      if (typeof url === "string" && /^https:\/\//i.test(url)) {
         const link = document.createElement("a");
         link.href = url;
         link.target = "_blank";
         link.rel = "noopener noreferrer";
+        link.className = "product-buy-button";
         link.textContent = currentText().productLink;
-        card.appendChild(link);
+        content.appendChild(link);
       }
 
+      card.appendChild(content);
       wrap.appendChild(card);
     });
 

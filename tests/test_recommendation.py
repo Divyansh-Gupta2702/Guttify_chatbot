@@ -122,8 +122,12 @@ class TestRecommendationEngine(unittest.TestCase):
         # Use products already loaded by recommendation_engine
         from recommendation_engine import products as ALL_PRODUCTS
         all_names = {p["product_name"] for p in ALL_PRODUCTS}
+        self.assertGreaterEqual(len(result["recommendations"]), 2)
         for rec in result["recommendations"]:
             self.assertIn(rec["product_name"], all_names)
+            self.assertTrue(rec.get("image_url", "").startswith("https://"))
+            self.assertTrue(rec.get("price"))
+            self.assertTrue(rec.get("product_url", "").startswith("https://"))
 
 
 class TestConversationManager(unittest.TestCase):

@@ -37,7 +37,9 @@
     ],
     "age_group": "Adult use; not specified for children.",
     "status": "active",
-    "product_url": "https://guttify.com/products/digest-boost"
+    "product_url": "https://guttify.com/products/digest-boost",
+    "image_url": "https://guttify.com/cdn/shop/files/12_5296cfdd-658e-4784-9c68-ab8ed33aae0a.png?v=1750666677&width=600",
+    "price": "From ₹599"
   },
 
   {
@@ -74,7 +76,9 @@
     ],
     "age_group": "Adult use; not specified for children.",
     "status": "active",
-    "product_url": "https://guttify.com/products/acid-ease"
+    "product_url": "https://guttify.com/products/acid-ease",
+    "image_url": "https://guttify.co.in/cdn/shop/files/1_62ae11c7-e415-4e18-b87b-ffbae05e2e3e.png?v=1750666558&width=600",
+    "price": "From ₹599"
   },
 
   {
@@ -116,7 +120,9 @@
     "variants": [
       {"flavor": "Original", "url": "https://guttify.com/products/liver-lift"},
       {"flavor": "Strawberry", "url": "https://guttify.com/products/liver-lift-strawberry"}
-    ]
+    ],
+    "image_url": "https://guttify.co.in/cdn/shop/files/1.png?v=1739623628&width=600",
+    "price": "From ₹599"
   },
 
   {
@@ -164,7 +170,9 @@
     "variants": [
       {"flavor": "Orange", "url": "https://guttify.com/products/piles-pure-orange"},
       {"flavor": "Cola Blast", "url": "https://guttify.com/products/piles-pure-cola-blast"}
-    ]
+    ],
+    "image_url": "https://guttify.com/cdn/shop/files/13_c296ee81-da9b-4971-a10b-9a9bb997b88d.png?v=1770812183&width=600",
+    "price": "From ₹699"
   },
 
   {
@@ -203,7 +211,9 @@
     ],
     "age_group": "Adult use; not specified for children.",
     "status": "active",
-    "product_url": "https://guttify.com/products/apple-active"
+    "product_url": "https://guttify.com/products/apple-active",
+    "image_url": "https://guttify.com/cdn/shop/files/8_9cf65c21-bdf5-4c99-b434-f7a1099e7d52.png?v=1750666445&width=600",
+    "price": "From ₹599"
   },
 
   {
@@ -238,7 +248,9 @@
     ],
     "age_group": "Not specified on the product page.",
     "status": "active",
-    "product_url": "https://guttify.com/products/piloease-anal-care-spray"
+    "product_url": "https://guttify.com/products/piloease-anal-care-spray",
+    "image_url": "https://guttify.com/cdn/shop/files/PS8.png?v=1780902992&width=600",
+    "price": "₹799"
   },
 
   {
@@ -273,7 +285,9 @@
     "age_group": "Not specified on the product page.",
     "status": "active",
     "product_url": "https://guttify.com/products/glolux%E2%84%A2-effervescent-tablets",
-    "flavors": ["Cola Blast", "Blueberry"]
+    "flavors": ["Cola Blast", "Blueberry"],
+    "image_url": "https://guttify.co.in/cdn/shop/files/Glolux_-_Cola_jpg.jpg?v=1769859257&width=600",
+    "price": "From ₹749"
   },
 
   {
@@ -317,6 +331,8 @@
     ],
     "age_group": "Adult use; keep out of reach of children.",
     "status": "active",
-    "product_url": "https://guttify.com/products/guttify-poopie"
+    "product_url": "https://guttify.com/products/guttify-poopie",
+    "image_url": "https://guttify.co.in/cdn/shop/files/PDP-Poopie-01.jpg?v=1786622423&width=600",
+    "price": "From ₹799"
   }
 ]

@@ -451,6 +451,8 @@ def _build_recommendation(product, score=None):
         "warnings": product["warnings"],
         "age_group": product.get("age_group", ""),
         "product_url": product.get("product_url", ""),
+        "image_url": product.get("image_url", ""),
+        "price": product.get("price", ""),
         "flavors": product.get("flavors", []),
         "variants": product.get("variants", []),
     }
