@@ -342,6 +342,56 @@ def test_llm_resolves_a_natural_answer_and_advances_active_question(monkeypatch)
     assert session.last_question != "pain_location"
 
 
+def test_llm_resolves_a_paraphrase_without_question_keywords(monkeypatch):
+    class Response:
+        content = (
+            '{"intent":"answer_question","active_answer":'
+            '{"status":"answered","values":{"stool_form":1},'
+            '"evidence":"little separate marbles stuck together"}}'
+        )
+        response_metadata = {"finish_reason": "stop"}
+
+    monkeypatch.setattr(nlu_extractor, "_get_llm", lambda: object())
+    monkeypatch.setattr(nlu_extractor, "invoke_groq", lambda *args, **kwargs: Response())
+    facts = extract_natural_facts(
+        "little separate marbles stuck together",
+        "stool_form",
+        SymptomState(primary_symptom="constipation"),
+    )
+
+    assert facts["stool_form"] == 1
+    assert facts["_answer_status"] == "answered"
+    assert facts["_resolver_source"] == "model"
+
+
+def test_long_natural_answer_rechecks_a_local_match_with_the_model(monkeypatch):
+    calls = []
+
+    class Response:
+        content = (
+            '{"intent":"answer_question","active_answer":'
+            '{"status":"answered","values":{"weight_loss":false},'
+            '"evidence":"scale has actually gone up"}}'
+        )
+        response_metadata = {"finish_reason": "stop"}
+
+    monkeypatch.setattr(nlu_extractor, "_get_llm", lambda: object())
+    monkeypatch.setattr(
+        nlu_extractor,
+        "invoke_groq",
+        lambda *args, **kwargs: calls.append(args) or Response(),
+    )
+    facts = extract_natural_facts(
+        "I thought I had lost weight, but the scale has actually gone up over the last month.",
+        "weight_loss",
+        SymptomState(primary_symptom="bloating"),
+    )
+
+    assert len(calls) == 1
+    assert facts["weight_loss"] is False
+    assert facts["_resolver_source"] == "model"
+
+
 def test_unresolved_active_question_always_gets_llm_fallback(monkeypatch):
     calls = []
     monkeypatch.setattr(

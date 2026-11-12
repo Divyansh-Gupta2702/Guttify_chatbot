@@ -367,6 +367,10 @@ USER MESSAGE:
 
 Rules:
 1. Interpret the message in the context of CURRENT QUESTION.
+   Users may answer with ordinary speech, indirect wording, idioms, fragments,
+   spelling variation, or Hinglish. Do not require them to repeat the medical
+   keyword used in the question. Resolve pronouns and references from the
+   recent conversation when the reference is clear.
 2. Extract every relevant fact in the message, including facts volunteered
    beyond the question.
 3. A negative answer must be represented as false when the user clearly
@@ -402,6 +406,10 @@ Rules:
     Use status answered only if this turn supplies enough information, partial
     if it supplies one part of a multi-part question, and unresolved if it does
     not answer the question. Never fill an unmentioned part from prior state.
+    Respect corrections and changes over time: distinguish current symptoms
+    from past symptoms, and use the user's latest clear correction for the
+    current answer. If the wording is still ambiguous, leave it unresolved
+    rather than guessing.
     For shorthand such as "yr" in a duration answer, interpret an unnumbered
     singular unit as one unit and normalize it ("1 year").
 13. Return compact valid JSON, no markdown. Include only keys with an explicitly
@@ -1369,6 +1377,13 @@ def _needs_llm(message: str, last_question: str | None, fallback: dict) -> bool:
     if last_question and any(re.fullmatch(p, n) for p in simple):
         return False
 
+    # A local keyword match can resolve a field while missing the meaning of a
+    # longer natural answer (especially corrections, qualifications, and
+    # indirect descriptions). Let the contextual model validate these turns;
+    # the deterministic result remains the fallback if the model is unavailable.
+    if last_question and len(n) > 24:
+        return True
+
     # If the pending question has a high-confidence local answer, do not spend
     # an LLM request on a short/medium response. This also avoids malformed
     # model JSON turning an obvious "no" into an empty extraction.
@@ -1532,7 +1547,12 @@ def extract_natural_facts(message: str, last_question: str | None, state, conver
         last_question, message, extracted=fallback, state=state,
         active_component=active_component,
     ))
-    if resolution["status"] in {"answered", "partial", "unknown", "refused"}:
+    recheck_with_model = bool(
+        last_question
+        and resolution["status"] in {"answered", "partial"}
+        and len(_norm_answer_text(message)) > 24
+    )
+    if resolution["status"] in {"answered", "partial", "unknown", "refused"} and not recheck_with_model:
         for key, value in resolution["values"].items():
             if value == "unknown":
                 continue
@@ -1623,24 +1643,26 @@ def extract_natural_facts(message: str, last_question: str | None, state, conver
             "product_concern": set(),
         }
         forced_fields = context_fields.get(last_question or "", set())
+        model_answer = result.get("_model_question_resolution")
+        model_answer_fields = set(model_answer.get("values", {})) if isinstance(model_answer, dict) else set()
         scalar_keys = (
             "duration", "blood_type", "blood_location", "age", "severity",
             "pain_character", "pain_timing", "stool_pattern",
             "meal_timing", "symptom_onset_after_food", "timing_relation",
         )
         for key in scalar_keys:
-            if (key in forced_fields and fallback.get(key) is not None) or (
+            if (key in forced_fields and key not in model_answer_fields and fallback.get(key) is not None) or (
                 result.get(key) is None and fallback.get(key) is not None
             ):
                 result[key] = fallback[key]
         for key in BOOL_FIELDS:
-            if (key in forced_fields and fallback.get(key) is not None) or (
+            if (key in forced_fields and key not in model_answer_fields and fallback.get(key) is not None) or (
                 result.get(key) is None and fallback.get(key) is not None
             ):
                 result[key] = fallback[key]
         for key in ("vomiting", "fever", "swelling", "difficulty_swallowing",
                     "persistent_vomiting", "vomiting_blood", "reflux_present"):
-            if (key in forced_fields and fallback.get(key) is not None) or (
+            if (key in forced_fields and key not in model_answer_fields and fallback.get(key) is not None) or (
                 result.get(key) is None and fallback.get(key) is not None
             ):
                 result[key] = fallback[key]
@@ -1658,12 +1680,16 @@ def extract_natural_facts(message: str, last_question: str | None, state, conver
     # A model answer may still be semantically obvious once its validated
     # fields are available. Run the resolver once more without invoking the
     # model again. This is the single ownership boundary for the active field.
+    model_resolution = result.get("_model_question_resolution")
     final_resolution = validate_question_resolution(resolve_against_active_question(
         last_question, message, extracted=result, state=state,
         active_component=active_component,
     ))
-    if final_resolution["status"] in {"unresolved", "clarification_needed"}:
-        model_resolution = result.get("_model_question_resolution")
+    if isinstance(model_resolution, dict) and model_resolution.get("status") == "answered":
+        # A complete, evidence-backed model interpretation may correct a
+        # lexical guess, but only within the active question's owned fields.
+        final_resolution = validate_question_resolution(model_resolution)
+    elif final_resolution["status"] in {"unresolved", "clarification_needed"}:
         if isinstance(model_resolution, dict):
             final_resolution = validate_question_resolution(model_resolution)
     result["_question_resolution"] = final_resolution
