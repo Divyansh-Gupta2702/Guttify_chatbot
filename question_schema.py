@@ -869,6 +869,10 @@ def resolve_against_active_question(
         m = re.search(r"\b(?:type|form|bristol(?:\s+stool)?(?:\s+type)?)\s*[:#-]?\s*([1-7])\b", n)
         if m:
             stool = int(m.group(1))
+        elif re.fullmatch(r"[1-7]", n):
+            # The active question supplies the Bristol context for a bare
+            # chart number, matching the legacy symptom parser.
+            stool = int(n)
         else:
             semantic = {
                 1: (r"\b(?:very\s+hard|separate\s+hard\s+pellets?|pellets?)\b",),
@@ -1097,6 +1101,13 @@ def resolve_against_active_question(
             return {"status": "answered", "values": {"bowel_frequency_per_week": 14}, "confidence": 0.99, "source": "deterministic"}
         if re.fullmatch(r"every (?:other|alternate|second) day", n):
             return {"status": "answered", "values": {"bowel_frequency_per_week": 3.5}, "confidence": 0.99, "source": "deterministic"}
+        named_weekly = {
+            "once a week": 1, "once per week": 1, "one time a week": 1,
+            "twice a week": 2, "twice per week": 2, "two times a week": 2,
+            "three times a week": 3, "three times per week": 3,
+        }
+        if n in named_weekly:
+            return {"status": "answered", "values": {"bowel_frequency_per_week": named_weekly[n]}, "confidence": 0.99, "source": "deterministic"}
         m = re.search(r"\b(\d+(?:\.\d+)?)\s*(?:bowel movements?|times?|motions?)\s*(?:per|a)\s*week\b", n)
         if not m:
             m = re.fullmatch(r"(?:about\s+|around\s+|roughly\s+)?(\d+(?:\.\d+)?)\s*(?:bowel movements?|times?|motions?)", n)

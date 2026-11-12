@@ -835,11 +835,30 @@ def extract_bool(text, positives, negatives):
     """Phrase-aware boolean parser; negatives win and substring traps are avoided."""
     n = normalize(text)
     for phrase in sorted(negatives, key=len, reverse=True):
+        # These tokens are meaningful as a complete answer, but matching one
+        # anywhere in a longer sentence would incorrectly negate a later
+        # affirmative clause ("no fever, but vomiting").
+        if normalize(phrase) in {"no", "not", "never", "none", "without"}:
+            if n == normalize(phrase):
+                return False
+            continue
         if _phrase_present(n, phrase):
             return False
     for phrase in sorted(positives, key=len, reverse=True):
-        if _phrase_present(n, phrase):
-            return True
+        match = re.search(r"(?<!\w)" + re.escape(normalize(phrase)) + r"(?!\w)", n)
+        if not match:
+            continue
+        # A negative at the start of a coordinated phrase applies to each
+        # symptom in that phrase: "no fever or vomiting". Bound the scope to
+        # the current clause so "no fever, but vomiting" remains affirmative.
+        prefix = re.split(r"[,.;!?]|\b(?:but|however|although|yet)\b", n[:match.start()])[-1]
+        if re.search(r"\b(?:no|not|never|without)\b(?:\s+\w+){0,3}\s*$", prefix):
+            continue
+        if re.search(r"\b(?:don't|dont|do not|doesn't|doesnt|does not|haven't|havent|have not)\s+(?:have|has|had|experience|experiencing|notice|noticing|see|seeing)?\s*$", prefix):
+            continue
+        return True
+    if any(_phrase_present(n, phrase) for phrase in positives):
+        return False
     if n in {"yes", "yeah", "yep", "yup", "sure", "true"}:
         return True
     if n in {"no", "nope", "nah", "none", "false"}:

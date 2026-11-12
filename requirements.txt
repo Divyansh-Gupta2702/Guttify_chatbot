@@ -9,3 +9,4 @@ PyJWT==2.15.1
 psycopg[binary]==3.3.7
 tenacity==8.5.0
 langsmith==0.8.18
+httpx2==2.16.0
