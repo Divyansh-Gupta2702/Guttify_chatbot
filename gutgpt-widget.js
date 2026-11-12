@@ -101,9 +101,9 @@
         z-index: 2147483001;
         right: 22px;
         bottom: 96px;
-        width: min(390px, calc(100vw - 28px));
-        height: min(650px, calc(100vh - 120px));
-        min-height: 430px;
+        width: min(440px, calc(100vw - 32px));
+        height: min(700px, calc(100dvh - 120px));
+        min-height: 0;
         display: none;
         flex-direction: column;
         overflow: hidden;
@@ -173,7 +173,10 @@
       .bristol-options button:disabled { opacity:.5; cursor:not-allowed; }
       .customer-intake {
         flex: 1;
+        min-height: 0;
         overflow-y: auto;
+        overscroll-behavior: contain;
+        scrollbar-gutter: stable;
         padding: 18px 16px;
         background: #fff;
       }
@@ -185,7 +188,7 @@
       .intake-form input { width: 100%; min-height: 40px; border: 1px solid #ded5e4; border-radius: 9px; padding: 9px 10px; font: inherit; color: #241f2b; background: #fff; }
       .intake-form input:focus { outline: 2px solid #a77af0; outline-offset: 1px; }
       .consent-row { display: flex !important; grid-template-columns: 18px 1fr; align-items: start; gap: 8px !important; font-weight: 400 !important; line-height: 1.4; }
-      .consent-row input { width: 16px; min-height: 16px; margin: 2px 0 0; }
+      .consent-row input { flex: 0 0 18px; width: 18px; min-width: 18px; height: 18px; min-height: 18px; margin: 2px 0 0; padding: 0; accent-color: #7135ce; }
       .intake-submit { min-height: 42px; border: 0; border-radius: 10px; color: #fff; font: 600 14px/1.2 inherit; background: linear-gradient(135deg, #8134ed, #6020cf); cursor: pointer; }
       .intake-submit:disabled { opacity: .55; cursor: wait; }
       .intake-error { margin: 0; color: #a51d36; font-size: 12px; }
@@ -459,11 +462,18 @@
           right: 0;
           bottom: 0;
           width: 100vw;
+          height: 100vh;
           height: 100dvh;
+          max-height: 100vh;
           max-height: 100dvh;
           min-height: 0;
           border-radius: 0;
         }
+      }
+
+      @media (min-width: 561px) and (max-height: 620px) {
+        .panel { bottom: 12px; height: calc(100dvh - 24px); }
+        .customer-intake { padding-top: 12px; padding-bottom: 12px; }
       }
     </style>
 
