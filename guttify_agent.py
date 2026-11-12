@@ -1320,7 +1320,7 @@ class ConversationManager:
             if f in {"answered_unknown_fields", "refused_fields"}:
                 return True
             patterns = {
-                "duration": r"\b(?:for|since|started|began|been having|lasting|lasted|ago)\b.{0,80}\b(?:\d+(?:\.\d+)?|one|two|three|four|five|six|seven|eight|nine|ten)\s*(?:minutes?|mins?|min|hours?|days?|weeks?|months?|years?)\b",
+                "duration": r"\b(?:for|since|started|began|been having|lasting|lasted|ago)\b.{0,80}\b(?:\d+(?:\.\d+)?|one|two|three|four|five|six|seven|eight|nine|ten)\s*(?:seconds?|secs?|s|minutes?|mins?|min|hours?|hrs?|hr|h|days?|d|weeks?|wks?|wk|w|months?|mos?|mo|years?|yrs?|yr|y)\b",
                 "age": r"\b(?:i am|i'm|im|my age is|aged)\s*\d{1,3}\b",
                 "severity": r"\b(?:mild|moderate|severe|very\s+bad|extreme|worst)\b|\b(?:pain|severity)\s*(?:is|of|around|about)?\s*(?:10|[0-9])(?:\s*/\s*10)?\b",
                 "weight_loss": r"\b(?:lost|losing|loss of|gained|put on)\s+(?:a little\s+|significant\s+|any\s+)?weight\b",
@@ -1803,8 +1803,8 @@ class ConversationManager:
             )
             or re.fullmatch(
                 r"(?:duration(?: is|:)?\s*)?(?:for\s+)?"
-                r"(?:\d+(?:\.\d+)?(?:-\d+(?:\.\d+)?)?\s*(?:minutes?|mins?|hours?|days?|weeks?|months?|years?)|"
-                r"(?:one|two|three|four|five|six|seven|eight|nine|ten)\s+(?:minutes?|mins?|hours?|days?|weeks?|months?|years?))",
+                r"(?:\d+(?:\.\d+)?(?:-\d+(?:\.\d+)?)?\s*(?:seconds?|secs?|s|minutes?|mins?|min|hours?|hrs?|hr|h|days?|d|weeks?|wks?|wk|w|months?|mos?|mo|years?|yrs?|yr|y)|"
+                r"(?:one|two|three|four|five|six|seven|eight|nine|ten)\s+(?:seconds?|secs?|minutes?|mins?|hours?|hrs?|days?|weeks?|wks?|months?|mos?|years?|yrs?))",
                 normalized_text,
             )
             or re.fullmatch(r"(?:(?:pain|severity)(?: is| of)?\s*)?\d{1,2}(?:\s*/\s*10)?", normalized_text)

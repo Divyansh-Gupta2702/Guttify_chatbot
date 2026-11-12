@@ -634,26 +634,45 @@ def extract_named_aspect(text):
 def extract_duration(text):
     n = normalize(text)
 
+    # Accept common typed abbreviations and normalize them so downstream
+    # clinical rules only need to handle canonical unit names.
+    unit_pattern = r"seconds?|secs?|s|minutes?|mins?|min|hours?|hrs?|hr|h|days?|d|weeks?|wks?|wk|w|months?|mos?|mo|years?|yrs?|yr|y"
+    def canonical_unit(unit):
+        unit = unit.lower()
+        if unit in {"s", "sec", "secs", "second", "seconds"}:
+            return "seconds"
+        if unit in {"min", "mins", "minute", "minutes"}:
+            return "minutes"
+        if unit in {"h", "hr", "hrs", "hour", "hours"}:
+            return "hours"
+        if unit in {"d", "day", "days"}:
+            return "days"
+        if unit in {"w", "wk", "wks", "week", "weeks"}:
+            return "weeks"
+        if unit in {"mo", "mos", "month", "months"}:
+            return "months"
+        return "years"
+
     # Natural word-number durations: "for two weeks", "three days", etc.
     word_num = {
         "one": 1, "two": 2, "three": 3, "four": 4, "five": 5,
         "six": 6, "seven": 7, "eight": 8, "nine": 9, "ten": 10,
     }
-    m_word = re.search(r"\b(?:for\s+)?(one|two|three|four|five|six|seven|eight|nine|ten)\s+(minutes?|mins?|hours?|days?|weeks?|months?|years?)\b", n)
+    m_word = re.search(rf"\b(?:for\s+)?(one|two|three|four|five|six|seven|eight|nine|ten)\s+({unit_pattern})\b", n)
     if m_word:
-        unit = "minutes" if m_word.group(2).startswith("min") else m_word.group(2)
+        unit = canonical_unit(m_word.group(2))
         return f"{word_num[m_word.group(1)]} {unit}"
 
     # Standard numeric durations, including hour-based answers and ranges.
     m = re.search(
         r"\b(\d+(?:\.\d+)?)\s*(?:-\s*(\d+(?:\.\d+)?))?\s*"
-        r"(minute|minutes|min|mins|hour|hours|day|days|week|weeks|month|months|year|years)\b"
+        rf"({unit_pattern})\b"
         r"(?!\s*(?:old|of\s+age)\b)",
         n,
     )
     if m:
         first, second, unit = m.group(1), m.group(2), m.group(3)
-        unit = "minutes" if unit.startswith("min") else unit
+        unit = canonical_unit(unit)
         return f"{first}-{second} {unit}" if second else f"{first} {unit}"
 
     # Natural conversational duration expressions such as

@@ -851,9 +851,15 @@ def resolve_against_active_question(
     if question_id == "duration":
         if extracted and extracted.get("duration"):
             return {"status": "answered", "values": {"duration": extracted["duration"]}, "confidence": 0.99, "source": "deterministic"}
-        m = re.search(r"\b(\d+(?:\.\d+)?)\s*(minutes?|mins?|min|hours?|days?|weeks?|months?|years?)\b", n)
+        m = re.search(r"\b(\d+(?:\.\d+)?)\s*(seconds?|secs?|s|minutes?|mins?|min|hours?|hrs?|hr|h|days?|d|weeks?|wks?|wk|w|months?|mos?|mo|years?|yrs?|yr|y)\b", n)
         if m:
-            unit = "minutes" if m.group(2).startswith("min") else m.group(2)
+            raw_unit = m.group(2).lower()
+            unit = ("seconds" if raw_unit in {"s", "sec", "secs", "second", "seconds"} else
+                    "minutes" if raw_unit in {"min", "mins", "minute", "minutes"} else
+                    "hours" if raw_unit in {"h", "hr", "hrs", "hour", "hours"} else
+                    "days" if raw_unit in {"d", "day", "days"} else
+                    "weeks" if raw_unit in {"w", "wk", "wks", "week", "weeks"} else
+                    "months" if raw_unit in {"mo", "mos", "month", "months"} else "years")
             return {"status": "answered", "values": {"duration": f"{m.group(1)} {unit}"}, "confidence": 0.99, "source": "deterministic"}
 
     if question_id == "stool_form":

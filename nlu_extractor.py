@@ -611,12 +611,18 @@ def _duration_from_text(n: str):
         "five": 5, "six": 6, "seven": 7, "eight": 8, "nine": 9,
         "ten": 10, "couple": 2, "few": 3, "several": 3,
     }
-    pattern = r"\b(?:(?:for|about|around|roughly|since|last|the last)\s+)?(?:like\s+)?(\d+(?:\.\d+)?|a|an|one|two|three|four|five|six|seven|eight|nine|ten|couple|few|several)(?:\s*(?:-|to|or)\s*(\d+(?:\.\d+)?|two|three|four|five))?\s+(minute|minutes|min|mins|hour|hours|day|days|week|weeks|month|months|year|years)\b(?!\s*(?:old|of\s+age)\b)"
+    pattern = r"\b(?:(?:for|about|around|roughly|since|last|the last)\s+)?(?:like\s+)?(\d+(?:\.\d+)?|a|an|one|two|three|four|five|six|seven|eight|nine|ten|couple|few|several)(?:\s*(?:-|to|or)\s*(\d+(?:\.\d+)?|two|three|four|five))?\s+(seconds?|secs?|s|minutes?|mins?|min|hours?|hrs?|hr|h|days?|d|weeks?|wks?|wk|w|months?|mos?|mo|years?|yrs?|yr|y)\b(?!\s*(?:old|of\s+age)\b)"
 
     def num(x):
         if x is None:
             return None
-        return int(x) if x.isdigit() else number_words.get(x)
+        if x in number_words:
+            return number_words[x]
+        try:
+            value = float(x)
+            return int(value) if value.is_integer() else value
+        except (TypeError, ValueError):
+            return None
 
     for m in re.finditer(pattern, n):
         prefix = n[max(0, m.start() - 12):m.start()]
@@ -625,10 +631,15 @@ def _duration_from_text(n: str):
         n1, n2 = num(m.group(1)), num(m.group(2))
         if n1 is None:
             continue
+        raw_unit = m.group(3).lower()
+        unit = ("seconds" if raw_unit in {"s", "sec", "secs", "second", "seconds"} else
+                "minutes" if raw_unit in {"min", "mins", "minute", "minutes"} else
+                "hours" if raw_unit in {"h", "hr", "hrs", "hour", "hours"} else
+                "days" if raw_unit in {"d", "day", "days"} else
+                "weeks" if raw_unit in {"w", "wk", "wks", "week", "weeks"} else
+                "months" if raw_unit in {"mo", "mos", "month", "months"} else "years")
         if n2 is not None:
-            unit = "minutes" if m.group(3).startswith("min") else m.group(3)
             return f"{n1}-{n2} {unit}"
-        unit = "minutes" if m.group(3).startswith("min") else m.group(3)
         return f"{n1} {unit}"
     return None
 
