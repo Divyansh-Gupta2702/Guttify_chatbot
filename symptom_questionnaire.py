@@ -251,5 +251,16 @@ def next_question(state, only_symptoms=None):
                 if branch == "bleeding":
                     logger.info("[QUESTION][BLEEDING] selected_next=%s", item[0])
                 return item
+    # Include stool form once in every mapped gut-symptom assessment, even
+    # when that branch does not otherwise need it. Product-only concerns
+    # (such as GloLux skin concerns) do not enter a mapped gut branch.
+    if any(branch != "general" for branch in reported):
+        item = q(
+            "stool_form",
+            "What Bristol Stool Scale type best matches your stool, if you know it?",
+            not question_has_answer(state, "stool_form"),
+        )
+        if item:
+            return item
     logger.info("[QUESTION][COMPLETE] branches=%s", reported)
     return None

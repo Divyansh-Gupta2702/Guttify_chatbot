@@ -46,7 +46,7 @@ class TestV8RegressionFixes(unittest.TestCase):
         answers = {
             "duration": "2 weeks", "age": "23", "bloating_screen": "no",
             "constipation_screen": "no", "diarrhea_screen": "no",
-            "food_trigger": "no", "abdominal_pain_screen": "no",
+            "food_trigger": "no", "abdominal_pain_screen": "no", "stool_form": "4",
         }
         for _ in range(20):
             if result.get("status") != "ASK":
@@ -96,6 +96,7 @@ class TestV8RegressionFixes(unittest.TestCase):
             "no sharp pain",
             "yes lump",
             "no hard stools and no straining",
+            "4",
         ]:
             result = cm.handle_message(sid, msg)
         if result and result.get("status") == "SUMMARY_REVIEW":

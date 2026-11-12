@@ -102,6 +102,29 @@ class TestAllSymptomQuestionnaires(unittest.TestCase):
                 self.assertNotEqual(result.get("status"), "ASK")
                 self.assertIsNotNone(cm.sessions[initial.replace(" ", "-")].symptom_state.primary_symptom)
 
+    def test_every_supported_gut_symptom_branch_asks_for_bristol_type(self):
+        for branch, initial in self.BRANCHES:
+            with self.subTest(branch=branch):
+                cm = ConversationManager()
+                sid = "bristol-" + branch.replace(" ", "-")
+                result = cm.handle_message(sid, initial)
+                saw_bristol_question = False
+                for _ in range(30):
+                    session = cm.sessions[sid]
+                    field = session.last_question
+                    if field is None:
+                        break
+                    saw_bristol_question |= field == "stool_form"
+                    result = cm.handle_message(sid, self.ANSWERS[field])
+                self.assertTrue(saw_bristol_question, f"{branch} never asked about Bristol stool type")
+
+    def test_product_only_concern_without_gut_symptoms_does_not_ask_for_bristol_type(self):
+        from intent_parser import SymptomState
+
+        state = SymptomState(duration="2 weeks", age=30)
+        next_question_id, _ = next_question(state)
+        self.assertNotEqual(next_question_id, "stool_form")
+
 
 if __name__ == "__main__":
     unittest.main()

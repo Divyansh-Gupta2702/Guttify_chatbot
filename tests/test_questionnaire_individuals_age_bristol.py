@@ -136,7 +136,7 @@ def test_confirmed_bowel_symptom_does_not_prompt_as_if_opposite_were_unrelated()
     assert next_question(diarrhea)[0] == "daily_frequency"
 
 
-def test_gas_bloating_followups_do_not_ask_optional_bristol_type():
+def test_gas_bloating_branch_asks_bristol_type_after_other_followups():
     state = _ready_state("bloating")
     state.bloating = True
     state.gas = True
@@ -144,7 +144,7 @@ def test_gas_bloating_followups_do_not_ask_optional_bristol_type():
     state.diarrhea_explicit = False
     state.food_related = False
     state.abdominal_pain = False
-    assert next_question(state) is None
+    assert next_question(state)[0] == "stool_form"
 
 
 def test_invalid_saved_blood_location_does_not_satisfy_safety_followup():

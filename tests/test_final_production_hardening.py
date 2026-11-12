@@ -83,7 +83,7 @@ class TestV8ClinicalContextBridging(unittest.TestCase):
         sid = "blood-fissure-v8"
         answers = [
             "There is blood in stool", "3 weeks", "50", "Bright red",
-            "Tissue", "yes anal discomfort", "sharp tearing pain during stool", "no lump", "no hard stools and no straining",
+            "Tissue", "yes anal discomfort", "sharp tearing pain during stool", "no lump", "no hard stools and no straining", "4",
         ]
         result = None
         for answer in answers:
@@ -138,6 +138,7 @@ class TestV8AllActiveProductEntryPoints(unittest.TestCase):
         result = cm.handle_message(sid, "sharp tearing pain during stool")
         result = cm.handle_message(sid, "no lump")
         result = cm.handle_message(sid, "no hard stools and no straining")
+        result = cm.handle_message(sid, "4")
         if result.get("status") == "SUMMARY_REVIEW":
             result = cm.handle_message(sid, "yes")
         state = cm.sessions[sid].symptom_state

@@ -79,12 +79,17 @@ def test_negated_stool_facts_are_not_created_by_nlu():
     ]:
         result = cm.handle_message(sid, message)
 
+    # Negated hardness/straining must not invent a Bristol type. The new
+    # universal gut-branch question then asks for an explicit chart answer.
+    assert cm.sessions[sid].symptom_state.stool_form is None
+    result = cm.handle_message(sid, "4")
+
     if result and result.get("status") == "SUMMARY_REVIEW":
         result = cm.handle_message(sid, "yes")
     state = visible_state(cm, sid)
     assert state["sharp_pain_during_stool"] is False
     assert state["straining"] is False
-    assert state["stool_form"] is None
+    assert state["stool_form"] == 4
     assert result["screening"]["pattern"] == "Possible hemorrhoid pattern"
 
 
