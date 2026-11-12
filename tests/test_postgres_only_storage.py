@@ -24,6 +24,52 @@ def test_production_configuration_requires_database_url(monkeypatch):
         gutgpt_app.validate_production_configuration()
 
 
+def _set_valid_non_llm_production_config(monkeypatch):
+    monkeypatch.setattr(gutgpt_app, "DATABASE_URL", "postgresql://gutgpt:test@localhost/gutgpt")
+    monkeypatch.setattr(gutgpt_app, "allowed_origins", ["https://guttify.com"])
+    monkeypatch.setenv("JWT_SECRET_KEY", "test-secret-that-is-long-enough-for-a-test-123456789")
+    monkeypatch.setenv("ALLOWED_ORIGINS", "https://guttify.com")
+    monkeypatch.delenv("GROQ_API_KEY", raising=False)
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    monkeypatch.delenv("GEMINI_PAID_TIER_CONFIRMED", raising=False)
+
+
+def test_production_configuration_requires_selected_groq_key(monkeypatch):
+    _set_valid_non_llm_production_config(monkeypatch)
+    monkeypatch.setenv("GUTGPT_LLM_PROVIDER", "groq")
+
+    with pytest.raises(RuntimeError, match="GROQ_API_KEY"):
+        gutgpt_app.validate_production_configuration()
+
+
+def test_production_configuration_rejects_example_provider_key(monkeypatch):
+    _set_valid_non_llm_production_config(monkeypatch)
+    monkeypatch.setenv("GUTGPT_LLM_PROVIDER", "groq")
+    monkeypatch.setenv("GROQ_API_KEY", "replace-with-your-groq-api-key")
+
+    with pytest.raises(RuntimeError, match="GROQ_API_KEY"):
+        gutgpt_app.validate_production_configuration()
+
+
+def test_production_configuration_requires_gemini_key_and_paid_tier(monkeypatch):
+    _set_valid_non_llm_production_config(monkeypatch)
+    monkeypatch.setenv("GUTGPT_LLM_PROVIDER", "gemini")
+
+    with pytest.raises(RuntimeError) as error:
+        gutgpt_app.validate_production_configuration()
+
+    assert "GEMINI_API_KEY" in str(error.value)
+    assert "GEMINI_PAID_TIER_CONFIRMED" in str(error.value)
+
+
+def test_production_configuration_accepts_selected_provider_configuration(monkeypatch):
+    _set_valid_non_llm_production_config(monkeypatch)
+    monkeypatch.setenv("GUTGPT_LLM_PROVIDER", "groq")
+    monkeypatch.setenv("GROQ_API_KEY", "test-only-provider-key")
+
+    gutgpt_app.validate_production_configuration()
+
+
 def test_customer_json_file_fallback_is_absent_from_runtime_source():
     source = (Path(gutgpt_app.BASE_DIR) / "app.py").read_text(encoding="utf-8")
     assert "CUSTOMER_DATA_FILE" not in source

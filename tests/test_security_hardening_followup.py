@@ -76,6 +76,13 @@ def test_jwt_key_requires_url_safe_43_character_minimum(monkeypatch):
     assert error.value.status_code == 503
 
 
+def test_jwt_key_rejects_example_placeholder_even_when_it_is_long_enough(monkeypatch):
+    monkeypatch.setenv("JWT_SECRET_KEY", "replace-with-a-random-secret-at-least-32-bytes-long")
+    with pytest.raises(HTTPException) as error:
+        gutgpt_app._jwt_signing_key()
+    assert error.value.status_code == 503
+
+
 def test_widget_only_distribution_has_no_standalone_customer_frontend():
     root = Path(gutgpt_app.BASE_DIR)
     assert not (root / "index.html").exists()

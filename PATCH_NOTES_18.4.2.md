@@ -49,4 +49,13 @@ This is a controlled revision of the existing v18.4.1 codebase. The questionnair
 
 ## Verification status
 
-No test suite has been executed for this revision, at the user's request. Tests are prepared for the next validation phase. Actual PostgreSQL integration, Shopify/browser rendering, production HTTPS asset delivery, and full 27-pattern regression results remain unverified until the project dependencies and staging environment are available.
+At the time of the original release package, the test suite had not yet been executed. A repository revalidation on 2026-11-12 ran `python -m pytest tests -q --tb=no --basetemp=.pytest-tmp`: **688 passed, 8 skipped, and 28 subtests passed**. The skipped PostgreSQL integration tests require a disposable `GROQ_TEST_DATABASE_URL`.
+
+Actual PostgreSQL restore/new-assessment behavior, production HTTPS asset delivery, and Shopify browser rendering still require a staging environment.
+
+## Repository audit follow-up (2026-11-12)
+
+- Production startup now fails when the selected provider key is missing or uses an obvious `.env.example` placeholder. Gemini also requires `GEMINI_PAID_TIER_CONFIRMED=true`.
+- The Docker image now upgrades to the pinned pip version and installs `requirements.lock.txt` for repeatable dependency resolution.
+- Added `CUSTOMER_CHAT_STATE_MIGRATION.md` to document the startup schema migration and its backup/staging requirements.
+- Updated this note and `AUDIT_IMPLEMENTATION_REPORT.md` with the current test results and staging-only verification limits.

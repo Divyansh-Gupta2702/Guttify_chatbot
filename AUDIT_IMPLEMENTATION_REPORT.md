@@ -1,6 +1,6 @@
 # GutGPT v18.4.2 — Full questionnaire, age, and Bristol implementation report
 
-**Package status:** Implementation package prepared for review. No production deployment performed. The user requested that implementation be completed before the next test phase; therefore the test suite has deliberately not been run for this revision.
+**Package status:** Implementation package prepared for review. No production deployment performed. At the time this report was first written, the test suite had not yet been run. A repository revalidation on 2026-11-12 subsequently ran the full suite; current results are recorded in Section 6.
 
 ## 1. Source baseline and constraints
 
@@ -160,7 +160,9 @@ This is a source-level preservation statement, not a claim that the full 27-patt
 
 ## 6. Test and static verification status
 
-**Test suites executed:** none for this revision, by user request.
+**Initial release verification:** the test suite had not been run when this report was first prepared.
+
+**Repository revalidation on 2026-11-12:** `python -m pytest tests -q --tb=no --basetemp=.pytest-tmp` completed with **688 passed, 8 skipped, and 28 subtests passed**. The skipped tests require `GROQ_TEST_DATABASE_URL` to point to a disposable PostgreSQL database.
 
 **Prepared regression coverage:**
 
@@ -171,7 +173,7 @@ This is a source-level preservation statement, not a claim that the full 27-patt
 - Bristol question-ID trigger, API metadata, asset route, frontend rendering, duplicate prevention, and graceful fallback.
 - Existing clinical, safety, recommendation, persistence, session lifecycle, and 27-pattern suites remain in the project and are not removed.
 
-**Static checks completed (not test execution):**
+**Static checks completed:**
 
 - Python AST parsing succeeded for all 14 changed Python implementation/test files.
 - `node --check` succeeded for the modified Shopify widget JavaScript.
@@ -179,21 +181,20 @@ This is a source-level preservation statement, not a claim that the full 27-patt
 - Every question ID emitted by the revised questionnaire has a scripted answer entry in the updated conversation-completeness fixture.
 - The Bristol PNG route and widget asset reference point to the shipped asset name.
 
-**Not yet verified:**
+**Still requires an external staging environment:**
 
-- Full pytest suite and all 27 clinical patterns after this revision.
 - Live PostgreSQL restore/new-assessment behavior.
 - Actual Shopify browser rendering, image HTTP status, and the production HTTPS asset path.
 - Shopify `img-src` Content Security Policy acceptance for the GutGPT API origin.
 - Production Nginx routing of `/assets/bristol-stool-chart.png`.
 
-## 7. Deployment preparation (do not run until tests are reviewed)
+## 7. Deployment preparation (not performed)
 
 No deployment was performed. No production files or database were accessed.
 
 ### Back up application and PostgreSQL first
 
-Run on the DigitalOcean server only after approving the test results. Replace the application path if the server uses a different one:
+Run on the DigitalOcean server only after the staging checks below pass. Replace the application path if the server uses a different one:
 
 ```bash
 cd /opt/gutgpt
@@ -223,7 +224,8 @@ Then, in the server's actual project virtual environment:
 ```bash
 cd /opt/gutgpt
 source venv/bin/activate
-pip install -r requirements.txt
+python -m pip install --upgrade pip==26.2
+python -m pip install -r requirements.lock.txt
 sudo systemctl restart gutgpt
 sudo systemctl status gutgpt --no-pager
 ```
@@ -254,4 +256,4 @@ No database rollback is expected because this revision has no schema migration. 
 
 ## 8. Release decision and remaining risks
 
-**Do not deploy yet.** Implementation and regression fixtures are prepared, but the next step is the test phase requested by the user. The full test suite, actual PostgreSQL integration, 27-pattern regression, Shopify browser behavior, Nginx asset route, and Shopify CSP remain to be verified. No production fix is claimed until those checks pass.
+**Automated tests pass; production deployment has not been performed.** The full suite and 27-pattern regression are included in the passing test run. Actual PostgreSQL integration, Shopify browser behavior, Nginx asset routing, and Shopify CSP still require staging verification. No production database or storefront was accessed during this revalidation.

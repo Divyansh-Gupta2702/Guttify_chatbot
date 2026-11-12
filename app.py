@@ -176,12 +176,17 @@ JWT_ISSUER = os.getenv("JWT_ISSUER", "gutgpt-api")
 JWT_AUDIENCE = os.getenv("JWT_AUDIENCE", "gutgpt-guest-session")
 
 
+def _is_example_placeholder(value: str) -> bool:
+    normalized = str(value or "").strip().lower()
+    return not normalized or normalized.startswith(("replace-with", "your-", "changeme", "change-me"))
+
+
 def _jwt_signing_key() -> str:
     """Return the configured JWT signing key; never use an insecure fallback."""
     key = os.getenv("JWT_SECRET_KEY", "")
     # 32 arbitrary UTF-8 bytes do not establish 256 bits of entropy. Require
     # the 43-character URL-safe representation produced by token_urlsafe(32).
-    if len(key) < 43 or not re.fullmatch(r"[A-Za-z0-9_-]+", key):
+    if _is_example_placeholder(key) or len(key) < 43 or not re.fullmatch(r"[A-Za-z0-9_-]+", key):
         raise HTTPException(
             status_code=503,
             detail="Guest sessions are temporarily unavailable. Server authentication is not configured.",
@@ -314,7 +319,14 @@ def validate_production_configuration():
     provider = os.getenv("GUTGPT_LLM_PROVIDER", "groq").strip().lower()
     if provider not in {"gemini", "groq"}:
         missing.append("GUTGPT_LLM_PROVIDER must be gemini or groq")
-    elif provider == "gemini" and os.getenv("GEMINI_API_KEY", "").strip():
+    elif provider == "groq":
+        groq_key = os.getenv("GROQ_API_KEY", "").strip()
+        if _is_example_placeholder(groq_key):
+            missing.append("GROQ_API_KEY (a real server-side Groq API key is required)")
+    elif provider == "gemini":
+        gemini_key = os.getenv("GEMINI_API_KEY", "").strip()
+        if _is_example_placeholder(gemini_key):
+            missing.append("GEMINI_API_KEY (a real server-side Gemini API key is required)")
         if os.getenv("GEMINI_PAID_TIER_CONFIRMED", "false").strip().lower() not in {"1", "true", "yes"}:
             missing.append("GEMINI_PAID_TIER_CONFIRMED=true (required for production customer data; use a billing-enabled Gemini API project)")
     if not DATABASE_URL:
@@ -327,7 +339,7 @@ def validate_production_configuration():
         except ValueError as exc:
             raise RuntimeError(f"Invalid ALLOWED_ORIGINS configuration: {exc}") from exc
     jwt_secret = os.getenv("JWT_SECRET_KEY", "")
-    if len(jwt_secret) < 43 or not re.fullmatch(r"[A-Za-z0-9_-]+", jwt_secret):
+    if _is_example_placeholder(jwt_secret) or len(jwt_secret) < 43 or not re.fullmatch(r"[A-Za-z0-9_-]+", jwt_secret):
         missing.append("JWT_SECRET_KEY (at least 43 URL-safe characters generated from 32 random bytes)")
     if missing:
         raise RuntimeError(
@@ -353,13 +365,6 @@ def validate_production_configuration():
         "GutGPT production configuration validated: origins=%d session_ttl=%ss max_sessions=%d",
         len(allowed_origins), SESSION_TTL_SECONDS, MAX_SESSIONS,
     )
-    has_llm_credentials = bool(os.getenv("GROQ_API_KEY", "").strip()) or (
-        provider == "gemini" and bool(os.getenv("GEMINI_API_KEY", "").strip())
-    )
-    if not has_llm_credentials:
-        logger.warning("event=llm_provider_unavailable reason=no_credentials clinical_rules_remain_available=true")
-
-
 @asynccontextmanager
 async def lifespan(application: FastAPI):
     """Validate required configuration when the application starts."""

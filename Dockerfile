@@ -5,8 +5,9 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
-COPY requirements.txt .
-RUN python -m pip install --no-cache-dir --timeout 600 --retries 10 --index-url https://pypi.org/simple -r requirements.txt
+COPY requirements.lock.txt .
+RUN python -m pip install --no-cache-dir --timeout 600 --retries 10 --index-url https://pypi.org/simple pip==26.2 \
+    && python -m pip install --no-cache-dir --timeout 600 --retries 10 --index-url https://pypi.org/simple -r requirements.lock.txt
 
 COPY . .
 
