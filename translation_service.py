@@ -65,6 +65,15 @@ def translate_input_to_english(text: str) -> str:
     source = str(text or "").strip()
     if not source:
         raise TranslationError("Empty input")
+    # Very short confirmations are common in Roman Hinglish and are easy for
+    # translation models to misread. Normalize spelling variants before NLU.
+    compact = re.sub(r"[^a-z]", "", source.lower())
+    affirmative = {"haan", "han", "haa", "haa", "haanji", "hanji", "jee", "ji", "yup", "yep"}
+    negative = {"nahi", "nahin", "nhi", "nah", "nahee", "nahiin", "nai", "n", "nope"}
+    if compact in affirmative:
+        return "yes"
+    if compact in negative:
+        return "no"
     result = _translate_json(
         {"translation": source},
         reason="translation_input",
@@ -113,7 +122,9 @@ def translate_chat_output(reply: str, recommendations: list[dict] | None = None)
             "diagnosis/screening explanations, disclaimers, and follow-up questions. Preserve the "
             "meaning, negations, numbers, Markdown structure, and every question. Keep product/brand "
             "names and URLs exactly as written. Translate every string in reply and recommendation "
-            "fields, preserving array lengths and JSON structure. Do not add advice or omit any content."
+            "fields, preserving array lengths and JSON structure. Do not add advice or omit any content. "
+            "The result must read naturally as Roman-script Hinglish throughout; use natural Hindi "
+            "sentence structure and connective words, keeping only familiar medical/product terms in English."
         ),
     )
     translated_reply = result.get("reply")

@@ -81,6 +81,10 @@ LANGUAGE_MISMATCH_STATUS = "LANGUAGE_MISMATCH"
 HINGLISH_TRANSLATION_FALLBACK = (
     "Maaf kijiye, main is jawab ko abhi samajh nahi paaya. Kripya ise thoda aur simple Hinglish mein likhein, ya language ko English par switch karein."
 )
+HINGLISH_OUTPUT_FALLBACK = (
+    "Maaf kijiye, main abhi is jawab ko Hinglish mein taiyaar nahi kar paaya. "
+    "Kripya thodi der baad dobara poochhein."
+)
 
 # Non-Latin scripts are never part of an English GutGPT message.
 _NON_LATIN_SCRIPT_RANGES = (
@@ -100,7 +104,7 @@ _NON_LATIN_SCRIPT_RANGES = (
 # "daily", "ok") so English messages with product names, medical terms,
 # abbreviations or spelling mistakes are never mistaken for another language.
 _HINDI_HINGLISH_MARKERS = {
-    "haan", "han", "haa", "ji", "nahi", "nahin", "nhi", "nah",
+    "haan", "han", "haa", "haanji", "hanji", "ji", "jee", "nahi", "nahin", "nhi", "nah", "nahee", "nahiin", "nai", "na",
     "bilkul", "kya", "kaise", "kab", "kyun", "kitna", "kitni",
     "raat", "subah", "shaam", "sham", "dopahar", "hafta", "mahina", "mahino",
     "saal", "din", "kal", "aaj", "mujhe", "mujhko", "mera", "meri", "mere",
@@ -115,7 +119,7 @@ _HINDI_HINGLISH_MARKERS = {
 
 # Short Roman-script answers that are Hinglish/Hindi rather than English.
 # English "yes"/"no" are intentionally absent: they remain valid confirmations.
-_NON_ENGLISH_SHORT_ANSWERS = {"haan", "han", "haa", "ji", "bilkul", "nahi", "nahin", "nhi", "nah"}
+_NON_ENGLISH_SHORT_ANSWERS = {"haan", "han", "haa", "haanji", "hanji", "ji", "jee", "bilkul", "nahi", "nahin", "nhi", "nah", "nahee", "nahiin", "nai", "na"}
 
 
 def _is_non_english(text: str) -> bool:
@@ -2371,10 +2375,12 @@ def _chat_impl(req: ChatRequest, request: Request = None):
         try:
             reply, response_recommendations = translate_chat_output(reply, response_recommendations)
         except Exception as exc:
-            # Keep the already-produced deterministic answer visible if the
-            # output translation provider is unavailable. The assessment
-            # remains on its valid next question and can continue in English.
+            # Never expose English assessment text when Hinglish was selected.
+            # The deterministic result remains persisted; a later request can
+            # retrieve it again when translation is available.
             logger.warning("event=translation_unavailable direction=output session=%s category=%s", req.session_id[:8], type(exc).__name__)
+            reply = HINGLISH_OUTPUT_FALLBACK
+            response_recommendations = []
 
     # Persist urgent safety outcomes as well as completed routine assessments.
     if status in ("DIAGNOSIS", "RECOMMENDATION_FOUND", "AMBIGUOUS") or (
