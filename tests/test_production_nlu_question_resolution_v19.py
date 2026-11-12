@@ -316,6 +316,32 @@ def test_bowel_frequency_short_answer_does_not_call_llm(monkeypatch):
     assert calls == []
 
 
+def test_duration_accepts_a_bare_singular_unit_answer():
+    facts = extract_natural_facts("yr", "duration", SymptomState(primary_symptom="bloating"))
+    assert facts["duration"] == "1 year"
+    assert facts["_answer_status"] == "answered"
+    assert facts["_resolver_source"] == "deterministic"
+
+
+def test_llm_resolves_a_natural_answer_and_advances_active_question(monkeypatch):
+    class Response:
+        content = (
+            '{"intent":"answer_question","active_answer":'
+            '{"status":"answered","values":{"pain_location":"around navel"},'
+            '"evidence":"near my belly button"}}'
+        )
+        response_metadata = {"finish_reason": "stop"}
+
+    monkeypatch.setattr(nlu_extractor, "_get_llm", lambda: object())
+    monkeypatch.setattr(nlu_extractor, "invoke_groq", lambda *args, **kwargs: Response())
+    cm, sid, session = active("pain_location", "stomach pain")
+
+    cm.handle_message(sid, "near my belly button")
+
+    assert session.symptom_state.pain_location == "around navel"
+    assert session.last_question != "pain_location"
+
+
 def test_unresolved_active_question_always_gets_llm_fallback(monkeypatch):
     calls = []
     monkeypatch.setattr(

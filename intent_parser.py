@@ -653,6 +653,18 @@ def extract_duration(text):
             return "months"
         return "years"
 
+    # In a direct answer to a duration question, a lone singular unit is a
+    # common shorthand for "one <unit>" (for example, "yr" or "wk").
+    bare_unit = re.fullmatch(
+        r"(?:for\s+)?(?:(?:a|an|one)\s+)?"
+        r"(second|sec|s|minute|min|hour|hr|h|day|d|week|wk|month|mo|year|yr|y)",
+        n,
+    )
+    if bare_unit:
+        normalized_unit = canonical_unit(bare_unit.group(1))
+        singular_unit = normalized_unit[:-1] if normalized_unit.endswith("s") else normalized_unit
+        return f"1 {singular_unit}"
+
     # Natural word-number durations: "for two weeks", "three days", etc.
     word_num = {
         "one": 1, "two": 2, "three": 3, "four": 4, "five": 5,

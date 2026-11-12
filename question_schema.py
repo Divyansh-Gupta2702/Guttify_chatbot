@@ -7,7 +7,7 @@ not perform diagnosis or recommendation.
 from dataclasses import dataclass, field
 from typing import Any, Callable, Optional
 import re
-from intent_parser import is_negated
+from intent_parser import extract_duration, is_negated
 
 
 @dataclass(frozen=True)
@@ -282,6 +282,8 @@ def _composite_completion(question_id: str, values: dict, state=None) -> bool:
             return meal is True or bowel is True or (meal is False and bowel is False)
         return any(get(name) is not None for name in ("food_related", "food_trigger", "pain_related_to_bowel_movement"))
     spec = get_question_spec(question_id)
+    if spec and not spec.require_all:
+        return any(get(name) is not None for name in spec.fields)
     return bool(spec) and all(get(name) is not None for name in spec.fields)
 
 
@@ -1225,6 +1227,115 @@ def _valid_age(value: Any) -> int | None:
     else:
         return None
     return age if 1 <= age <= 120 else None
+
+
+_MODEL_BOOLEAN_FIELDS = {
+    "weight_loss", "constipation_explicit", "straining", "hard_stools",
+    "incomplete_evacuation", "abdominal_pain", "pain_related_to_bowel_movement",
+    "anal_pain", "sharp_pain_during_stool", "mucus", "night_time_symptoms",
+    "vomiting", "fever", "abdominal_distension", "difficulty_swallowing",
+    "persistent_vomiting", "vomiting_blood", "diarrhea", "diarrhea_explicit", "gas",
+    "bloating", "blood_present", "lump_or_prolapse", "food_related",
+    "reflux_present", "recent_infection",
+}
+
+
+def validate_model_question_resolution(
+    question_id: str | None,
+    message: str,
+    candidate: dict | None,
+    state=None,
+    active_component: str | None = None,
+) -> dict:
+    """Validate an LLM's direct answer to the current question.
+
+    The model must quote evidence from this turn, use only fields owned by
+    the active question, and provide values of the appropriate type. This
+    keeps semantic interpretation useful without allowing it to skip the
+    questionnaire's slot ownership or safety rules.
+    """
+    spec = get_question_spec(question_id)
+    if not spec or not isinstance(candidate, dict):
+        return {"status": "unresolved", "values": {}, "confidence": 0.0, "source": "unresolved"}
+
+    evidence = candidate.get("evidence")
+    normalized_message = normalize_answer_text(message)
+    normalized_evidence = normalize_answer_text(evidence) if isinstance(evidence, str) else ""
+    if not normalized_evidence or normalized_evidence not in normalized_message:
+        return {"status": "unresolved", "values": {}, "confidence": 0.0, "source": "unresolved"}
+
+    raw_values = candidate.get("values")
+    if not isinstance(raw_values, dict):
+        return {"status": "unresolved", "values": {}, "confidence": 0.0, "source": "unresolved"}
+    allowed_fields = set(spec.fields)
+    if active_component in allowed_fields:
+        allowed_fields = {active_component}
+
+    values = {}
+    for field, value in raw_values.items():
+        if field not in allowed_fields or value is None:
+            continue
+        if field in _MODEL_BOOLEAN_FIELDS:
+            if isinstance(value, bool):
+                values[field] = value
+            continue
+        if field == "duration":
+            if isinstance(value, str):
+                normalized_duration = extract_duration(value)
+                if normalized_duration:
+                    values[field] = normalized_duration
+            continue
+        if field == "age":
+            age = _valid_age(value)
+            if age is not None:
+                values[field] = age
+            continue
+        if field in {"bowel_frequency_per_week", "bowel_frequency_per_day"}:
+            if isinstance(value, (int, float)) and not isinstance(value, bool) and 0 <= value <= 60:
+                values[field] = value
+            elif isinstance(value, str) and re.fullmatch(r"\s*\d+(?:\.\d+)?\s*", value):
+                amount = float(value)
+                if 0 <= amount <= 60:
+                    values[field] = int(amount) if amount.is_integer() else amount
+            continue
+        if field == "stool_form":
+            if isinstance(value, int) and not isinstance(value, bool) and 1 <= value <= 7:
+                values[field] = value
+            continue
+        if field == "severity":
+            if isinstance(value, (int, float)) and not isinstance(value, bool) and 0 <= value <= 10:
+                values[field] = str(value)
+            elif isinstance(value, str) and (value in {"mild", "moderate", "severe"} or re.fullmatch(r"(?:10|[0-9])(?:\.\d+)?", value.strip())):
+                values[field] = value.strip()
+            continue
+        if field == "blood_colour" and value not in {"bright_red", "black", "dark"}:
+            continue
+        if field == "blood_location" and value not in {"tissue", "dripping", "mixed"}:
+            continue
+        if field == "other_symptoms" and isinstance(value, list):
+            quoted_items = [
+                item.strip()[:120]
+                for item in value
+                if isinstance(item, str) and item.strip()
+                and normalize_answer_text(item) in normalized_message
+            ][:5]
+            if quoted_items:
+                values[field] = quoted_items
+            continue
+        if isinstance(value, str) and value.strip() and len(value.strip()) <= 160:
+            values[field] = value.strip()
+
+    if not values:
+        return {"status": "unresolved", "values": {}, "confidence": 0.0, "source": "unresolved"}
+
+    complete = _composite_completion(question_id, values, state)
+    return {
+        "status": "answered" if complete else "partial",
+        "values": values,
+        "confidence": 0.85,
+        "source": "model",
+        "evidence": normalized_evidence,
+    }
 
 
 def question_has_answer(state: Any, question_id: str | None) -> bool:

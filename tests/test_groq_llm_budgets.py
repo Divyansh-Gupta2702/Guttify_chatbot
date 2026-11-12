@@ -16,7 +16,7 @@ _REAL_NLU_GET_LLM = nlu_extractor._get_llm
     ("reason", "expected"),
     [
         ("conversation_intent", 260),
-        ("nlu_extraction", 350),
+        ("nlu_extraction", 500),
         ("general_knowledge_answer", 800),
         ("company_knowledge_answer", 800),
         ("research_summary_answer", 900),
@@ -53,7 +53,7 @@ def test_output_budget_overrides_are_bounded_and_nlu_keeps_its_own_clamp(monkeyp
 
     assert groq_service.configured_output_tokens("research_summary_answer") == 850
     assert groq_service.configured_output_tokens("conversation_intent") == 96
-    assert groq_service.configured_output_tokens("nlu_extraction") == 400
+    assert groq_service.configured_output_tokens("nlu_extraction") == 600
 
 
 def test_installed_langchain_groq_client_keeps_the_requested_limit(monkeypatch):

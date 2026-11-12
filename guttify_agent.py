@@ -781,6 +781,13 @@ class ConversationManager:
             notes = dict(data.get("answer_notes") or {})
             notes[field] = text
             data["answer_notes"] = notes
+            # The resolver owns the active slot and has already constrained
+            # values to its schema. Apply those typed values directly so a
+            # valid semantic answer does not depend on a second legacy parser
+            # recognizing the same wording.
+            for owned_field, owned_value in resolved_active_values.items():
+                if owned_field in active_owned and owned_value != "unknown":
+                    data[owned_field] = owned_value
         for target_name, answer_fields in (
             ("answered_unknown_fields", partial_unknowns),
             ("refused_fields", partial_refusals),

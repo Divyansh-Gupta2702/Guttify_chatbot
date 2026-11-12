@@ -92,7 +92,7 @@ def configured_output_tokens(reason: str) -> int:
     """Return the bounded output allowance for a named Groq task."""
     configured = {
         "conversation_intent": ("GROQ_INTENT_MAX_OUTPUT_TOKENS", 260, 96),
-        "nlu_extraction": ("GROQ_NLU_MAX_TOKENS", 350, 160),
+        "nlu_extraction": ("GROQ_NLU_MAX_TOKENS", 500, 160),
         "translation_input": ("GROQ_TRANSLATION_INPUT_MAX_TOKENS", 700, 160),
         "translation_output": ("GROQ_TRANSLATION_OUTPUT_MAX_TOKENS", 1000, 160),
         "general_knowledge_answer": ("GROQ_GENERAL_ANSWER_MAX_OUTPUT_TOKENS", 800, 96),
@@ -104,7 +104,7 @@ def configured_output_tokens(reason: str) -> int:
         ("GROQ_SHARED_OUTPUT_TOKEN_RESERVE", 500, 1),
     )
     if reason == "nlu_extraction":
-        return max(160, min(400, _bounded_int_env(env_name, default, minimum, 400)))
+        return max(160, min(600, _bounded_int_env(env_name, default, minimum, 600)))
     return _bounded_int_env(env_name, default, minimum, configured_output_token_cap())
 
 

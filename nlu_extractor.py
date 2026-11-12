@@ -18,8 +18,8 @@ import re
 from functools import lru_cache
 from typing import Any
 
-from intent_parser import extract_food_trigger, extract_stool_form, extract_symptoms, is_negated
-from question_schema import resolve_against_active_question, validate_question_resolution
+from intent_parser import extract_duration, extract_food_trigger, extract_stool_form, extract_symptoms, is_negated
+from question_schema import resolve_against_active_question, validate_model_question_resolution, validate_question_resolution
 from llm_provider import create_client, invoke_provider
 from groq_service import configured_output_tokens, llm_client_cache_fingerprint, is_truncated_finish_reason
 
@@ -56,7 +56,7 @@ SCHEMA_KEYS = {
     "aggravating_factors", "relieving_factors", "red_flags",
     "new_information", "confidence", "recent_worsening", "gas", "meal_relation", "pain_relation", "bowel_pattern",
     "water_intake", "fibre_intake", "medications", "incomplete_evacuation", "pain_related_to_bowel_movement", "reflux_present", "meal_timing", "symptom_onset_after_food", "timing_relation",
-    "other_symptoms", "symptom_branches",
+    "other_symptoms", "symptom_branches", "active_answer",
 }
 
 BOOL_FIELDS = {
@@ -342,7 +342,7 @@ def _get_llm():
 _get_llm.cache_clear = _get_llm_cached.cache_clear
 
 
-def _llm_extract(message: str, last_question: str | None, state, forced_intent: str | None, conversation_history=None):
+def _llm_extract(message: str, last_question: str | None, state, forced_intent: str | None, conversation_history=None, active_component: str | None = None):
     llm = _get_llm()
     if llm is None:
         return None
@@ -396,7 +396,15 @@ Rules:
     normalized symptoms only when the user explicitly names the condition
     (e.g. "I have piles" / "I have a fissure").
 11. Do not turn "yes"/"no" into unrelated fields. Use the question context.
-12. Return compact valid JSON, no markdown. Include only keys with an explicitly
+12. When CURRENT QUESTION is present, also include active_answer with status,
+    values, and evidence. values must use only state fields owned by CURRENT
+    QUESTION; quote a short exact substring from USER MESSAGE as evidence.
+    Use status answered only if this turn supplies enough information, partial
+    if it supplies one part of a multi-part question, and unresolved if it does
+    not answer the question. Never fill an unmentioned part from prior state.
+    For shorthand such as "yr" in a duration answer, interpret an unnumbered
+    singular unit as one unit and normalize it ("1 year").
+13. Return compact valid JSON, no markdown. Include only keys with an explicitly
     supported value; omit unknown keys, nulls, empty strings, and empty lists.
 
 Allowed normalized symptoms:
@@ -409,6 +417,9 @@ is reasonably clear; preserve the wording without mapping if it is not.
 
 Return exactly one sparse JSON object using only these allowed keys:
 {sorted(SCHEMA_KEYS)}
+
+For active_answer, the exact shape is:
+{{"status":"answered|partial|unresolved","values":{{"<owned_state_field>":<typed value>}},"evidence":"<exact quote>"}}
 """
     try:
         raw = None
@@ -451,6 +462,13 @@ Return exactly one sparse JSON object using only these allowed keys:
             return None
         logger.info("[NLU][MODEL_PARSE] success=true")
         result = _validate(raw, forced_intent=forced_intent)
+        if last_question:
+            active_answer = validate_model_question_resolution(
+                last_question, message, raw.get("active_answer"), state,
+                active_component=active_component,
+            )
+            if active_answer.get("status") in {"answered", "partial"}:
+                result["_model_question_resolution"] = active_answer
         # Prevent the extractor from turning a symptom description into a
         # diagnosis-like branch. Conditions such as fissure/piles are allowed
         # only when explicitly named by the user; deterministic rules decide
@@ -735,7 +753,7 @@ def _question_specific_fallback(message: str, last_question: str | None, state) 
             out["recent_worsening"] = True
 
     elif last_question in {"duration"}:
-        duration = _duration_from_text(n)
+        duration = _duration_from_text(n) or extract_duration(n)
         if duration:
             out["duration"] = duration
         elif re.search(r"\b(?:since yesterday|from yesterday)\b", n):
@@ -1548,7 +1566,10 @@ def extract_natural_facts(message: str, last_question: str | None, state, conver
         and not (last_question == "daily_frequency" and resolution["status"] == "clarification_needed")
     )
     if should_try_question_fallback or _needs_llm(message, last_question, fallback):
-        llm_result = _llm_extract(message, last_question, state, forced_intent, conversation_history)
+        llm_result = _llm_extract(
+            message, last_question, state, forced_intent, conversation_history,
+            active_component=active_component,
+        )
 
     if llm_result is None:
         logger.info(
@@ -1641,6 +1662,10 @@ def extract_natural_facts(message: str, last_question: str | None, state, conver
         last_question, message, extracted=result, state=state,
         active_component=active_component,
     ))
+    if final_resolution["status"] in {"unresolved", "clarification_needed"}:
+        model_resolution = result.get("_model_question_resolution")
+        if isinstance(model_resolution, dict):
+            final_resolution = validate_question_resolution(model_resolution)
     result["_question_resolution"] = final_resolution
     result["_answer_status"] = final_resolution["status"]
     result["_resolver_source"] = result.get("_resolver_source", "fallback")
