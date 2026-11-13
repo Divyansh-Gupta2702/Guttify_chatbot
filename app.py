@@ -2356,6 +2356,8 @@ def _chat_impl(req: ChatRequest, request: Request = None):
             # Product data is already structured and validated. Answer directly
             # from that data instead of waiting for an LLM generation call.
             reply = _deterministic_product_reply(result["product"], message)
+            if result.get("resume_question"):
+                reply = f"{reply}\n\n{result['resume_question']}"
 
         elif status in ("RECOMMENDATION_FOUND", "AMBIGUOUS"):
             # Preserve the exact rule-engine recommendation. The LLM is not used

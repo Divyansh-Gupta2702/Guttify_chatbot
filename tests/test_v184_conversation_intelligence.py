@@ -19,7 +19,8 @@ def test_explanation_question_keeps_active_question_and_state():
     session.last_question = "duration"
     session.symptom_state = SymptomState(primary_symptom="acidity")
     result = manager.handle_message("v184-why", "Why?")
-    assert result["status"] == "ANSWER"
+    assert result["status"] == "ASK"
+    assert result["message"] == "How long have you been experiencing your symptoms?"
     assert session.last_question == "duration"
     assert session.symptom_state.duration == "unknown"
 
@@ -57,6 +58,7 @@ def test_product_information_aside_preserves_active_assessment():
     session.symptom_state.primary_symptom = "acidity"
     result = manager.handle_message(sid, "What is Digest Boost?")
     assert result["status"] == "PRODUCT_INFO_FOUND"
+    assert result["resume_question"] == "How long have you been experiencing your symptoms?"
     assert session.last_question == "duration"
     assert session.symptom_state.primary_symptom == "acidity"
 
@@ -328,6 +330,27 @@ def test_recommendation_request_routes_to_assessment_without_llm_product_pick(mo
     assert "symptom assessment" in result["message"]
     assert result["recommendations"] == []
     assert manager._get_session("v184-which-product").symptom_state.primary_symptom is None
+
+
+def test_question_during_assessment_does_not_consume_pending_question(monkeypatch):
+    manager = guttify_agent.ConversationManager()
+    sid = "v184-question-aside"
+    session = manager._get_session(sid)
+    session.last_question = "bloating_screen"
+    session.symptom_state.primary_symptom = "constipation"
+    session.symptom_state.duration = "2 days"
+    pending_prompt = "Do you experience abdominal bloating?"
+    monkeypatch.setattr(guttify_agent, "extract_natural_facts", lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("aside must bypass NLU")))
+
+    result = manager.handle_message(
+        sid, "what is bloating",
+        conversation_history=[{"role": "assistant", "content": pending_prompt}],
+    )
+
+    assert result["status"] == "ASK"
+    assert result["message"] == pending_prompt
+    assert session.last_question == "bloating_screen"
+    assert session.symptom_state.bloating is None
 
 
 def test_classifier_unrelated_topic_uses_scope_response(monkeypatch):

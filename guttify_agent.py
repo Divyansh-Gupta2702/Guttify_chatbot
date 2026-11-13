@@ -69,6 +69,57 @@ def _validated_age_value(value):
 MAX_QUESTIONS = 40
 
 
+_QUESTION_START = re.compile(
+    r"^(?:what|why|how|when|where|which|can|could|should|would|is|are|do|does|did|tell me|explain)\b",
+    re.I,
+)
+
+
+def _is_side_question_during_assessment(text: str) -> bool:
+    normalized = normalize(text or "")
+    return "?" in str(text or "") or bool(_QUESTION_START.match(normalized))
+
+
+def _active_question_text(session, conversation_history=None) -> str | None:
+    """Recover the exact pending prompt without advancing assessment state."""
+    for item in reversed(conversation_history or []):
+        if not isinstance(item, dict) or item.get("role") != "assistant":
+            continue
+        content = str(item.get("content") or "").strip()
+        if not content:
+            continue
+        chart_start = content.find("[[BRISTOL_STOOL_CHART]]")
+        if chart_start >= 0:
+            return content[chart_start:]
+        # The assistant may have answered an earlier side question and then
+        # repeated the pending assessment question. Keep only that final block.
+        blocks = [block.strip() for block in re.split(r"\n\s*\n", content) if block.strip()]
+        candidate = blocks[-1] if blocks else content
+        if "?" in candidate:
+            # If answer text and the assessment question share a block, recover
+            # the final question sentence only.
+            last_q = candidate.rfind("?")
+            boundaries = [candidate.rfind(delimiter, 0, last_q) for delimiter in ("\n", ". ", "! ", "? ")]
+            boundary = max(boundaries)
+            if boundary < 0:
+                return candidate
+            delimiter = next(delimiter for delimiter in ("\n", ". ", "! ", "? ") if candidate.rfind(delimiter, 0, last_q) == boundary)
+            return candidate[boundary + len(delimiter):].strip()
+
+    pending = next_question(session.symptom_state)
+    if pending and pending[0] == session.last_question:
+        return pending[1]
+    return None
+
+
+def _include_pending_question(result, session, user_message, conversation_history=None):
+    if session.last_question and _is_side_question_during_assessment(user_message):
+        prompt = _active_question_text(session, conversation_history)
+        if prompt:
+            result["resume_question"] = prompt
+    return result
+
+
 PRODUCT_ELIGIBILITY = {
     "Functional constipation pattern": {"Digest Boost", "Guttify Poopie"},
     "Possible medication-associated constipation pattern": {"Digest Boost", "Guttify Poopie"},
@@ -2081,6 +2132,26 @@ class ConversationManager:
             }
             return {"status": "SAFETY_REVIEW", "message": caution["message"], "recommendations": [], "safety": caution, "screening": session.screening}
 
+        # A question asked while an assessment prompt is pending is an aside,
+        # not an answer to that prompt. Let the response layer answer it, then
+        # repeat the exact active question without running NLU or mutating state.
+        if (
+            session.last_question
+            and not session.diagnosis_complete
+            and not session.awaiting_summary_confirmation
+            and not session.summary_correction_mode
+            and _is_side_question_during_assessment(user_message)
+            and not find_named_product(user_message)
+            and not (session.last_product and re.search(
+                r"\b(?:instruction|usage|ingredient|benefit|warning|precaution|side effect|more detail|tell me more|more information|elaborate|what else|how does it work|what is it for|what does it do|purpose)\w*\b",
+                normalized_message,
+            ))
+        ):
+            pending_prompt = _active_question_text(session, conversation_history)
+            if pending_prompt:
+                logger.info("[QUESTION][ASIDE] preserved_pending=%s", session.last_question)
+                return {"status": "ASK", "message": pending_prompt, "recommendations": []}
+
         # A summary review pauses only non-urgent completion. Safety above always
         # has priority and may interrupt this gate. A confirmed summary is a
         # deterministic control action; it must not trigger a Groq/NLU call.
@@ -2185,21 +2256,21 @@ class ConversationManager:
             # so the user can return to the assessment on the next turn.
             if not session.last_question and not session.symptom_state.primary_symptom:
                 session.awaiting_close = True
-            return {"status": "PRODUCT_INFO_FOUND", "message": "", "product": named,
-                    "recommendations": [named], "screening": None}
+            return _include_pending_question({"status": "PRODUCT_INFO_FOUND", "message": "", "product": named,
+                    "recommendations": [named], "screening": None}, session, user_message, conversation_history)
 
         if session.last_products and re.search(r"\b(first|1st|number one|no\. ?1)\b", normalize(user_message)):
             session.last_product = session.last_products[0]
-            return {"status": "PRODUCT_INFO_FOUND", "message": "", "product": session.last_product,
-                    "recommendations": [session.last_product], "screening": None}
+            return _include_pending_question({"status": "PRODUCT_INFO_FOUND", "message": "", "product": session.last_product,
+                    "recommendations": [session.last_product], "screening": None}, session, user_message, conversation_history)
 
         detail_followup = bool(re.search(
             r"\b(instruction|usage|dosage|dose|take|use|ingredient|benefit|warning|precaution|side effect|more detail|tell me more|more information|elaborate|what else|how does it work|what is it for|what does it do|purpose)\w*\b",
             normalize(user_message),
         ))
         if detail_followup and session.last_product:
-            return {"status": "PRODUCT_INFO_FOUND", "message": "", "product": session.last_product,
-                    "recommendations": [session.last_product], "screening": None}
+            return _include_pending_question({"status": "PRODUCT_INFO_FOUND", "message": "", "product": session.last_product,
+                    "recommendations": [session.last_product], "screening": None}, session, user_message, conversation_history)
 
         # Product discovery is browsing, not symptom-based recommendation.
         # Return only active records loaded from the existing catalog.
