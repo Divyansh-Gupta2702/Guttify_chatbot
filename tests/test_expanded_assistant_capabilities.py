@@ -46,7 +46,7 @@ def test_general_answer_does_not_return_unapproved_product_names(monkeypatch):
         response_metadata = {"finish_reason": "stop"}
 
     monkeypatch.setattr(ci, "invoke_groq", lambda *args, **kwargs: Response())
-    assert ci.answer_general_question("Tell me a joke", product_names=["Digest Boost"]) == ci.SAFE_GENERAL_FALLBACK
+    assert ci.answer_general_question("Tell me a joke", product_names=["Digest Boost"]) == ci.SCOPE_REPLY
 
 
 def test_research_retrieval_failure_fails_closed(monkeypatch):
@@ -57,16 +57,16 @@ def test_research_retrieval_failure_fails_closed(monkeypatch):
     assert "couldn't retrieve scientific papers" in answer
 
 
-def test_general_knowledge_intent_routes_without_starting_assessment(monkeypatch):
+def test_general_knowledge_intent_is_restricted_without_starting_assessment(monkeypatch):
     import guttify_agent
     from guttify_agent import ConversationManager
 
     monkeypatch.setattr(guttify_agent, "classify_intent", lambda *a, **k: {"intent": "general_knowledge_question", "confidence": 0.99})
-    monkeypatch.setattr(guttify_agent, "answer_general_question", lambda *a, **k: "A black hole is a region where gravity is so strong that light cannot escape.")
+    monkeypatch.setattr(guttify_agent, "answer_general_question", lambda *a, **k: (_ for _ in ()).throw(AssertionError("out-of-scope questions must not reach the answer model")))
     manager = ConversationManager()
     result = manager.handle_message("expanded-general", "Explain black holes")
     assert result["status"] == "ANSWER"
-    assert "black hole" in result["message"]
+    assert result["message"] == guttify_agent.SCOPE_REPLY
     assert manager._get_session("expanded-general").symptom_state.primary_symptom is None
 
 

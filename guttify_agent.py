@@ -41,6 +41,7 @@ from product_concern_router import detect_product_concerns
 from conversation_intelligence import (
     OPEN_SYMPTOM_REPLY, SAFE_GENERAL_FALLBACK, SCOPE_REPLY,
     answer_general_question, answer_company_question, answer_research_question, classify_intent,
+    is_allowed_question, is_company_question, is_gut_related_question,
 )
 from feature_flags import enabled
 
@@ -2150,6 +2151,12 @@ class ConversationManager:
             pending_prompt = _active_question_text(session, conversation_history)
             if pending_prompt:
                 logger.info("[QUESTION][ASIDE] preserved_pending=%s", session.last_question)
+                if is_company_question(user_message):
+                    if enabled("GUTGPT_COMPANY_KNOWLEDGE_ENABLED", True):
+                        answer = answer_company_question(user_message, history=conversation_history, products=ALL_PRODUCTS)
+                    else:
+                        answer = SCOPE_REPLY
+                    return {"status": "ANSWER", "message": f"{answer}\n\n{pending_prompt}", "recommendations": []}
                 return {"status": "ASK", "message": pending_prompt, "recommendations": []}
 
         # A summary review pauses only non-urgent completion. Safety above always
@@ -2364,6 +2371,15 @@ class ConversationManager:
             pending_question=session.last_question,
         ) if should_classify and enabled("GUTGPT_CONVERSATION_ROUTER_ENABLED", True) else None
 
+        # Verified company answers remain available even if intent routing is
+        # unavailable, but only for explicit company or product-brand topics.
+        if route is None and not session.last_question and is_company_question(user_message):
+            if enabled("GUTGPT_COMPANY_KNOWLEDGE_ENABLED", True):
+                answer = answer_company_question(user_message, history=conversation_history, products=ALL_PRODUCTS)
+            else:
+                answer = SCOPE_REPLY
+            return {"status": "ANSWER", "message": answer, "recommendations": []}
+
         if (
             route is None and not session.last_question and not explicit_correction
             and not (recognized_primary or recognized_secondary)
@@ -2373,31 +2389,34 @@ class ConversationManager:
 
         if route:
             intent = route["intent"]
+            if intent == "company_information" or is_company_question(user_message):
+                if enabled("GUTGPT_COMPANY_KNOWLEDGE_ENABLED", True):
+                    answer = answer_company_question(user_message, history=conversation_history, products=ALL_PRODUCTS)
+                else:
+                    answer = SCOPE_REPLY
+                return {"status": "ANSWER", "message": answer, "recommendations": []}
             if intent == "general_gut_health_question":
+                if not is_gut_related_question(user_message, conversation_history):
+                    return {"status": "ANSWER", "message": SCOPE_REPLY, "recommendations": []}
                 answer = answer_general_question(
                     user_message, history=conversation_history,
                     product_names=[p.get("product_name") for p in ALL_PRODUCTS],
                 )
                 return {"status": "ANSWER", "message": answer, "recommendations": []}
-            if intent == "general_knowledge_question" and enabled("GUTGPT_GENERAL_KNOWLEDGE_ENABLED", True):
-                answer = answer_general_question(user_message, history=conversation_history,
-                    product_names=[p.get("product_name") for p in ALL_PRODUCTS])
-                return {"status": "ANSWER", "message": answer, "recommendations": []}
-            if intent == "company_information" and enabled("GUTGPT_COMPANY_KNOWLEDGE_ENABLED", True):
-                answer = answer_company_question(user_message, history=conversation_history, products=ALL_PRODUCTS)
-                return {"status": "ANSWER", "message": answer, "recommendations": []}
             if intent == "research_summary" and enabled("GUTGPT_RESEARCH_ASSISTANT_ENABLED", True):
+                if not is_gut_related_question(user_message, conversation_history):
+                    return {"status": "ANSWER", "message": SCOPE_REPLY, "recommendations": []}
                 answer = answer_research_question(user_message, history=conversation_history)
                 return {"status": "ANSWER", "message": answer, "recommendations": []}
-            if intent == "unrelated_question":
+            if intent in {"unrelated_question", "general_knowledge_question", "casual_conversation"}:
                 return {"status": "ANSWER", "message": SCOPE_REPLY, "recommendations": []}
-            if intent == "casual_conversation":
-                return {"status": "ANSWER", "message": "I'm doing well, thanks for asking. What would you like to know about digestion or gut health?", "recommendations": []}
             if intent == "product_information":
                 return {"status": "ANSWER", "message": "I can share information from the verified Guttify product catalog. Which product would you like to ask about?", "recommendations": []}
             if intent == "product_recommendation_request" and not (recognized_primary or recognized_secondary):
                 return {"status": "ASK", "message": "I can guide you through the existing symptom assessment before discussing whether any product is suitable. What digestive symptoms are you experiencing?", "recommendations": []}
             if intent == "medical_safety_concern":
+                if not is_allowed_question(user_message, conversation_history):
+                    return {"status": "ANSWER", "message": SCOPE_REPLY, "recommendations": []}
                 return {"status": "ANSWER", "message": "I can't diagnose or advise on medication. If your symptoms are severe, worsening, or worrying you, please contact a healthcare professional. If you tell me what you're experiencing, I can continue the structured symptom assessment.", "recommendations": []}
             if intent == "digestive_problem" and not session.symptom_state.primary_symptom and not (recognized_primary or recognized_secondary):
                 return {"status": "ASK", "message": OPEN_SYMPTOM_REPLY, "recommendations": []}

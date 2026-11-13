@@ -136,7 +136,7 @@ def test_answer_handlers_use_task_budget_and_keep_complete_long_answer(monkeypat
         monkeypatch.setattr(ci, "format_research_sources", lambda _records: "PMID: 1, https://pubmed.test/1")
         result = ci.answer_research_question("Summarize this research")
     else:
-        result = ci.answer_general_question("Explain a science concept")
+        result = ci.answer_general_question("Explain digestion")
 
     assert captured["tokens"] == expected
     assert result == answer.strip()

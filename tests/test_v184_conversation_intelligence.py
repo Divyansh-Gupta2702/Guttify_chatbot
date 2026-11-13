@@ -473,3 +473,15 @@ def test_assessment_response_cannot_override_urgent_safety_message(monkeypatch):
     monkeypatch.setattr(ci, "_get_llm", should_not_call)
     message = "Seek urgent medical evaluation now."
     assert ci.assist_assessment_turn("I have severe bleeding", message, "SAFETY_REVIEW") == message
+
+
+def test_unrelated_question_during_assessment_gets_scope_reply_and_keeps_pending_question(monkeypatch):
+    import conversation_intelligence as ci
+
+    def should_not_call(*_args, **_kwargs):
+        raise AssertionError("Out-of-scope questions must not reach a free-form answer model")
+
+    monkeypatch.setattr(ci, "_get_llm", should_not_call)
+    pending = "Do you experience abdominal bloating?"
+    reply = ci.assist_assessment_turn("Explain black holes", pending, "ASK")
+    assert reply == f"{ci.SCOPE_REPLY}\n\n{pending}"
