@@ -34,6 +34,16 @@ class GroqBudgetExceeded(RuntimeError):
     """The incoming message has already consumed its configured Groq-call budget."""
 
 
+class SessionTokenLimitExceeded(RuntimeError):
+    """The session has exhausted its cumulative LLM token allowance."""
+
+
+def session_token_limit_reached() -> bool:
+    """Whether the current chat request hit its cumulative session token cap."""
+    budget = _budget.get()
+    return bool(budget and budget.get("session_limit_hit"))
+
+
 class GroqCircuitOpen(RuntimeError):
     """Groq is temporarily disabled after repeated provider failures."""
 
@@ -48,10 +58,15 @@ _BREAKER_COOLDOWN = max(1.0, float(os.getenv("GROQ_CIRCUIT_COOLDOWN_SECONDS", "3
 
 
 @contextmanager
-def message_call_budget(request_id: str, max_calls: int | None = None) -> Iterator[None]:
-    """Set a request-scoped budget shared by translation, NLU and legacy helpers."""
+def message_call_budget(
+    request_id: str, max_calls: int | None = None, session_id: str | None = None,
+) -> Iterator[None]:
+    """Set request and session budgets shared by all model calls in a turn."""
     limit = max_calls if max_calls is not None else int(os.getenv("GROQ_MAX_CALLS_PER_MESSAGE", "2"))
-    token = _budget.set({"request_id": request_id, "limit": max(0, limit), "used": 0})
+    token = _budget.set({
+        "request_id": request_id, "limit": max(0, limit), "used": 0,
+        "session_id": str(session_id or "").strip() or None,
+    })
     try:
         yield
     finally:
@@ -204,14 +219,104 @@ def _usage(response: Any) -> tuple[int | None, int | None]:
         usage = {}
     prompt = usage.get("input_tokens", usage.get("prompt_tokens"))
     output = usage.get("output_tokens", usage.get("completion_tokens"))
+    thinking = usage.get("thinking_tokens", usage.get("reasoning_tokens"))
     meta = getattr(response, "response_metadata", None) or {}
     if isinstance(meta, dict):
         token_usage = meta.get("token_usage") or meta.get("usage") or {}
         if isinstance(token_usage, dict):
             prompt = prompt if prompt is not None else token_usage.get("prompt_tokens")
             output = output if output is not None else token_usage.get("completion_tokens")
+            thinking = thinking if thinking is not None else token_usage.get("thinking_tokens", token_usage.get("reasoning_tokens"))
+    if isinstance(output, (int, float)) and isinstance(thinking, (int, float)):
+        output += thinking
     return (int(prompt) if isinstance(prompt, (int, float)) else None,
             int(output) if isinstance(output, (int, float)) else None)
+
+
+def _session_token_limit() -> int:
+    try:
+        return max(1000, min(10_000_000, int(os.getenv("GROQ_MAX_TOKENS_PER_SESSION", "60000"))))
+    except (TypeError, ValueError):
+        return 60000
+
+
+def _session_token_reserve(prompt: Any, request_id: str, *, reason: str, output_tokens: int) -> str | None:
+    """Atomically reserve this call's worst-case tokens against its chat session."""
+    budget = _budget.get()
+    session_id = budget.get("session_id") if budget else None
+    if not session_id:
+        return None
+    database_url = os.getenv("DATABASE_URL", "").strip()
+    if not database_url:
+        raise GroqBusyError("Session token accounting requires DATABASE_URL", reason="session_usage_unavailable")
+    prompt_estimate = max(1, (len(str(prompt).encode("utf-8")) + 2) // 3)
+    reservation = prompt_estimate + max(1, int(output_tokens))
+    limit = _session_token_limit()
+    lease_id = uuid.uuid4().hex
+    try:
+        import psycopg
+        from psycopg.rows import dict_row
+        with psycopg.connect(database_url, row_factory=dict_row, connect_timeout=4) as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT pg_advisory_xact_lock(hashtext(%s))", (f"gutgpt-session-tokens:{session_id}",))
+                cur.execute("""INSERT INTO groq_session_token_usage(session_id, used_tokens)
+                    VALUES (%s, 0) ON CONFLICT(session_id) DO NOTHING""", (session_id,))
+                cur.execute("SELECT used_tokens FROM groq_session_token_usage WHERE session_id=%s FOR UPDATE", (session_id,))
+                used = int(cur.fetchone()["used_tokens"])
+                # Stale reservations are charged at their reserved maximum. This
+                # prevents a crashed worker from silently restoring token budget.
+                cur.execute("""SELECT COALESCE(SUM(reserved_tokens), 0) AS tokens
+                    FROM groq_session_token_leases WHERE session_id=%s AND expires_at <= NOW()""", (session_id,))
+                stale_tokens = int(cur.fetchone()["tokens"])
+                if stale_tokens:
+                    cur.execute("UPDATE groq_session_token_usage SET used_tokens=used_tokens+%s WHERE session_id=%s", (stale_tokens, session_id))
+                    used += stale_tokens
+                    cur.execute("DELETE FROM groq_session_token_leases WHERE session_id=%s AND expires_at <= NOW()", (session_id,))
+                cur.execute("""SELECT COALESCE(SUM(reserved_tokens), 0) AS tokens
+                    FROM groq_session_token_leases WHERE session_id=%s AND expires_at > NOW()""", (session_id,))
+                reserved = int(cur.fetchone()["tokens"])
+                if used + reserved + reservation > limit:
+                    if budget is not None:
+                        budget["session_limit_hit"] = True
+                    raise SessionTokenLimitExceeded("This chat session has reached its cumulative AI token limit")
+                cur.execute("""INSERT INTO groq_session_token_leases
+                    (lease_id, session_id, reserved_tokens, expires_at)
+                    VALUES (%s,%s,%s,NOW() + INTERVAL '10 minutes')""", (lease_id, session_id, reservation))
+        logger.info("event=session_token_reservation request_id=%s task=%s reserved=%s", request_id, reason, reservation)
+        return lease_id
+    except SessionTokenLimitExceeded:
+        logger.warning("event=session_token_limit_reached request_id=%s session=%s limit=%s", request_id, session_id[:8], limit)
+        raise
+    except Exception as exc:
+        logger.warning("event=session_token_accounting_failed request_id=%s category=%s", request_id, type(exc).__name__)
+        raise GroqBusyError("Could not safely account for session token usage", reason="session_usage_unavailable") from exc
+
+
+def _session_token_release(lease_id: str | None, *, actual_tokens: int | None) -> None:
+    if not lease_id:
+        return
+    database_url = os.getenv("DATABASE_URL", "").strip()
+    if not database_url:
+        return
+    try:
+        import psycopg
+        from psycopg.rows import dict_row
+        with psycopg.connect(database_url, row_factory=dict_row, connect_timeout=4) as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT session_id FROM groq_session_token_leases WHERE lease_id=%s", (lease_id,))
+                session_row = cur.fetchone()
+                if not session_row:
+                    return
+                session_id = session_row["session_id"]
+                cur.execute("SELECT pg_advisory_xact_lock(hashtext(%s))", (f"gutgpt-session-tokens:{session_id}",))
+                cur.execute("""DELETE FROM groq_session_token_leases WHERE lease_id=%s
+                    RETURNING session_id, reserved_tokens""", (lease_id,))
+                lease = cur.fetchone()
+                if lease:
+                    charged = int(lease["reserved_tokens"]) if actual_tokens is None else max(0, int(actual_tokens))
+                    cur.execute("UPDATE groq_session_token_usage SET used_tokens=used_tokens+%s, updated_at=NOW() WHERE session_id=%s", (charged, lease["session_id"]))
+    except Exception as exc:
+        logger.warning("event=session_token_release_failed category=%s", type(exc).__name__)
 
 
 
@@ -235,6 +340,18 @@ def ensure_shared_limiter_schema(cur) -> None:
     cur.execute("ALTER TABLE groq_shared_leases ADD COLUMN IF NOT EXISTS reserved_tokens BIGINT")
     cur.execute("ALTER TABLE groq_shared_leases ADD COLUMN IF NOT EXISTS window_started_at TIMESTAMPTZ")
     cur.execute("CREATE INDEX IF NOT EXISTS idx_groq_shared_leases_expiry ON groq_shared_leases(expires_at)")
+    cur.execute("""CREATE TABLE IF NOT EXISTS groq_session_token_usage (
+        session_id TEXT PRIMARY KEY,
+        used_tokens BIGINT NOT NULL DEFAULT 0 CHECK (used_tokens >= 0),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )""")
+    cur.execute("""CREATE TABLE IF NOT EXISTS groq_session_token_leases (
+        lease_id TEXT PRIMARY KEY,
+        session_id TEXT NOT NULL,
+        reserved_tokens BIGINT NOT NULL CHECK (reserved_tokens > 0),
+        expires_at TIMESTAMPTZ NOT NULL
+    )""")
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_groq_session_token_leases_session_expiry ON groq_session_token_leases(session_id, expires_at)")
 
 
 def _shared_capacity_reserve(
@@ -396,9 +513,14 @@ def invoke_groq(client: Any, prompt: Any, *, reason: str, request_id: str = "unk
     if not isinstance(configured_max, int) or configured_max <= 0:
         configured_max = configured_output_tokens(reason)
     lease_id = None
+    session_lease_id = None
     actual_tokens = None
     acquired = False
+    provider_started = False
     try:
+        session_lease_id = _session_token_reserve(
+            prompt, request_id, reason=reason, output_tokens=configured_max,
+        )
         lease_id = _shared_capacity_reserve(
             prompt, request_id, reason=reason, output_tokens=configured_max,
         )
@@ -415,6 +537,7 @@ def invoke_groq(client: Any, prompt: Any, *, reason: str, request_id: str = "unk
             actual_tokens = 0  # No provider request was started; refund this lease.
             raise GroqBusyError("Groq capacity is temporarily busy", reason="local_queue_full")
         try:
+            provider_started = True
             response = client.invoke(prompt)
         except Exception as exc:
             status = getattr(getattr(exc, "response", None), "status_code", None)
@@ -460,4 +583,7 @@ def invoke_groq(client: Any, prompt: Any, *, reason: str, request_id: str = "unk
             _breaker_probe_aborted(owns_probe)
         else:
             _SEMAPHORE.release()
+        if session_lease_id and not provider_started and actual_tokens is None:
+            actual_tokens = 0
+        _session_token_release(session_lease_id, actual_tokens=actual_tokens)
         _shared_capacity_release(lease_id, actual_tokens=actual_tokens, request_id=request_id)

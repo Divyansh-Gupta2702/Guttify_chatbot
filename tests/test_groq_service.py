@@ -29,6 +29,13 @@ def test_gateway_invokes_once_and_returns_response(caplog):
     assert "output_tokens=4" in caplog.text
     assert "not logged" not in caplog.text
 
+
+def test_token_accounting_includes_reasoning_tokens():
+    import groq_service
+    response = Response()
+    response.usage_metadata = {"input_tokens": 12, "output_tokens": 4, "thinking_tokens": 3}
+    assert groq_service._usage(response) == (12, 7)
+
 def test_gateway_does_not_retry_errors():
     import groq_service
     client = Client(error=RuntimeError("provider down"))
@@ -73,6 +80,35 @@ def test_message_budget_is_isolated_between_messages(monkeypatch):
     with message_call_budget("message-two", max_calls=1):
         invoke_groq(two, "prompt", reason="test")
     assert one.calls == two.calls == 1
+
+
+def test_session_usage_reserves_and_reconciles_actual_tokens(monkeypatch):
+    import groq_service
+    monkeypatch.setattr(groq_service, "_shared_capacity_reserve", lambda *args, **kwargs: None)
+    reserved = []
+    released = []
+    monkeypatch.setattr(groq_service, "_session_token_reserve", lambda prompt, request_id, **kwargs: reserved.append((prompt, kwargs["reason"])) or "token-lease")
+    monkeypatch.setattr(groq_service, "_session_token_release", lambda lease, *, actual_tokens: released.append((lease, actual_tokens)))
+    client = Client()
+    with groq_service.message_call_budget("session-turn", max_calls=2, session_id="session-123"):
+        assert groq_service._budget.get()["session_id"] == "session-123"
+        invoke_groq(client, "safe prompt", reason="nlu_extraction")
+    assert reserved == [("safe prompt", "nlu_extraction")]
+    assert released == [("token-lease", 16)]
+
+
+def test_session_limit_blocks_provider_call(monkeypatch):
+    import groq_service
+    def reject(*_args, **_kwargs):
+        groq_service._budget.get()["session_limit_hit"] = True
+        raise groq_service.SessionTokenLimitExceeded("session cap")
+    monkeypatch.setattr(groq_service, "_session_token_reserve", reject)
+    client = Client()
+    with groq_service.message_call_budget("session-turn", max_calls=2, session_id="session-123"):
+        with pytest.raises(groq_service.SessionTokenLimitExceeded):
+            invoke_groq(client, "safe prompt", reason="nlu_extraction")
+        assert groq_service.session_token_limit_reached()
+    assert client.calls == 0
 
 
 def test_default_message_budget_allows_one_english_call_but_stays_bounded(monkeypatch):

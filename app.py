@@ -61,7 +61,8 @@ QUESTION_FLOW_SCHEMA_VERSION = "v18.2"
 from support_footer import append_human_support_footer
 from groq_service import (
     message_call_budget, configured_message_budget, GroqBudgetExceeded,
-    GroqCircuitOpen, GroqBusyError, ensure_shared_limiter_schema,
+    GroqCircuitOpen, GroqBusyError, SessionTokenLimitExceeded, ensure_shared_limiter_schema,
+    session_token_limit_reached,
 )
 MAX_MESSAGE_LENGTH = max(256, min(10000, int(os.getenv("MAX_MESSAGE_LENGTH", "4000"))))
 MAX_HISTORY_MESSAGES = 100
@@ -2120,7 +2121,7 @@ def resume_customer_assessment(req: CustomerRestoreRequest, request: Request = N
         pending_text = pending.get("text")
         if isinstance(pending_text, str) and pending_text.strip():
             try:
-                with message_call_budget(uuid.uuid4().hex[:8], max_calls=1):
+                with message_call_budget(uuid.uuid4().hex[:8], max_calls=1, session_id=req.session_id):
                     pending["text"], _ = translate_chat_output(pending_text, [])
             except Exception as exc:
                 logger.warning("event=translation_unavailable direction=resume_output session=%s category=%s", req.session_id[:8], type(exc).__name__)
@@ -2378,6 +2379,11 @@ def _chat_impl(req: ChatRequest, request: Request = None):
         reply = assist_assessment_turn(
             message, reply, status, history=recent_history if not blocked_input else None,
         )
+    if session_token_limit_reached() and status not in {"SAFETY_REVIEW", "SCREENING_REVIEW"}:
+        reply += (
+            "\n\nThis chat session has reached its AI usage limit. The structured assessment can continue, "
+            "but AI-generated conversation is unavailable for the rest of this session."
+        )
 
     response_recommendations = (result.get("recommendations") if result else None) or []
     if language == "hinglish" and result is not None:
@@ -2495,10 +2501,16 @@ def chat(req: ChatRequest, request: Request = None):
     # bounded intent/extraction work; explicit operator budgets remain honored.
     budget = configured_message_budget(req.language)
     try:
-        with message_call_budget(request_id, max_calls=budget):
+        with message_call_budget(request_id, max_calls=budget, session_id=req.session_id):
             return _chat_impl(req, request)
     except Exception as exc:
         _fail_chat_idempotency(req.session_id, req.message_id)
+        if isinstance(exc, SessionTokenLimitExceeded):
+            logger.warning("[LLM][%s] session token limit reached session=%s", request_id, req.session_id[:8])
+            raise HTTPException(
+                status_code=429,
+                detail="This chat session has reached its AI usage limit. Start a new assessment session to continue.",
+            ) from exc
         if isinstance(exc, GroqBudgetExceeded):
             logger.warning("[GROQ][%s] per-message call budget exhausted", request_id)
             raise HTTPException(
