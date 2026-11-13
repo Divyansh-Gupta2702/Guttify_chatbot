@@ -309,12 +309,12 @@ def test_api_applies_llm_layer_to_assessment_turn_and_keeps_engine_question(monk
     seen = {}
     def assist(message, engine_reply, status, history=None):
         seen.update(message=message, engine_reply=engine_reply, status=status)
-        return "Thanks for sharing.\n\n" + engine_reply
+        return engine_reply
     monkeypatch.setattr(api, "assist_assessment_turn", assist)
 
     response = api._chat_impl(api.ChatRequest(session_id=sid, message="I have bloating"))
     assert seen == {"message": "I have bloating", "engine_reply": "How long has this been happening?", "status": "ASK"}
-    assert response.reply.endswith("How long has this been happening?")
+    assert response.reply == "How long has this been happening?"
     api.REGISTERED_CUSTOMER_SESSIONS.discard(sid)
 
 
@@ -404,22 +404,35 @@ def test_assessment_llm_answers_user_question_and_preserves_engine_question(monk
     import conversation_intelligence as ci
 
     class Response:
-        content = '{"commentary":"Thanks for explaining.","general_answer":"Bloating is a feeling of fullness or swelling in the abdomen.","fallback_reply":""}'
+        content = '{"general_answer":"Thanks for your response. Bloating is a feeling of fullness or swelling in the abdomen.","fallback_reply":""}'
         response_metadata = {"finish_reason": "stop"}
 
     monkeypatch.setattr(ci, "_get_llm", lambda _tokens: object())
     monkeypatch.setattr(ci, "invoke_groq", lambda *args, **kwargs: Response())
     engine_question = "How long has this been happening?"
     reply = ci.assist_assessment_turn("What does bloating mean?", engine_question, "ASK")
+    assert reply.startswith("Bloating is a feeling")
+    assert "Thanks for" not in reply
     assert "Bloating is a feeling of fullness" in reply
     assert reply.endswith(engine_question)
+
+
+def test_assessment_answer_has_no_acknowledgement_or_extra_response(monkeypatch):
+    import conversation_intelligence as ci
+
+    def should_not_call(*_args, **_kwargs):
+        raise AssertionError("An answer to an assessment question needs no response-generation call")
+
+    monkeypatch.setattr(ci, "_get_llm", should_not_call)
+    engine_question = "How many bowel movements do you usually have per week?"
+    assert ci.assist_assessment_turn("2 days", engine_question, "ASK") == engine_question
 
 
 def test_assessment_fallback_gives_llm_control_only_for_unresolved_turn(monkeypatch):
     import conversation_intelligence as ci
 
     class Response:
-        content = '{"commentary":"","general_answer":"","fallback_reply":"I could not understand that clearly. Could you describe what you are noticing?"}'
+        content = '{"general_answer":"","fallback_reply":"I could not understand that clearly. Could you describe what you are noticing?"}'
         response_metadata = {"finish_reason": "stop"}
 
     monkeypatch.setattr(ci, "_get_llm", lambda _tokens: object())
