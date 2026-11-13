@@ -97,7 +97,7 @@ def test_configured_budget_has_minimum_of_one(monkeypatch):
         assert groq_service.configured_message_budget() == 1
     finally:
         monkeypatch.delenv("GROQ_MAX_CALLS_PER_MESSAGE", raising=False)
-    assert groq_service.configured_message_budget() == 2  # default
+    assert groq_service.configured_message_budget() == 3  # NLU/routing plus response generation
     monkeypatch.setenv("GROQ_MAX_CALLS_PER_MESSAGE", "4")
     try:
         assert groq_service.configured_message_budget() == 4
@@ -111,7 +111,7 @@ def test_hinglish_budget_reserves_translation_calls_without_changing_english_bud
     monkeypatch.setenv("GROQ_MAX_CALLS_PER_MESSAGE", "2")
     monkeypatch.delenv("GROQ_MAX_HINGLISH_CALLS_PER_MESSAGE", raising=False)
     assert groq_service.configured_message_budget("en") == 2
-    assert groq_service.configured_message_budget("hinglish") == 4
+    assert groq_service.configured_message_budget("hinglish") == 5
 
     monkeypatch.setenv("GROQ_MAX_HINGLISH_CALLS_PER_MESSAGE", "3")
     assert groq_service.configured_message_budget("hinglish") == 3

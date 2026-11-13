@@ -43,6 +43,7 @@ if not logger.handlers:
     )
 
 from guttify_agent import ConversationManager, SessionState
+from conversation_intelligence import assist_assessment_turn
 from intent_parser import SymptomState
 from dataclasses import asdict
 from symptom_questionnaire import next_question
@@ -2369,6 +2370,14 @@ def _chat_impl(req: ChatRequest, request: Request = None):
     # questions, safety reviews, greetings, or later acknowledgements.
     if status in ("DIAGNOSIS", "RECOMMENDATION_FOUND", "AMBIGUOUS"):
         reply = append_human_support_footer(reply)
+
+    # Give the LLM a constrained conversational role on symptom answers and
+    # unresolved turns. The engine's exact next question and all clinical
+    # decisions remain authoritative inside assist_assessment_turn.
+    if result is not None and status in {"ASK", "NO_MATCH", "GIBBERISH"}:
+        reply = assist_assessment_turn(
+            message, reply, status, history=recent_history if not blocked_input else None,
+        )
 
     response_recommendations = (result.get("recommendations") if result else None) or []
     if language == "hinglish" and result is not None:

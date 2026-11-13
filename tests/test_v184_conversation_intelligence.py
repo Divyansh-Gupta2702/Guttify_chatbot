@@ -290,6 +290,34 @@ def test_api_returns_answer_status_text_instead_of_generic_error(monkeypatch):
     api.REGISTERED_CUSTOMER_SESSIONS.discard(sid)
 
 
+def test_api_applies_llm_layer_to_assessment_turn_and_keeps_engine_question(monkeypatch):
+    import app as api
+
+    sid = "v184-api-llm-assessment"
+    monkeypatch.setattr(api, "_cleanup_sessions", lambda: None)
+    monkeypatch.setattr(api, "_begin_chat_idempotency", lambda *_: None)
+    monkeypatch.setattr(api, "_complete_chat_idempotency", lambda *_: None)
+    monkeypatch.setattr(api, "_persist_assessment_checkpoint", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(api, "_persist_customer_safety_restriction", lambda *_args, **_kwargs: None)
+    monkeypatch.setitem(api.HISTORY, sid, [])
+    monkeypatch.setitem(api.HISTORY_LAST_ACCESS, sid, 0)
+    monkeypatch.setitem(api.conversation_manager.sessions, sid, __import__("guttify_agent").SessionState())
+    api.REGISTERED_CUSTOMER_SESSIONS.add(sid)
+    monkeypatch.setattr(api.conversation_manager, "handle_message", lambda *_args, **_kwargs: {
+        "status": "ASK", "message": "How long has this been happening?", "recommendations": [],
+    })
+    seen = {}
+    def assist(message, engine_reply, status, history=None):
+        seen.update(message=message, engine_reply=engine_reply, status=status)
+        return "Thanks for sharing.\n\n" + engine_reply
+    monkeypatch.setattr(api, "assist_assessment_turn", assist)
+
+    response = api._chat_impl(api.ChatRequest(session_id=sid, message="I have bloating"))
+    assert seen == {"message": "I have bloating", "engine_reply": "How long has this been happening?", "status": "ASK"}
+    assert response.reply.endswith("How long has this been happening?")
+    api.REGISTERED_CUSTOMER_SESSIONS.discard(sid)
+
+
 def test_recommendation_request_routes_to_assessment_without_llm_product_pick(monkeypatch):
     monkeypatch.setattr(guttify_agent, "classify_intent", lambda *args, **kwargs: {
         "intent": "product_recommendation_request", "confidence": 0.96,
@@ -370,3 +398,42 @@ def test_general_answer_includes_bounded_prior_context(monkeypatch):
     assert "What causes bloating?" in captured["prompt"]
     assert "Why does that happen?" in captured["prompt"]
     assert "UNTRUSTED DATA" in captured["prompt"]
+
+
+def test_assessment_llm_answers_user_question_and_preserves_engine_question(monkeypatch):
+    import conversation_intelligence as ci
+
+    class Response:
+        content = '{"commentary":"Thanks for explaining.","general_answer":"Bloating is a feeling of fullness or swelling in the abdomen.","fallback_reply":""}'
+        response_metadata = {"finish_reason": "stop"}
+
+    monkeypatch.setattr(ci, "_get_llm", lambda _tokens: object())
+    monkeypatch.setattr(ci, "invoke_groq", lambda *args, **kwargs: Response())
+    engine_question = "How long has this been happening?"
+    reply = ci.assist_assessment_turn("What does bloating mean?", engine_question, "ASK")
+    assert "Bloating is a feeling of fullness" in reply
+    assert reply.endswith(engine_question)
+
+
+def test_assessment_fallback_gives_llm_control_only_for_unresolved_turn(monkeypatch):
+    import conversation_intelligence as ci
+
+    class Response:
+        content = '{"commentary":"","general_answer":"","fallback_reply":"I could not understand that clearly. Could you describe what you are noticing?"}'
+        response_metadata = {"finish_reason": "stop"}
+
+    monkeypatch.setattr(ci, "_get_llm", lambda _tokens: object())
+    monkeypatch.setattr(ci, "invoke_groq", lambda *args, **kwargs: Response())
+    reply = ci.assist_assessment_turn("My stomach feels strange", "Please rephrase.", "NO_MATCH")
+    assert reply == "I could not understand that clearly. Could you describe what you are noticing?"
+
+
+def test_assessment_response_cannot_override_urgent_safety_message(monkeypatch):
+    import conversation_intelligence as ci
+
+    def should_not_call(*_args, **_kwargs):
+        raise AssertionError("LLM must not rewrite a safety response")
+
+    monkeypatch.setattr(ci, "_get_llm", should_not_call)
+    message = "Seek urgent medical evaluation now."
+    assert ci.assist_assessment_turn("I have severe bleeding", message, "SAFETY_REVIEW") == message

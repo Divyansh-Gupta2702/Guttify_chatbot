@@ -68,10 +68,10 @@ def configured_message_budget(language: str = "en") -> int:
     normalized_language = str(language).strip().lower()
     if normalized_language == "hinglish":
         configured = os.getenv("GROQ_MAX_HINGLISH_CALLS_PER_MESSAGE")
-        default = 4
+        default = 5
     else:
         configured = os.getenv("GROQ_MAX_CALLS_PER_MESSAGE")
-        default = 2
+        default = 3
     return max(1, int(configured if configured is not None else default))
 
 
@@ -98,6 +98,7 @@ def configured_output_tokens(reason: str) -> int:
         "general_knowledge_answer": ("GROQ_GENERAL_ANSWER_MAX_OUTPUT_TOKENS", 800, 96),
         "company_knowledge_answer": ("GROQ_COMPANY_ANSWER_MAX_OUTPUT_TOKENS", 800, 96),
         "research_summary_answer": ("GROQ_RESEARCH_ANSWER_MAX_OUTPUT_TOKENS", 900, 96),
+        "assessment_response": ("GROQ_ASSESSMENT_RESPONSE_MAX_OUTPUT_TOKENS", 420, 96),
     }
     env_name, default, minimum = configured.get(
         reason,
