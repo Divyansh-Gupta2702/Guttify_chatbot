@@ -99,6 +99,21 @@ def test_bare_no_medications_is_resolved(monkeypatch):
     assert result["status"] != "AMBIGUOUS"
 
 
+def test_bare_yes_medications_asks_which_and_preserves_question(monkeypatch):
+    bot, session = _active(monkeypatch, "medications-yes-followup", "medications")
+    result = bot.handle_message("medications-yes-followup", "yes")
+    assert result["status"] == "ASK"
+    assert "Which medicines or supplements" in result["message"]
+    assert "say 'no'" in result["message"]
+    assert session.last_question == "medications"
+    assert session.symptom_state.medications is None
+
+    result = bot.handle_message("medications-yes-followup", "no")
+    assert session.symptom_state.medications == "none"
+    assert session.last_question != "medications"
+    assert result["status"] != "AMBIGUOUS"
+
+
 def test_bare_no_reflux_is_resolved(monkeypatch):
     bot, session = _active(monkeypatch, "neg-reflux", "reflux")
     result = bot.handle_message("neg-reflux", "no")

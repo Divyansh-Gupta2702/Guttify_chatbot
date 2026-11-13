@@ -2603,6 +2603,10 @@ class ConversationManager:
                     focused_clarifications["timing"] = (
                         "Which is it: before meals/eating, after meals/eating, after waking, at a certain time of day, or after a bowel movement? You can include how many minutes or hours."
                     )
+                if pending_question == "medications":
+                    focused_clarifications["medications"] = (
+                        "Which medicines or supplements do you take regularly? Please name them, or say 'no' if you don't take any."
+                    )
                 # Use the exact question text associated with the pending field.
                 question_texts = {
                     "duration": "How long has this been happening?",
