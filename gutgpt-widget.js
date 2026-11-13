@@ -1053,7 +1053,21 @@
 
   intakeForm.addEventListener("submit", async (event) => {
     event.preventDefault();
-    if (busy || !sessionId || customerRegistered) return;
+    if (busy || customerRegistered) return;
+    if (!sessionId) {
+      busy = true;
+      intakeSubmit.disabled = true;
+      intakeError.hidden = true;
+      status.textContent = "Reconnecting…";
+      try {
+        await initSession();
+      } finally {
+        busy = false;
+        intakeSubmit.disabled = false;
+        status.textContent = "";
+      }
+      if (!sessionId || customerRegistered) return;
+    }
     const formData = new FormData(intakeForm);
     const customer = {
       session_id: sessionId,

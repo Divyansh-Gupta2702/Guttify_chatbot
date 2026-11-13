@@ -42,6 +42,15 @@ def test_initialization_calls_share_one_in_flight_operation():
     assert "_initSession().finally(() => { initSessionPromise = null; })" in init
 
 
+def test_intake_submit_retries_session_initialization_after_startup_failure():
+    source = _source()
+    submit = source[source.index('intakeForm.addEventListener("submit"'):source.index("function formatHistoryDate")]
+    assert "if (!sessionId)" in submit
+    assert "await initSession();" in submit
+    assert submit.index("await initSession();") < submit.index("const formData = new FormData(intakeForm)")
+    assert "intakeSubmit.disabled = true;" in submit
+
+
 def test_session_restore_keeps_existing_authentication_contract():
     source = _source()
     assert 'fetchJson("/api/customer/restore"' in source
