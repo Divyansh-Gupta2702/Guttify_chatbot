@@ -18,3 +18,4 @@ db-backups
 *.bak
 .pytest-*
 .pytest_cache
+widget-test.html
