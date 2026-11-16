@@ -775,6 +775,31 @@ def _to_utc_datetime(value):
         return None
 
 
+def _assessment_symptom_line(state) -> str:
+    """Return the symptom list using the exact formatter shown in the chat summary."""
+    if isinstance(state, dict):
+        try:
+            state = SymptomState(**state)
+        except (TypeError, ValueError):
+            return ""
+    summary = build_symptom_summary(state)
+    prefix = "Symptoms reported: "
+    for line in summary.splitlines():
+        line = line.strip().lstrip("-*").strip()
+        if line.startswith(prefix):
+            return line[len(prefix):].strip()
+    return ""
+
+
+def _symptom_line_from_text(value) -> str:
+    prefix = "Symptoms reported: "
+    for line in str(value or "").splitlines():
+        line = line.strip().lstrip("-*").strip()
+        if line.startswith(prefix):
+            return line[len(prefix):].strip()
+    return ""
+
+
 def _read_customer_records() -> list[dict]:
     """Assemble the legacy in-process record shape from normalized PostgreSQL tables."""
     conn = _postgres_connect()
@@ -811,18 +836,53 @@ def _read_customer_records() -> list[dict]:
                 for key, value in (row["chat_state"] or {}).items():
                     record.setdefault(key, value)
                 record["chat_history"] = row["chat_history"] or []
-                cur.execute("SELECT assessment_id, session_id, assessment, completed_at, status, started_at, updated_at FROM customer_assessments WHERE customer_id=%s ORDER BY started_at", (record["customer_id"],))
+                cur.execute("""
+                    SELECT a.assessment_id, a.session_id, a.assessment,
+                           a.completed_at, a.status, a.started_at, a.updated_at, st.checkpoint,
+                           summary.message AS summary_message
+                    FROM customer_assessments a
+                    LEFT JOIN assessment_state st ON st.assessment_id=a.assessment_id
+                    LEFT JOIN LATERAL (
+                        SELECT m.content AS message
+                        FROM assessment_messages m
+                        WHERE m.assessment_id=a.assessment_id
+                          AND m.content LIKE '%%Symptoms reported:%%'
+                        ORDER BY m.sequence_no DESC
+                        LIMIT 1
+                    ) summary ON TRUE
+                    WHERE a.customer_id=%s ORDER BY a.started_at
+                """, (record["customer_id"],))
                 history = cur.fetchall()
-                record["assessments"] = [{
-                    "assessment_id": item["assessment_id"], "session_id": item["session_id"],
-                    "assessment": item["assessment"],
-                    "completed_at": item["completed_at"].astimezone(INDIA_TZ).isoformat() if item["completed_at"] else None,
-                    "status": item["status"],
-                    "started_at": item["started_at"].astimezone(INDIA_TZ).isoformat(),
-                    "updated_at": item["updated_at"].astimezone(INDIA_TZ).isoformat(),
-                } for item in history]
-                if history:
-                    record["likely_assessment"] = history[-1]["assessment"]
+                record["assessments"] = []
+                for item in history:
+                    checkpoint = item["checkpoint"] or {}
+                    checkpoint_state = checkpoint.get("state") if isinstance(checkpoint, dict) else {}
+                    symptom_state = checkpoint_state.get("symptom_state") if isinstance(checkpoint_state, dict) else None
+                    symptom_line = (
+                        _assessment_symptom_line(symptom_state)
+                        or _symptom_line_from_text(item["summary_message"])
+                    )
+                    record["assessments"].append({
+                        "assessment_id": item["assessment_id"], "session_id": item["session_id"],
+                        "assessment": item["assessment"],
+                        "assessment_symptoms": symptom_line,
+                        "completed_at": item["completed_at"].astimezone(INDIA_TZ).isoformat() if item["completed_at"] else None,
+                        "status": item["status"],
+                        "started_at": item["started_at"].astimezone(INDIA_TZ).isoformat(),
+                        "updated_at": item["updated_at"].astimezone(INDIA_TZ).isoformat(),
+                    })
+                # The admin summary should reflect the most recently completed
+                # assessment, even when older assessments were updated later.
+                completed_history = [item for item in history if item["completed_at"] and item["assessment"]]
+                if completed_history:
+                    latest = max(completed_history, key=lambda item: item["completed_at"])
+                    record["likely_assessment"] = latest["assessment"]
+                    latest_display = next((item for item in record["assessments"] if item["assessment_id"] == latest["assessment_id"]), None)
+                    # Clear a previous assessment's symptom text if the latest
+                    # completed assessment has no recoverable symptom summary.
+                    record["assessment_symptoms"] = latest_display["assessment_symptoms"] if latest_display else ""
+                if record.get("assessment_symptoms") == "Symptoms recorded":
+                    record["assessment_symptoms"] = ""
                 records.append(record)
     except HTTPException:
         raise
@@ -1319,6 +1379,13 @@ def _persist_completed_assessment(session_id: str, result: dict) -> None:
         screening = result.get("screening") or getattr(session, "screening", None) or {}
 
     likely_assessment = screening.get("likely_condition") or screening.get("pattern") or "Insufficient information"
+    symptom_summary = _assessment_symptom_line(session.symptom_state)
+    if not symptom_summary:
+        symptom_summary = next((
+            _symptom_line_from_text(item.get("content"))
+            for item in reversed(HISTORY.get(session_id, []))
+            if item.get("role") == "assistant" and _symptom_line_from_text(item.get("content"))
+        ), "")
     with CUSTOMER_LOCK:
         records = _read_customer_records()
         customer_id = SESSION_CUSTOMER_IDS.get(session_id)
@@ -1347,16 +1414,19 @@ def _persist_completed_assessment(session_id: str, result: dict) -> None:
                 "assessment_id": assessment_id,
                 "session_id": session_id,
                 "assessment": str(likely_assessment),
+                "assessment_symptoms": symptom_summary,
                 "completed_at": now,
             })
         else:
             # Repair/update a legacy or partial record without creating a duplicate.
             existing["assessment"] = str(likely_assessment)
+            existing["assessment_symptoms"] = symptom_summary
             assessment_id = SESSION_ASSESSMENT_IDS.setdefault(session_id, str(existing.get("assessment_id") or uuid.uuid4()))
             existing["assessment_id"] = assessment_id
             existing.setdefault("completed_at", now)
         # Keep the dashboard's Assessment column useful by showing the latest result.
         customer["likely_assessment"] = str(likely_assessment)
+        customer["assessment_symptoms"] = symptom_summary
         customer.pop("final_symptom_summary", None)
         _write_customer_records(records)
     logger.info("Assessment history saved in PostgreSQL customer=%s session=%s",
@@ -1688,13 +1758,14 @@ def admin_dashboard():
 :root{color-scheme:light dark}body{font:16px system-ui,sans-serif;max-width:1400px;margin:32px auto;padding:0 16px}h1{margin-bottom:4px}.muted{opacity:.75}form,.toolbar{display:flex;gap:10px;flex-wrap:wrap;margin:18px 0}input,button{font:inherit;padding:10px;border-radius:8px;border:1px solid #888}input{min-width:250px;flex:1}button{cursor:pointer}table{width:100%;border-collapse:collapse;margin-top:16px}th,td{text-align:left;padding:10px;border-bottom:1px solid #8886;overflow-wrap:anywhere;vertical-align:top;min-width:120px}th{position:sticky;top:0;background:Canvas}.status{margin:12px 0}.hidden{display:none}.tablewrap{overflow:auto;margin-bottom:28px}@media(max-width:600px){body{margin-top:18px}th,td{padding:7px;font-size:14px}}
 </style></head><body><h1>GutGPT Admin</h1><p class="muted">Sign in with GUTGPT_ADMIN_TOKEN configured on the server. Customer and assessment information is sensitive.</p>
 <form id="login"><label for="token">Admin token</label><input id="token" type="password" autocomplete="current-password" required placeholder="Enter admin token"><button type="submit">Sign in</button></form>
-<div id="panel" class="hidden"><h2>Customers</h2><p id="summary" class="status"></p><div class="toolbar"><button id="refresh">Refresh records</button><button id="download">Download customer JSON</button><button id="logout">Sign out</button></div><div class="tablewrap"><table><thead><tr><th>Name</th><th>Age</th><th>Contact</th><th>Location</th><th>Assessment</th><th>Registered at (IST)</th><th>Session ID</th></tr></thead><tbody id="rows"></tbody></table></div></div>
+<div id="panel" class="hidden"><h2>Customers</h2><p id="summary" class="status"></p><div class="toolbar"><button id="refresh">Refresh records</button><button id="download">Download customer JSON</button><button id="logout">Sign out</button></div><div class="tablewrap"><table><thead><tr><th>Name</th><th>Age</th><th>Contact</th><th>Location</th><th>Symptoms</th><th>Registered at (IST)</th><th>Session ID</th></tr></thead><tbody id="rows"></tbody></table></div></div>
 <p id="status" class="status" role="status" aria-live="polite"></p>
 <script>
 (()=>{let token='';const $=id=>document.getElementById(id);const status=m=>{$('status').textContent=m};
 async function api(path){const r=await fetch(path,{headers:{Authorization:'Bearer '+token},cache:'no-store'});if(!r.ok){let msg='Request failed ('+r.status+')';try{const j=await r.json();if(j.detail)msg=j.detail}catch{}throw Error(msg)}return r}
 function cell(tr,value){const td=document.createElement('td');td.textContent=value==null?'':String(value);tr.appendChild(td)}
-async function load(){status('Loading customer records…');try{const r=await api('/api/admin/customers');const data=await r.json();$('rows').replaceChildren();for(const c of data.customers||[]){const tr=document.createElement('tr');cell(tr,c.name);cell(tr,c.age);cell(tr,c.contact);cell(tr,c.location ?? c.city);cell(tr,c.likely_assessment);cell(tr,c.created_at);cell(tr,c.session_id);$('rows').appendChild(tr)}$('summary').textContent=(data.count??(data.customers||[]).length)+' customer record(s)';$('panel').classList.remove('hidden');status('Records loaded.')}catch(e){$('panel').classList.add('hidden');status(e.message);if(/token|unauthorized|admin access/i.test(e.message))$('token').focus()}}
+function formatRegisteredAt(value){if(!value)return '';const d=new Date(value);if(Number.isNaN(d.getTime()))return String(value);const parts=new Intl.DateTimeFormat('en-GB',{timeZone:'Asia/Kolkata',day:'2-digit',month:'2-digit',year:'numeric',hour:'2-digit',minute:'2-digit',second:'2-digit',hourCycle:'h23'}).formatToParts(d);const p=Object.fromEntries(parts.map(x=>[x.type,x.value]));return p.day+'/'+p.month+'/'+p.year+' - '+p.hour+':'+p.minute+':'+p.second}
+async function load(){status('Loading customer records…');try{const r=await api('/api/admin/customers');const data=await r.json();$('rows').replaceChildren();for(const c of data.customers||[]){const tr=document.createElement('tr');cell(tr,c.name);cell(tr,c.age);cell(tr,c.contact);cell(tr,c.location ?? c.city);cell(tr,c.assessment_symptoms);cell(tr,formatRegisteredAt(c.created_at));cell(tr,c.session_id);$('rows').appendChild(tr)}$('summary').textContent=(data.count??(data.customers||[]).length)+' customer record(s)';$('panel').classList.remove('hidden');status('Records loaded.')}catch(e){$('panel').classList.add('hidden');status(e.message);if(/token|unauthorized|admin access/i.test(e.message))$('token').focus()}}
 async function download(){try{const r=await api('/api/admin/customers/download');const blob=await r.blob();const url=URL.createObjectURL(blob);const a=document.createElement('a');a.href=url;a.download='gutgpt_customer_records.json';document.body.appendChild(a);a.click();a.remove();URL.revokeObjectURL(url);status('Customer records download started.')}catch(e){status(e.message)}}
 $('login').addEventListener('submit',async e=>{e.preventDefault();token=$('token').value.trim();if(!token){status('Enter the admin token.');return}await load()});$('refresh').addEventListener('click',load);$('download').addEventListener('click',download);$('logout').addEventListener('click',()=>{token='';$('token').value='';$('rows').replaceChildren();$('panel').classList.add('hidden');status('Signed out.');$('token').focus()});
 })();</script></body></html>""")
