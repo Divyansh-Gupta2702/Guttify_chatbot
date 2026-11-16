@@ -22,6 +22,27 @@ if [[ "${1:-}" == "--install" ]]; then
   script_path="$(realpath "$0")"
   env_path="$(realpath "$ENV_FILE")"
   log_path="$(realpath -m "$LOG_FILE")"
+  # Debian cron schedules in the server timezone and ignores CRON_TZ for
+  # per-user crontabs. Convert the desired 10:00–19:00 IST run times into the
+  # server's local clock instead (the observed deployment clock is UTC).
+  server_offset="$(date +%z)"
+  if [[ ! "$server_offset" =~ ^([+-])([0-9]{2})([0-9]{2})$ ]]; then
+    echo "Could not read server timezone offset from date +%z: $server_offset" >&2
+    exit 1
+  fi
+  offset_sign=1
+  [[ "${BASH_REMATCH[1]}" == "-" ]] && offset_sign=-1
+  server_offset_minutes=$((offset_sign * (10#${BASH_REMATCH[2]} * 60 + 10#${BASH_REMATCH[3]})))
+  cron_minute=$(((10 * 60 - 330 + server_offset_minutes) % 60))
+  while ((cron_minute < 0)); do cron_minute=$((cron_minute + 60)); done
+  cron_hours=""
+  for ist_hour in {10..19}; do
+    server_minutes=$((ist_hour * 60 - 330 + server_offset_minutes))
+    while ((server_minutes < 0)); do server_minutes=$((server_minutes + 1440)); done
+    while ((server_minutes >= 1440)); do server_minutes=$((server_minutes - 1440)); done
+    cron_hours+="$((server_minutes / 60)),"
+  done
+  cron_hours="${cron_hours%,}"
   printf -v quoted_script '%q' "$script_path"
   printf -v quoted_env '%q' "$env_path"
   printf -v quoted_log '%q' "$log_path"
@@ -29,11 +50,12 @@ if [[ "${1:-}" == "--install" ]]; then
   trap 'rm -f -- "$tmp_crontab"' EXIT
   (crontab -l 2>/dev/null || true) | awk -v marker="$CRON_MARKER" -v tz_marker="$CRON_TZ_MARKER" \
     '$0 == tz_marker { skip_next=1; next } index($0, marker) { next } skip_next { skip_next=0; next } { print }' >"$tmp_crontab"
-  printf '%s\nCRON_TZ=Asia/Kolkata\n' "$CRON_TZ_MARKER" >>"$tmp_crontab"
-  printf '0 10-19 * * * MAIL_REPORT_ENV_FILE=%s MAIL_REPORT_LOG=%s %s >> %s 2>&1 %s\n' \
+  printf '%s\n' "$CRON_TZ_MARKER" >>"$tmp_crontab"
+  printf '%s %s * * * MAIL_REPORT_ENV_FILE=%s MAIL_REPORT_LOG=%s %s >> %s 2>&1 %s\n' \
+    "$cron_minute" "$cron_hours" \
     "$quoted_env" "$quoted_log" "$quoted_script" "$quoted_log" "$CRON_MARKER" >>"$tmp_crontab"
   crontab "$tmp_crontab"
-  echo "Installed hourly customer symptom email schedule (10:00–19:00 Asia/Kolkata)."
+  echo "Installed hourly customer symptom email schedule for 10:00–19:00 Asia/Kolkata (server timezone $server_offset; cron $cron_minute $cron_hours)."
   exit 0
 fi
 
