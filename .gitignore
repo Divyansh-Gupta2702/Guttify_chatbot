@@ -19,3 +19,5 @@ db-backups
 .pytest-*
 .pytest_cache
 widget-test.html
+customer-symptoms-mail.env
+customer-symptoms-mail.log
