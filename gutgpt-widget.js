@@ -78,34 +78,89 @@
         position: fixed;
         z-index: 2147483000;
         right: 30px;
-        bottom: 101px;
-        padding: 14px 19px;
-        border: 1px solid rgba(255,255,255,.38);
-        border-radius: 16px;
-        background: linear-gradient(135deg, #8b35e8, #5d19d8);
+        bottom: 102px;
+        display: grid;
+        gap: 5px;
+        width: 236px;
+        max-width: calc(100vw - 48px);
+        padding: 14px 17px 15px;
+        overflow: visible;
+        border: 1px solid rgba(255,255,255,.42);
+        border-radius: 18px;
+        background-color: #641cac;
+        background-image:
+          radial-gradient(circle at 100% 0%, rgba(217,180,255,.34), transparent 36%),
+          linear-gradient(145deg, #8b35e8, #5d19d8);
+        background-repeat: no-repeat, no-repeat;
+        background-size: auto, auto;
         color: #fff;
-        box-shadow: 0 8px 24px rgba(66,24,125,.36), 0 0 0 3px rgba(139,53,232,.12);
-        font: 700 16px/1.3 Inter, system-ui, sans-serif;
+        box-shadow: 0 14px 34px rgba(57,20,104,.32), 0 4px 10px rgba(52,18,92,.18), inset 0 1px 0 rgba(255,255,255,.2);
+        backdrop-filter: blur(14px);
+        -webkit-backdrop-filter: blur(14px);
+        font-family: Inter, system-ui, sans-serif;
         opacity: 0;
         visibility: hidden;
-        transform: translateY(8px) scale(.96);
-        transition: opacity .25s ease, transform .25s ease, visibility .25s;
+        transform: translateY(12px) scale(.94);
+        transform-origin: 88% 100%;
+        transition: opacity .3s ease, transform .38s cubic-bezier(.2,.85,.25,1.2), visibility .3s;
         pointer-events: none;
-        width: 220px;
-        max-width: calc(100vw - 48px);
-        text-align: center;
+        text-align: left;
+      }
+
+      .launcher-promo::before {
+        content: "";
+        position: absolute;
+        top: 0;
+        left: 17px;
+        right: 17px;
+        height: 3px;
+        border-radius: 0 0 4px 4px;
+        background: linear-gradient(90deg, rgba(255,255,255,.35), #f1d8ff, rgba(255,255,255,.35));
+      }
+
+      .launcher-promo-kicker {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        color: rgba(255,255,255,.78);
+        font-size: 9px;
+        font-weight: 800;
+        letter-spacing: .13em;
+        line-height: 1;
+        text-transform: uppercase;
+      }
+
+      .launcher-promo-kicker::before {
+        content: "";
+        width: 6px;
+        height: 6px;
+        border-radius: 50%;
+        background: #c9ff9a;
+        box-shadow: 0 0 9px rgba(201,255,154,.65);
+      }
+
+      .launcher-promo-copy {
+        font-size: 15px;
+        font-weight: 650;
+        line-height: 1.28;
+        letter-spacing: -.02em;
+      }
+
+      .launcher-promo-copy strong {
+        color: #f1d8ff;
+        font-weight: 850;
       }
 
       .launcher-promo::after {
         content: "";
         position: absolute;
-        right: 17px;
-        bottom: -6px;
-        width: 12px;
-        height: 12px;
+        right: 18px;
+        bottom: -7px;
+        width: 14px;
+        height: 14px;
         background: #641fd2;
-        border-right: 1px solid rgba(255,255,255,.38);
-        border-bottom: 1px solid rgba(255,255,255,.38);
+        border-right: 1px solid rgba(255,255,255,.34);
+        border-bottom: 1px solid rgba(255,255,255,.34);
         transform: rotate(45deg);
       }
 
@@ -113,6 +168,10 @@
         opacity: 1;
         visibility: visible;
         transform: translateY(0) scale(1);
+      }
+
+      @media (prefers-reduced-motion: reduce) {
+        .launcher-promo { transition: opacity .01ms linear, visibility .01ms linear; }
       }
 
       .launcher-mark {
@@ -527,7 +586,10 @@
       }
     </style>
 
-    <div class="launcher-promo" role="status" aria-hidden="true">Get diagnosed with India's 1st GutGPT</div>
+    <div class="launcher-promo" role="status" aria-hidden="true">
+      <span class="launcher-promo-kicker">Your gut health, guided</span>
+      <span class="launcher-promo-copy">Get diagnosed with India's <strong>1st GutGPT</strong></span>
+    </div>
     <button class="launcher" type="button" aria-label="Open GutGPT" aria-expanded="false">
       <img class="launcher-avatar" src="${GUTGPT_API_URL}/gutgpt-avatar.png" alt="" aria-hidden="true">
     </button>
