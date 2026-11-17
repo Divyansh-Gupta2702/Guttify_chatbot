@@ -77,13 +77,14 @@ def configured_message_budget(language: str = "en") -> int:
     """Return the bounded per-message Groq call budget.
 
     English turns retain the existing default. Hinglish turns reserve enough
-    calls for input translation, optional NLU/intent resolution, and output
-    translation. An explicit environment setting remains authoritative.
+    calls for input translation, optional NLU/intent resolution, and up to
+    three output-translation attempts. An explicit environment setting remains
+    authoritative.
     """
     normalized_language = str(language).strip().lower()
     if normalized_language == "hinglish":
         configured = os.getenv("GROQ_MAX_HINGLISH_CALLS_PER_MESSAGE")
-        default = 5
+        default = 7
     else:
         configured = os.getenv("GROQ_MAX_CALLS_PER_MESSAGE")
         default = 3

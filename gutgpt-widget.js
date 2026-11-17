@@ -66,6 +66,55 @@
 
       .launcher:active { transform: scale(.96); }
 
+      .launcher-avatar {
+        display: block;
+        width: 100%;
+        height: 100%;
+        border-radius: 50%;
+        object-fit: cover;
+      }
+
+      .launcher-promo {
+        position: fixed;
+        z-index: 2147483000;
+        right: 30px;
+        bottom: 101px;
+        padding: 14px 19px;
+        border: 1px solid rgba(255,255,255,.38);
+        border-radius: 16px;
+        background: linear-gradient(135deg, #8b35e8, #5d19d8);
+        color: #fff;
+        box-shadow: 0 8px 24px rgba(66,24,125,.36), 0 0 0 3px rgba(139,53,232,.12);
+        font: 700 16px/1.3 Inter, system-ui, sans-serif;
+        opacity: 0;
+        visibility: hidden;
+        transform: translateY(8px) scale(.96);
+        transition: opacity .25s ease, transform .25s ease, visibility .25s;
+        pointer-events: none;
+        width: 220px;
+        max-width: calc(100vw - 48px);
+        text-align: center;
+      }
+
+      .launcher-promo::after {
+        content: "";
+        position: absolute;
+        right: 17px;
+        bottom: -6px;
+        width: 12px;
+        height: 12px;
+        background: #641fd2;
+        border-right: 1px solid rgba(255,255,255,.38);
+        border-bottom: 1px solid rgba(255,255,255,.38);
+        transform: rotate(45deg);
+      }
+
+      .launcher-promo.visible {
+        opacity: 1;
+        visibility: visible;
+        transform: translateY(0) scale(1);
+      }
+
       .launcher-mark {
         width: 34px;
         height: 34px;
@@ -457,6 +506,7 @@
 
       @media (max-width: 560px) {
         .launcher { right: 16px; bottom: 16px; }
+        .launcher-promo { right: 24px; bottom: 92px; }
 
         .panel {
           right: 0;
@@ -477,8 +527,9 @@
       }
     </style>
 
+    <div class="launcher-promo" role="status" aria-hidden="true">Get diagnosed with India's 1st GutGPT</div>
     <button class="launcher" type="button" aria-label="Open GutGPT" aria-expanded="false">
-      <span class="launcher-mark" aria-hidden="true"><span></span></span>
+      <img class="launcher-avatar" src="${GUTGPT_API_URL}/gutgpt-avatar.png" alt="" aria-hidden="true">
     </button>
 
     <section class="panel" role="dialog" aria-label="GutGPT" aria-modal="false">
@@ -542,6 +593,7 @@
 
   const $ = (selector) => shadow.querySelector(selector);
   const launcher = $(".launcher");
+  const launcherPromo = $(".launcher-promo");
   const panel = $(".panel");
   const messages = $(".messages");
   const assessmentActions = $(".assessment-actions");
@@ -1433,10 +1485,19 @@
   }
 
   launcher.addEventListener("click", () => {
+    launcherPromo.classList.remove("visible");
+    launcherPromo.setAttribute("aria-hidden", "true");
     const isOpen = panel.classList.toggle("open");
     launcher.setAttribute("aria-expanded", String(isOpen));
     if (isOpen) input.focus();
   });
+
+  window.setTimeout(() => {
+    if (launcher.getAttribute("aria-expanded") !== "true") {
+      launcherPromo.classList.add("visible");
+      launcherPromo.setAttribute("aria-hidden", "false");
+    }
+  }, 3000);
 
   $(".close").addEventListener("click", () => {
     panel.classList.remove("open");

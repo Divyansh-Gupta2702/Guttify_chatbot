@@ -83,11 +83,6 @@ LANGUAGE_MISMATCH_STATUS = "LANGUAGE_MISMATCH"
 HINGLISH_TRANSLATION_FALLBACK = (
     "Maaf kijiye, main is jawab ko abhi samajh nahi paaya. Kripya ise thoda aur simple Hinglish mein likhein, ya language ko English par switch karein."
 )
-HINGLISH_OUTPUT_FALLBACK = (
-    "Maaf kijiye, main abhi is jawab ko Hinglish mein taiyaar nahi kar paaya. "
-    "Kripya thodi der baad dobara poochhein."
-)
-
 # Non-Latin scripts are never part of an English GutGPT message.
 _NON_LATIN_SCRIPT_RANGES = (
     (0x0900, 0x097F),  # Devanagari (Hindi, Marathi, Sanskrit, ...)
@@ -106,7 +101,7 @@ _NON_LATIN_SCRIPT_RANGES = (
 # "daily", "ok") so English messages with product names, medical terms,
 # abbreviations or spelling mistakes are never mistaken for another language.
 _HINDI_HINGLISH_MARKERS = {
-    "haan", "han", "haa", "haanji", "hanji", "ji", "jee", "nahi", "nahin", "nhi", "nah", "nahee", "nahiin", "nai", "na",
+    "haan", "han", "hn", "haa", "haanji", "hanji", "ji", "jee", "nahi", "nahin", "nhi", "nah", "nahee", "nahiin", "nai", "na",
     "bilkul", "kya", "kaise", "kab", "kyun", "kitna", "kitni",
     "raat", "subah", "shaam", "sham", "dopahar", "hafta", "mahina", "mahino",
     "saal", "din", "kal", "aaj", "mujhe", "mujhko", "mera", "meri", "mere",
@@ -121,7 +116,7 @@ _HINDI_HINGLISH_MARKERS = {
 
 # Short Roman-script answers that are Hinglish/Hindi rather than English.
 # English "yes"/"no" are intentionally absent: they remain valid confirmations.
-_NON_ENGLISH_SHORT_ANSWERS = {"haan", "han", "haa", "haanji", "hanji", "ji", "jee", "bilkul", "nahi", "nahin", "nhi", "nah", "nahee", "nahiin", "nai", "na"}
+_NON_ENGLISH_SHORT_ANSWERS = {"haan", "han", "hn", "haa", "haanji", "hanji", "ji", "jee", "bilkul", "nahi", "nahin", "nhi", "nah", "nahee", "nahiin", "nai", "na"}
 
 
 def _is_non_english(text: str) -> bool:
@@ -1589,6 +1584,19 @@ def widget():
     )
 
 
+@app.get("/gutgpt-avatar.png")
+def gutgpt_avatar():
+    """Serve the GutGPT launcher avatar to embedded widgets."""
+    avatar_file = BASE_DIR / "gutgpt-avatar.png"
+    if not avatar_file.exists():
+        raise HTTPException(status_code=404, detail="GutGPT avatar is not installed.")
+    return FileResponse(
+        avatar_file,
+        media_type="image/png",
+        headers={"Cache-Control": "public, max-age=86400"},
+    )
+
+
 @app.post("/api/session")
 def new_session(request: Request = None):
     """Create a new conversation session for a visitor.
@@ -2463,12 +2471,9 @@ def _chat_impl(req: ChatRequest, request: Request = None):
         try:
             reply, response_recommendations = translate_chat_output(reply, response_recommendations)
         except Exception as exc:
-            # Never expose English assessment text when Hinglish was selected.
-            # The deterministic result remains persisted; a later request can
-            # retrieve it again when translation is available.
+            # Keep the user's selected language mode. If output translation
+            # still fails after its retries, show the original English result.
             logger.warning("event=translation_unavailable direction=output session=%s category=%s", req.session_id[:8], type(exc).__name__)
-            reply = HINGLISH_OUTPUT_FALLBACK
-            response_recommendations = []
 
     # Persist urgent safety outcomes as well as completed routine assessments.
     if status in ("DIAGNOSIS", "RECOMMENDATION_FOUND", "AMBIGUOUS") or (

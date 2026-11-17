@@ -4,6 +4,7 @@ from __future__ import annotations
 import copy
 import json
 import logging
+import os
 import re
 import unicodedata
 from functools import lru_cache
@@ -68,7 +69,7 @@ def translate_input_to_english(text: str) -> str:
     # Very short confirmations are common in Roman Hinglish and are easy for
     # translation models to misread. Normalize spelling variants before NLU.
     compact = re.sub(r"[^a-z]", "", source.lower())
-    affirmative = {"haan", "han", "haa", "haa", "haanji", "hanji", "jee", "ji", "yup", "yep"}
+    affirmative = {"haan", "han", "hn", "haa", "haanji", "hanji", "jee", "ji", "yup", "yep"}
     negative = {"nahi", "nahin", "nhi", "nah", "nahee", "nahiin", "nai", "n", "nope"}
     if compact in affirmative:
         return "yes"
@@ -97,7 +98,7 @@ def translate_input_to_english(text: str) -> str:
     return translated.strip()
 
 
-def translate_chat_output(reply: str, recommendations: list[dict] | None = None) -> tuple[str, list[dict]]:
+def _translate_chat_output_once(reply: str, recommendations: list[dict] | None = None) -> tuple[str, list[dict]]:
     """Translate bot text and user-facing product support fields to Roman Hinglish."""
     source_reply = str(reply or "")
     source_recommendations = copy.deepcopy(recommendations or [])
@@ -155,3 +156,20 @@ def translate_chat_output(reply: str, recommendations: list[dict] | None = None)
             if isinstance(protected, str) and protected and protected in source_reply and protected not in translated_reply:
                 raise TranslationError("Output translation changed a protected product reference")
     return translated_reply.strip(), source_recommendations
+
+
+def translate_chat_output(reply: str, recommendations: list[dict] | None = None) -> tuple[str, list[dict]]:
+    """Translate output to Hinglish, retrying before the caller uses English."""
+    try:
+        attempts = int(os.getenv("GROQ_TRANSLATION_OUTPUT_ATTEMPTS", "3"))
+    except (TypeError, ValueError):
+        attempts = 3
+    attempts = max(1, min(attempts, 5))
+    last_error = None
+    for _ in range(attempts):
+        try:
+            return _translate_chat_output_once(reply, recommendations)
+        except Exception as exc:
+            last_error = exc
+            logger.warning("event=translation_output_attempt_failed category=%s", type(exc).__name__)
+    raise TranslationError("Hinglish output translation failed after retries") from last_error
