@@ -749,7 +749,8 @@
         "[data-sticky-add-to-cart]", "[data-sticky-atc]", "[data-add-to-cart-sticky]",
         ".sticky-add-to-cart", ".sticky-atc", ".product-sticky-bar", ".sticky-cart-bar",
         "[class*='sticky'][class*='cart']", "[class*='sticky'][class*='purchase']", "[class*='sticky'][class*='product']",
-        "[role='region']", "button[name='add']", "button[type='submit'][name='add']"
+        "[role='region']", "button[name='add']", "button[type='submit'][name='add']",
+        "button", "a", "[role='button']"
       ]);
       candidates.forEach((element) => {
         if (!visibleElement(element)) return;
@@ -757,14 +758,15 @@
         const text = textOf(element);
         const explicitSticky = /sticky|fixed/i.test(`${element.className || ""} ${element.id || ""} ${element.getAttribute("data-testid") || ""}`);
         const addButton = /add to cart|add to bag|buy now|shop pay/i.test(text);
-        if (!isBottomFixed(element, rect) || (!explicitSticky && !addButton)) return;
         // For a button inside a larger sticky bar, prefer the nearest fixed/sticky ancestor.
         let bar = element;
+        let bottomFixed = isBottomFixed(element, rect);
         for (let ancestor = element.parentElement; ancestor && ancestor !== document.body; ancestor = ancestor.parentElement) {
           if (!visibleElement(ancestor)) continue;
           const ancestorRect = ancestor.getBoundingClientRect();
-          if (isBottomFixed(ancestor, ancestorRect) && ancestorRect.height >= rect.height) { bar = ancestor; break; }
+          if (isBottomFixed(ancestor, ancestorRect) && ancestorRect.height >= rect.height) { bar = ancestor; bottomFixed = true; break; }
         }
+        if (!bottomFixed || (!explicitSticky && !addButton)) return;
         const barRect = bar.getBoundingClientRect();
         obstruction = Math.max(obstruction, Math.max(0, window.innerHeight - barRect.top) + 8);
       });
