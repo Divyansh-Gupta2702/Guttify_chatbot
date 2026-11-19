@@ -66,6 +66,12 @@
 
       .launcher:active { transform: scale(.96); }
 
+      :host(.cart-open) .launcher,
+      :host(.cart-open) .launcher-promo {
+        visibility: hidden;
+        pointer-events: none;
+      }
+
       .launcher-avatar {
         display: block;
         width: 100%;
@@ -727,14 +733,28 @@
     if (!(element instanceof Element) || !element.isConnected) return false;
     const style = window.getComputedStyle(element);
     const rect = element.getBoundingClientRect();
-    return style.display !== "none" && style.visibility !== "hidden" && Number(style.opacity || 1) > 0 && rect.width > 0 && rect.height > 0 && rect.bottom > 0 && rect.top < window.innerHeight;
+    return style.display !== "none" && style.visibility !== "hidden" && Number(style.opacity || 1) > 0 && rect.width > 0 && rect.height > 0 && rect.right > 0 && rect.left < window.innerWidth && rect.bottom > 0 && rect.top < window.innerHeight;
   };
-  const uniqueElements = (selectors) => {
+  const searchRoots = () => {
+    const roots = [document];
+    for (let index = 0; index < roots.length; index += 1) {
+      roots[index].querySelectorAll("*").forEach((element) => {
+        if (element !== host && element.shadowRoot) roots.push(element.shadowRoot);
+      });
+    }
+    return roots;
+  };
+  const uniqueElements = (selectors, roots = searchRoots()) => {
     const found = new Set();
-    selectors.forEach((selector) => {
-      try { document.querySelectorAll(selector).forEach((element) => found.add(element)); } catch (_) {}
-    });
+    roots.forEach((root) => selectors.forEach((selector) => {
+      try { root.querySelectorAll(selector).forEach((element) => found.add(element)); } catch (_) {}
+    }));
     return [...found];
+  };
+  const parentAcrossShadow = (element) => {
+    if (element.parentElement) return element.parentElement;
+    const root = element.getRootNode();
+    return root instanceof ShadowRoot ? root.host : null;
   };
   const isBottomFixed = (element, rect) => {
     const style = window.getComputedStyle(element);
@@ -743,7 +763,9 @@
   const textOf = (element) => `${element.getAttribute("aria-label") || ""} ${element.innerText || element.textContent || ""}`.trim().toLowerCase();
   const measurePurchaseUi = () => {
     let obstruction = 0;
+    let cartDrawerOpen = false;
     const viewportWidth = window.innerWidth;
+    const roots = searchRoots();
     if (mobileViewport.matches) {
       const candidates = uniqueElements([
         "[data-sticky-add-to-cart]", "[data-sticky-atc]", "[data-add-to-cart-sticky]",
@@ -751,17 +773,17 @@
         "[class*='sticky'][class*='cart']", "[class*='sticky'][class*='purchase']", "[class*='sticky'][class*='product']",
         "[role='region']", "button[name='add']", "button[type='submit'][name='add']",
         "button", "a", "[role='button']"
-      ]);
+      ], roots);
       candidates.forEach((element) => {
-        if (!visibleElement(element)) return;
-        const rect = element.getBoundingClientRect();
         const text = textOf(element);
         const explicitSticky = /sticky|fixed/i.test(`${element.className || ""} ${element.id || ""} ${element.getAttribute("data-testid") || ""}`);
         const addButton = /add to cart|add to bag|buy now|shop pay/i.test(text);
+        if ((!explicitSticky && !addButton) || !visibleElement(element)) return;
+        const rect = element.getBoundingClientRect();
         // For a button inside a larger sticky bar, prefer the nearest fixed/sticky ancestor.
         let bar = element;
         let bottomFixed = isBottomFixed(element, rect);
-        for (let ancestor = element.parentElement; ancestor && ancestor !== document.body; ancestor = ancestor.parentElement) {
+        for (let ancestor = parentAcrossShadow(element); ancestor && ancestor !== document.body; ancestor = parentAcrossShadow(ancestor)) {
           if (!visibleElement(ancestor)) continue;
           const ancestorRect = ancestor.getBoundingClientRect();
           if (isBottomFixed(ancestor, ancestorRect) && ancestorRect.height >= rect.height) { bar = ancestor; bottomFixed = true; break; }
@@ -775,24 +797,25 @@
         "cart-drawer", "#CartDrawer", "#cart-drawer", "[id*='CartDrawer']", "[id*='cart-drawer']",
         "[class*='cart-drawer']", "[class*='CartDrawer']", "[data-cart-drawer]", "[data-testid*='cart-drawer']",
         "[role='dialog'][aria-label*='cart' i]", "[role='dialog'][aria-label*='basket' i]"
-      ]).filter(visibleElement);
+      ], roots).filter(visibleElement);
       drawers.forEach((drawer) => {
         const rect = drawer.getBoundingClientRect();
         if (rect.right < viewportWidth * 0.45 || rect.width < 260) return;
+        cartDrawerOpen = true;
         const footerCandidates = uniqueElements([
           "[class*='footer']", "[class*='Footer']", "[class*='checkout']", "[class*='Checkout']",
           "[data-cart-footer]", "[data-testid*='checkout']", "button[name='checkout']", "[aria-label*='checkout' i]"
-        ]).filter((element) => drawer.contains(element) && visibleElement(element));
+        ], roots).filter((element) => drawer.contains(element) && visibleElement(element));
         let footerTop = rect.bottom;
         footerCandidates.forEach((element) => {
           const footerRect = element.getBoundingClientRect();
           if (footerRect.width > 0 && footerRect.bottom > rect.top) footerTop = Math.min(footerTop, footerRect.top);
         });
         // GoKwik and other cart drawers may expose only a Pay Now control.
-        const payControls = [...drawer.querySelectorAll("button, a, [role='button']")].filter((element) => visibleElement(element) && /pay now|checkout|proceed to checkout/i.test(textOf(element)));
+        const payControls = uniqueElements(["button, a, [role='button']"], roots).filter((element) => drawer.contains(element) && visibleElement(element) && /pay now|checkout|proceed to checkout/i.test(textOf(element)));
         payControls.forEach((element) => {
           let section = element;
-          for (let ancestor = element.parentElement; ancestor && ancestor !== drawer; ancestor = ancestor.parentElement) {
+          for (let ancestor = parentAcrossShadow(element); ancestor && ancestor !== drawer; ancestor = parentAcrossShadow(ancestor)) {
             const ancestorRect = ancestor.getBoundingClientRect();
             if (ancestorRect.height >= element.getBoundingClientRect().height * 1.5 && ancestorRect.bottom >= rect.bottom - 8) { section = ancestor; break; }
           }
@@ -800,26 +823,29 @@
         });
         if (footerTop < rect.bottom) obstruction = Math.max(obstruction, Math.max(0, window.innerHeight - footerTop) + 12);
       });
-      // Some cart apps (including embedded GoKwik variants) use markup that
-      // does not identify itself as a cart drawer. Fall back to visible
-      // checkout controls inside a fixed right-side panel.
-      if (!obstruction) {
-        const payControls = [...document.querySelectorAll("button, a, [role='button'], iframe[src*='gokwik' i], iframe[src*='checkout' i], iframe[title*='cart' i], iframe[title*='checkout' i]")]
-          .filter((element) => visibleElement(element) && (element.tagName === "IFRAME" || /pay now|checkout|proceed to checkout/i.test(textOf(element))));
-        payControls.forEach((element) => {
-          for (let ancestor = element.parentElement; ancestor && ancestor !== document.body; ancestor = ancestor.parentElement) {
-            if (!visibleElement(ancestor)) continue;
-            const style = window.getComputedStyle(ancestor);
-            const rect = ancestor.getBoundingClientRect();
-            if ((style.position === "fixed" || style.position === "sticky") && rect.width >= 260 && rect.right > viewportWidth * 0.6 && rect.bottom >= window.innerHeight - 8) {
-              const controlTop = element.getBoundingClientRect().top;
-              obstruction = Math.max(obstruction, Math.max(0, window.innerHeight - controlTop) + 12);
-              break;
-            }
-          }
-        });
-      }
     }
+    // Detect checkout controls in ordinary DOM and open Shadow DOM roots.
+    // This also catches GoKwik cart panels on mobile, where theme drawer
+    // selectors are not available.
+    const payControls = uniqueElements(["button, a, [role='button'], iframe[src*='gokwik' i], iframe[src*='checkout' i], iframe[title*='cart' i], iframe[title*='checkout' i]"], roots)
+      .filter((element) => (element.tagName === "IFRAME" || /pay now|checkout|proceed to checkout/i.test(textOf(element))) && visibleElement(element));
+    payControls.forEach((element) => {
+      let footerSection = null;
+      const controlRect = element.getBoundingClientRect();
+      for (let ancestor = parentAcrossShadow(element); ancestor && ancestor !== document.body; ancestor = parentAcrossShadow(ancestor)) {
+        if (!visibleElement(ancestor)) continue;
+        const style = window.getComputedStyle(ancestor);
+        const rect = ancestor.getBoundingClientRect();
+        if ((style.position === "fixed" || style.position === "sticky") && rect.width >= 260 && rect.right > viewportWidth * 0.6 && rect.bottom >= window.innerHeight - 8) {
+          cartDrawerOpen = true;
+          const footerTop = footerSection ? footerSection.getBoundingClientRect().top : controlRect.top;
+          obstruction = Math.max(obstruction, Math.max(0, window.innerHeight - footerTop) + 12);
+          break;
+        }
+        if (!footerSection && rect.height >= controlRect.height * 1.5 && rect.bottom >= window.innerHeight - 40) footerSection = ancestor;
+      }
+    });
+    host.classList.toggle("cart-open", cartDrawerOpen);
     host.style.setProperty("--gutgpt-bottom-obstruction", `${Math.ceil(obstruction)}px`);
   };
   let measureFrame = 0;
@@ -827,11 +853,24 @@
     if (measureFrame) return;
     measureFrame = window.requestAnimationFrame(() => { measureFrame = 0; measurePurchaseUi(); });
   };
-  const purchaseUiObserver = new MutationObserver((records) => {
+  const observerOptions = { subtree: true, childList: true, attributes: true, attributeFilter: ["class", "style", "hidden", "open", "aria-hidden", "aria-expanded"] };
+  const observedShadowRoots = new WeakSet();
+  let purchaseUiObserver;
+  const observePurchaseShadowRoots = () => {
+    searchRoots().forEach((root) => {
+      if (root instanceof ShadowRoot && !observedShadowRoots.has(root)) {
+        observedShadowRoots.add(root);
+        purchaseUiObserver.observe(root, observerOptions);
+      }
+    });
+  };
+  purchaseUiObserver = new MutationObserver((records) => {
     // Ignore widget-owned mutations (including the CSS variable update above).
+    observePurchaseShadowRoots();
     if (records.some((record) => !host.contains(record.target))) schedulePurchaseMeasure();
   });
-  purchaseUiObserver.observe(document.documentElement, { subtree: true, childList: true, attributes: true, attributeFilter: ["class", "style", "hidden", "open", "aria-hidden", "aria-expanded"] });
+  purchaseUiObserver.observe(document.documentElement, observerOptions);
+  observePurchaseShadowRoots();
   window.addEventListener("resize", schedulePurchaseMeasure, { passive: true });
   window.addEventListener("scroll", schedulePurchaseMeasure, { passive: true });
   mobileViewport.addEventListener?.("change", schedulePurchaseMeasure);
