@@ -207,23 +207,66 @@
       .panel {
         position: fixed;
         z-index: 2147483001;
-        right: 22px;
-        bottom: 96px;
-        width: min(440px, calc(100vw - 32px));
-        height: min(700px, calc(100dvh - 120px));
+        right: 100px;
+        bottom: 22px;
+        width: min(400px, calc(100vw - 32px));
+        height: min(660px, calc(100dvh - 120px));
         min-height: 0;
-        display: none;
+        display: flex;
         flex-direction: column;
         overflow: hidden;
         border: 1px solid #e8dfea;
-        border-radius: 18px;
+        border-radius: 20px;
         background: #faf8fb;
         box-shadow: 0 20px 60px rgba(35,25,45,.22);
         color: #241f2b;
         font: 14px/1.45 Inter, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        visibility: hidden;
+        opacity: 0;
+        transform: translate(10px, 8px) scale(.98);
+        transform-origin: right bottom;
+        pointer-events: none;
+        transition: opacity .22s ease, transform .22s ease, visibility .22s;
       }
 
-      .panel.open { display: flex; }
+      .panel.open {
+        visibility: visible;
+        opacity: 1;
+        transform: translate(0, 0) scale(1);
+        pointer-events: auto;
+      }
+
+      .panel-tail {
+        position: fixed;
+        z-index: 2147483001;
+        right: 92px;
+        bottom: 47px;
+        width: 16px;
+        height: 16px;
+        border-right: 1px solid #e8dfea;
+        border-bottom: 1px solid #e8dfea;
+        border-radius: 0 0 3px 0;
+        background: #faf8fb;
+        transform: rotate(-45deg);
+        visibility: hidden;
+        opacity: 0;
+        pointer-events: none;
+        transition: opacity .22s ease, visibility .22s;
+      }
+
+      .panel.open + .panel-tail {
+        visibility: visible;
+        opacity: 1;
+      }
+
+      /* The detached tail preserves the panel's clipped, rounded corners. */
+      .panel.open::after {
+        content: none;
+      }
+
+      @media (prefers-reduced-motion: reduce) {
+        .panel-tail, .panel { transition: none; }
+      }
 
       .head {
         padding: 14px 16px;
@@ -314,7 +357,7 @@
         padding: 0 16px 8px;
         display: flex;
         justify-content: space-between;
-        gap: 8px;
+        gap: 4px;
         flex-wrap: wrap;
       }
       .history-button {
@@ -379,7 +422,7 @@
       .new-assessment-button:disabled { opacity: .55; cursor: wait; }
 
       .msg {
-        max-width: 88%;
+        max-width: 94%;
         padding: 10px 12px;
         border-radius: 13px;
         white-space: pre-wrap;
@@ -398,7 +441,7 @@
         align-self: flex-start;
         background: #fff;
         border: 1px solid #ece3f0;
-        border-bottom-left-radius: 4px;
+        border-bottom-left-radius: 13px;
       }
 
       .user {
@@ -568,16 +611,14 @@
         .launcher-promo { right: 24px; bottom: 92px; }
 
         .panel {
-          right: 0;
-          bottom: 0;
-          width: 100vw;
-          height: 100vh;
-          height: 100dvh;
-          max-height: 100vh;
-          max-height: 100dvh;
+          right: 92px;
+          bottom: 16px;
+          width: min(400px, calc(100vw - 120px));
+          height: min(660px, calc(100dvh - 32px));
           min-height: 0;
-          border-radius: 0;
+          border-radius: 16px;
         }
+        .panel-tail { right: 84px; bottom: 41px; }
       }
 
       @media (min-width: 561px) and (max-height: 620px) {
@@ -651,6 +692,7 @@
         <button class="send" type="submit" aria-label="Send message">✓</button>
       </form>
     </section>
+    <span class="panel-tail" aria-hidden="true"></span>
   `;
 
   const $ = (selector) => shadow.querySelector(selector);
