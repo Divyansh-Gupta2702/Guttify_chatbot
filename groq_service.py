@@ -84,7 +84,7 @@ def configured_message_budget(language: str = "en") -> int:
     normalized_language = str(language).strip().lower()
     if normalized_language == "hinglish":
         configured = os.getenv("GROQ_MAX_HINGLISH_CALLS_PER_MESSAGE")
-        default = 7
+        default = 5
     else:
         configured = os.getenv("GROQ_MAX_CALLS_PER_MESSAGE")
         default = 3

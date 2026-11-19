@@ -42,7 +42,7 @@
         position: fixed;
         z-index: 2147483000;
         right: 22px;
-        bottom: 22px;
+        bottom: calc(22px + var(--gutgpt-bottom-obstruction, 0px));
         width: 66px;
         height: 66px;
         padding: 0;
@@ -78,7 +78,7 @@
         position: fixed;
         z-index: 2147483000;
         right: 30px;
-        bottom: 102px;
+        bottom: calc(102px + var(--gutgpt-bottom-obstruction, 0px));
         display: grid;
         gap: 5px;
         width: 236px;
@@ -208,7 +208,7 @@
         position: fixed;
         z-index: 2147483001;
         right: 100px;
-        bottom: 22px;
+        bottom: calc(22px + var(--gutgpt-bottom-obstruction, 0px));
         width: min(400px, calc(100vw - 32px));
         height: min(660px, calc(100dvh - 120px));
         min-height: 0;
@@ -240,7 +240,7 @@
         position: fixed;
         z-index: 2147483001;
         right: 92px;
-        bottom: 47px;
+        bottom: calc(47px + var(--gutgpt-bottom-obstruction, 0px));
         width: 16px;
         height: 16px;
         border-right: 1px solid #e8dfea;
@@ -607,18 +607,18 @@
       }
 
       @media (max-width: 560px) {
-        .launcher { right: 16px; bottom: 16px; }
-        .launcher-promo { right: 24px; bottom: 92px; }
+        .launcher { right: 16px; bottom: calc(16px + var(--gutgpt-bottom-obstruction, 0px) + env(safe-area-inset-bottom, 0px)); }
+        .launcher-promo { display: none !important; }
 
         .panel {
-          right: 92px;
-          bottom: 16px;
-          width: min(400px, calc(100vw - 120px));
-          height: min(660px, calc(100dvh - 32px));
+          right: 12px;
+          bottom: calc(12px + var(--gutgpt-bottom-obstruction, 0px) + env(safe-area-inset-bottom, 0px));
+          width: min(400px, calc(100vw - 24px));
+          height: min(660px, calc(100dvh - var(--gutgpt-bottom-obstruction, 0px) - env(safe-area-inset-bottom, 0px) - 24px));
           min-height: 0;
           border-radius: 16px;
         }
-        .panel-tail { right: 84px; bottom: 41px; }
+        .panel-tail { display: none; }
       }
 
       @media (min-width: 561px) and (max-height: 620px) {
@@ -719,6 +719,102 @@
   const sendButton = $(".send");
   const status = $(".status");
   const languageSelect = $(".language-select");
+
+  // Measure purchase UI on the host page without relying on one Shopify theme.
+  // The resulting CSS variable only changes widget positioning.
+  const mobileViewport = window.matchMedia("(max-width: 560px)");
+  const visibleElement = (element) => {
+    if (!(element instanceof Element) || !element.isConnected) return false;
+    const style = window.getComputedStyle(element);
+    const rect = element.getBoundingClientRect();
+    return style.display !== "none" && style.visibility !== "hidden" && Number(style.opacity || 1) > 0 && rect.width > 0 && rect.height > 0 && rect.bottom > 0 && rect.top < window.innerHeight;
+  };
+  const uniqueElements = (selectors) => {
+    const found = new Set();
+    selectors.forEach((selector) => {
+      try { document.querySelectorAll(selector).forEach((element) => found.add(element)); } catch (_) {}
+    });
+    return [...found];
+  };
+  const isBottomFixed = (element, rect) => {
+    const style = window.getComputedStyle(element);
+    return (style.position === "fixed" || style.position === "sticky") && rect.bottom >= window.innerHeight - 8;
+  };
+  const textOf = (element) => `${element.getAttribute("aria-label") || ""} ${element.innerText || element.textContent || ""}`.trim().toLowerCase();
+  const measurePurchaseUi = () => {
+    let obstruction = 0;
+    const viewportWidth = window.innerWidth;
+    if (mobileViewport.matches) {
+      const candidates = uniqueElements([
+        "[data-sticky-add-to-cart]", "[data-sticky-atc]", "[data-add-to-cart-sticky]",
+        ".sticky-add-to-cart", ".sticky-atc", ".product-sticky-bar", ".sticky-cart-bar",
+        "[class*='sticky'][class*='cart']", "[class*='sticky'][class*='purchase']", "[class*='sticky'][class*='product']",
+        "[role='region']", "button[name='add']", "button[type='submit'][name='add']"
+      ]);
+      candidates.forEach((element) => {
+        if (!visibleElement(element)) return;
+        const rect = element.getBoundingClientRect();
+        const text = textOf(element);
+        const explicitSticky = /sticky|fixed/i.test(`${element.className || ""} ${element.id || ""} ${element.getAttribute("data-testid") || ""}`);
+        const addButton = /add to cart|add to bag|buy now|shop pay/i.test(text);
+        if (!isBottomFixed(element, rect) || (!explicitSticky && !addButton)) return;
+        // For a button inside a larger sticky bar, prefer the nearest fixed/sticky ancestor.
+        let bar = element;
+        for (let ancestor = element.parentElement; ancestor && ancestor !== document.body; ancestor = ancestor.parentElement) {
+          if (!visibleElement(ancestor)) continue;
+          const ancestorRect = ancestor.getBoundingClientRect();
+          if (isBottomFixed(ancestor, ancestorRect) && ancestorRect.height >= rect.height) { bar = ancestor; break; }
+        }
+        const barRect = bar.getBoundingClientRect();
+        obstruction = Math.max(obstruction, Math.max(0, window.innerHeight - barRect.top) + 8);
+      });
+    } else {
+      const drawers = uniqueElements([
+        "cart-drawer", "#CartDrawer", "#cart-drawer", "[id*='CartDrawer']", "[id*='cart-drawer']",
+        "[class*='cart-drawer']", "[class*='CartDrawer']", "[data-cart-drawer]", "[data-testid*='cart-drawer']",
+        "[role='dialog'][aria-label*='cart' i]", "[role='dialog'][aria-label*='basket' i]"
+      ]).filter(visibleElement);
+      drawers.forEach((drawer) => {
+        const rect = drawer.getBoundingClientRect();
+        if (rect.right < viewportWidth * 0.45 || rect.width < 260) return;
+        const footerCandidates = uniqueElements([
+          "[class*='footer']", "[class*='Footer']", "[class*='checkout']", "[class*='Checkout']",
+          "[data-cart-footer]", "[data-testid*='checkout']", "button[name='checkout']", "[aria-label*='checkout' i]"
+        ]).filter((element) => drawer.contains(element) && visibleElement(element));
+        let footerTop = rect.bottom;
+        footerCandidates.forEach((element) => {
+          const footerRect = element.getBoundingClientRect();
+          if (footerRect.width > 0 && footerRect.bottom > rect.top) footerTop = Math.min(footerTop, footerRect.top);
+        });
+        // GoKwik and other cart drawers may expose only a Pay Now control.
+        const payControls = [...drawer.querySelectorAll("button, a, [role='button']")].filter((element) => visibleElement(element) && /pay now|checkout|proceed to checkout/i.test(textOf(element)));
+        payControls.forEach((element) => {
+          let section = element;
+          for (let ancestor = element.parentElement; ancestor && ancestor !== drawer; ancestor = ancestor.parentElement) {
+            const ancestorRect = ancestor.getBoundingClientRect();
+            if (ancestorRect.height >= element.getBoundingClientRect().height * 1.5 && ancestorRect.bottom >= rect.bottom - 8) { section = ancestor; break; }
+          }
+          footerTop = Math.min(footerTop, section.getBoundingClientRect().top);
+        });
+        if (footerTop < rect.bottom) obstruction = Math.max(obstruction, Math.max(0, window.innerHeight - footerTop) + 12);
+      });
+    }
+    host.style.setProperty("--gutgpt-bottom-obstruction", `${Math.ceil(obstruction)}px`);
+  };
+  let measureFrame = 0;
+  const schedulePurchaseMeasure = () => {
+    if (measureFrame) return;
+    measureFrame = window.requestAnimationFrame(() => { measureFrame = 0; measurePurchaseUi(); });
+  };
+  const purchaseUiObserver = new MutationObserver((records) => {
+    // Ignore widget-owned mutations (including the CSS variable update above).
+    if (records.some((record) => !host.contains(record.target))) schedulePurchaseMeasure();
+  });
+  purchaseUiObserver.observe(document.documentElement, { subtree: true, childList: true, attributes: true, attributeFilter: ["class", "style", "hidden", "open", "aria-hidden", "aria-expanded"] });
+  window.addEventListener("resize", schedulePurchaseMeasure, { passive: true });
+  window.addEventListener("scroll", schedulePurchaseMeasure, { passive: true });
+  mobileViewport.addEventListener?.("change", schedulePurchaseMeasure);
+  schedulePurchaseMeasure();
   const LANGUAGE_STORAGE_KEY = "gutgpt_chat_language_v1";
   function getStoredLanguage() {
     try {
