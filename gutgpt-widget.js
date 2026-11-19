@@ -606,7 +606,7 @@
         background: #fff;
       }
 
-      @media (max-width: 560px) {
+      @media (max-width: 767px) {
         .launcher { right: 16px; bottom: calc(16px + var(--gutgpt-bottom-obstruction, 0px) + env(safe-area-inset-bottom, 0px)); }
         .launcher-promo { display: none !important; }
 
@@ -722,7 +722,7 @@
 
   // Measure purchase UI on the host page without relying on one Shopify theme.
   // The resulting CSS variable only changes widget positioning.
-  const mobileViewport = window.matchMedia("(max-width: 560px)");
+  const mobileViewport = window.matchMedia("(max-width: 767px)");
   const visibleElement = (element) => {
     if (!(element instanceof Element) || !element.isConnected) return false;
     const style = window.getComputedStyle(element);
@@ -798,6 +798,25 @@
         });
         if (footerTop < rect.bottom) obstruction = Math.max(obstruction, Math.max(0, window.innerHeight - footerTop) + 12);
       });
+      // Some cart apps (including embedded GoKwik variants) use markup that
+      // does not identify itself as a cart drawer. Fall back to visible
+      // checkout controls inside a fixed right-side panel.
+      if (!obstruction) {
+        const payControls = [...document.querySelectorAll("button, a, [role='button'], iframe[src*='gokwik' i], iframe[src*='checkout' i], iframe[title*='cart' i], iframe[title*='checkout' i]")]
+          .filter((element) => visibleElement(element) && (element.tagName === "IFRAME" || /pay now|checkout|proceed to checkout/i.test(textOf(element))));
+        payControls.forEach((element) => {
+          for (let ancestor = element.parentElement; ancestor && ancestor !== document.body; ancestor = ancestor.parentElement) {
+            if (!visibleElement(ancestor)) continue;
+            const style = window.getComputedStyle(ancestor);
+            const rect = ancestor.getBoundingClientRect();
+            if ((style.position === "fixed" || style.position === "sticky") && rect.width >= 260 && rect.right > viewportWidth * 0.6 && rect.bottom >= window.innerHeight - 8) {
+              const controlTop = element.getBoundingClientRect().top;
+              obstruction = Math.max(obstruction, Math.max(0, window.innerHeight - controlTop) + 12);
+              break;
+            }
+          }
+        });
+      }
     }
     host.style.setProperty("--gutgpt-bottom-obstruction", `${Math.ceil(obstruction)}px`);
   };
