@@ -616,7 +616,11 @@
 
       @media (max-width: 767px) {
         .launcher { right: 16px; bottom: calc(16px + var(--gutgpt-bottom-obstruction, 0px) + env(safe-area-inset-bottom, 0px)); }
-        .launcher-promo { display: none !important; }
+        .launcher-promo {
+          right: 16px;
+          bottom: calc(92px + var(--gutgpt-bottom-obstruction, 0px) + env(safe-area-inset-bottom, 0px));
+          max-width: calc(100vw - 32px);
+        }
 
         .panel {
           right: 12px;
