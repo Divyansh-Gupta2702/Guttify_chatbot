@@ -72,6 +72,8 @@
         pointer-events: none;
       }
 
+      :host(.cart-open) .launcher-promo { transition: none; }
+
       .launcher-avatar {
         display: block;
         width: 100%;
@@ -735,14 +737,20 @@
     const rect = element.getBoundingClientRect();
     return style.display !== "none" && style.visibility !== "hidden" && Number(style.opacity || 1) > 0 && rect.width > 0 && rect.height > 0 && rect.right > 0 && rect.left < window.innerWidth && rect.bottom > 0 && rect.top < window.innerHeight;
   };
+  let cachedSearchRoots = null;
   const searchRoots = () => {
+    if (cachedSearchRoots) {
+      cachedSearchRoots = cachedSearchRoots.filter((root) => root === document || root.host?.isConnected);
+      return cachedSearchRoots;
+    }
     const roots = [document];
     for (let index = 0; index < roots.length; index += 1) {
       roots[index].querySelectorAll("*").forEach((element) => {
         if (element !== host && element.shadowRoot) roots.push(element.shadowRoot);
       });
     }
-    return roots;
+    cachedSearchRoots = roots;
+    return cachedSearchRoots;
   };
   const uniqueElements = (selectors, roots = searchRoots()) => {
     const found = new Set();
@@ -766,6 +774,16 @@
     let cartDrawerOpen = false;
     const viewportWidth = window.innerWidth;
     const roots = searchRoots();
+    const drawers = uniqueElements([
+      "cart-drawer", "#CartDrawer", "#cart-drawer", "[id*='CartDrawer']", "[id*='cart-drawer']",
+      "[class*='cart-drawer']", "[class*='CartDrawer']", "[class*='sidecart']", "[class*='side-cart']",
+      "[data-cart-drawer]", "[data-testid*='cart-drawer']",
+      "[role='dialog'][aria-label*='cart' i]", "[role='dialog'][aria-label*='basket' i]"
+    ], roots).filter(visibleElement);
+    drawers.forEach((drawer) => {
+      const rect = drawer.getBoundingClientRect();
+      if (rect.right >= viewportWidth * 0.45 && rect.width >= 260) cartDrawerOpen = true;
+    });
     if (mobileViewport.matches) {
       const candidates = uniqueElements([
         "[data-sticky-add-to-cart]", "[data-sticky-atc]", "[data-add-to-cart-sticky]",
@@ -793,15 +811,9 @@
         obstruction = Math.max(obstruction, Math.max(0, window.innerHeight - barRect.top) + 8);
       });
     } else {
-      const drawers = uniqueElements([
-        "cart-drawer", "#CartDrawer", "#cart-drawer", "[id*='CartDrawer']", "[id*='cart-drawer']",
-        "[class*='cart-drawer']", "[class*='CartDrawer']", "[data-cart-drawer]", "[data-testid*='cart-drawer']",
-        "[role='dialog'][aria-label*='cart' i]", "[role='dialog'][aria-label*='basket' i]"
-      ], roots).filter(visibleElement);
       drawers.forEach((drawer) => {
         const rect = drawer.getBoundingClientRect();
         if (rect.right < viewportWidth * 0.45 || rect.width < 260) return;
-        cartDrawerOpen = true;
         const footerCandidates = uniqueElements([
           "[class*='footer']", "[class*='Footer']", "[class*='checkout']", "[class*='Checkout']",
           "[data-cart-footer]", "[data-testid*='checkout']", "button[name='checkout']", "[aria-label*='checkout' i]"
@@ -866,8 +878,14 @@
   };
   purchaseUiObserver = new MutationObserver((records) => {
     // Ignore widget-owned mutations (including the CSS variable update above).
-    observePurchaseShadowRoots();
-    if (records.some((record) => !host.contains(record.target))) schedulePurchaseMeasure();
+    const pageRecords = records.filter((record) => !host.contains(record.target));
+    const newShadowRoot = pageRecords.some((record) => record.target instanceof Element && record.target.shadowRoot && !observedShadowRoots.has(record.target.shadowRoot));
+    const structureChanged = pageRecords.some((record) => record.type === "childList");
+    if (newShadowRoot || structureChanged) {
+      cachedSearchRoots = null;
+      observePurchaseShadowRoots();
+    }
+    if (pageRecords.length) schedulePurchaseMeasure();
   });
   purchaseUiObserver.observe(document.documentElement, observerOptions);
   observePurchaseShadowRoots();
