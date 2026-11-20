@@ -217,8 +217,8 @@
         z-index: 2147483001;
         right: 100px;
         bottom: calc(22px + var(--gutgpt-bottom-obstruction, 0px));
-        width: min(400px, calc(100vw - 32px));
-        height: min(660px, calc(100dvh - 120px));
+        width: min(360px, calc(100vw - 32px));
+        height: min(460px, calc(100dvh - 120px));
         min-height: 0;
         display: flex;
         flex-direction: column;
@@ -228,7 +228,7 @@
         background: #faf8fb;
         box-shadow: 0 20px 60px rgba(35,25,45,.22);
         color: #241f2b;
-        font: 14px/1.45 Inter, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        font: 12px/1.45 Inter, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
         visibility: hidden;
         opacity: 0;
         transform: translate(10px, 8px) scale(.98);
@@ -243,6 +243,31 @@
         transform: translate(0, 0) scale(1);
         pointer-events: auto;
       }
+
+      .panel.fullscreen {
+        top: auto;
+        right: 100px;
+        bottom: calc(22px + var(--gutgpt-bottom-obstruction, 0px));
+        left: auto;
+        width: min(400px, calc(100vw - 32px));
+        height: min(660px, calc(100dvh - 120px));
+        border-radius: 18px;
+        font-size: 14px;
+      }
+      .panel.fullscreen .head { padding: 18px 22px; }
+      .panel.fullscreen .head-copy h2 { font-size: 20px; }
+      .panel.fullscreen .head-copy p { font-size: 13px; }
+      .panel.fullscreen .messages { padding: 22px; gap: 14px; }
+      .panel.fullscreen .msg { font-size: 15px; line-height: 1.5; padding: 13px 16px; }
+      .panel.fullscreen .assessment-actions { padding: 0 22px 12px; gap: 12px; }
+      .panel.fullscreen .history-button,
+      .panel.fullscreen .new-assessment-button { font-size: 13px; padding: 8px 10px; }
+      .panel.fullscreen .assessment-actions { flex-wrap: wrap; }
+      .panel.fullscreen .history-button,
+      .panel.fullscreen .new-assessment-button { white-space: normal; overflow-wrap: anywhere; }
+      .panel.fullscreen .composer { gap: 10px; padding: 14px 18px; }
+      .panel.fullscreen .composer input { font-size: 14px; padding: 13px 16px; }
+      .panel.fullscreen .send { width: 48px; height: 48px; }
 
       .panel-tail {
         position: fixed;
@@ -316,6 +341,19 @@
         padding: 2px 6px;
         line-height: 1;
       }
+      .fullscreen-toggle {
+        width: 32px;
+        height: 32px;
+        display: grid;
+        place-items: center;
+        border: 1px solid rgba(255,255,255,.55);
+        border-radius: 7px;
+        padding: 0;
+        color: #fff;
+        background: rgba(64,28,91,.18);
+        font: 600 20px/1 Inter, system-ui, sans-serif;
+        cursor: pointer;
+      }
 
       .bristol-stool-chart {
         display: block;
@@ -343,7 +381,7 @@
       .intake-title { margin: 0 0 6px; font-size: 17px; font-weight: 700; }
       .intake-copy { margin: 0 0 14px; color: #655d6b; font-size: 12px; }
       .intake-form { display: grid; gap: 11px; padding: 0; background: transparent; border-top: 0; }
-      .intake-form label { display: grid; gap: 5px; color: #342b3b; font-size: 12px; font-weight: 600; }
+      .intake-form label { display: grid; gap: 5px; color: #342b3b; font-size: 13px; font-weight: 600; }
       .intake-form input { width: 100%; min-height: 40px; border: 1px solid #ded5e4; border-radius: 9px; padding: 9px 10px; font: inherit; color: #241f2b; background: #fff; }
       .intake-form input:focus { outline: 2px solid #a77af0; outline-offset: 1px; }
       .consent-row { display: flex !important; grid-template-columns: 18px 1fr; align-items: start; gap: 8px !important; font-weight: 400 !important; line-height: 1.4; }
@@ -362,19 +400,22 @@
       }
 
       .assessment-actions {
-        padding: 0 16px 8px;
+        padding: 0 12px 8px;
         display: flex;
-        justify-content: space-between;
-        gap: 4px;
-        flex-wrap: wrap;
+        justify-content: flex-start;
+        gap: 8px;
+        flex-wrap: nowrap;
       }
       .history-button {
+        flex: 0 1 40%;
+        min-width: 0;
         border: 1px solid #d8cce2;
         border-radius: 999px;
-        padding: 7px 12px;
+        padding: 6px 9px;
         color: #51415e;
         background: #fff;
-        font: 600 12px/1.2 inherit;
+        font: 600 13px/1.2 Inter, system-ui, sans-serif;
+        white-space: nowrap;
         cursor: pointer;
       }
       .assessment-history, .history-detail {
@@ -419,20 +460,25 @@
       .history-empty { color: #766b7d; font-size: 12px; }
       .assessment-actions[hidden] { display: none !important; }
       .new-assessment-button {
+        flex: 1 1 0;
+        min-width: 0;
         border: 1px solid #8b65a7;
         border-radius: 999px;
-        padding: 7px 12px;
+        padding: 6px 6px;
         color: #6020cf;
         background: #fff;
-        font: 600 12px/1.2 inherit;
+        font: 600 13px/1.2 Inter, system-ui, sans-serif;
+        white-space: nowrap;
         cursor: pointer;
       }
       .new-assessment-button:disabled { opacity: .55; cursor: wait; }
 
       .msg {
-        max-width: 94%;
+        max-width: 96%;
         padding: 10px 12px;
         border-radius: 13px;
+        font-size: 13px;
+        line-height: 1.4;
         white-space: pre-wrap;
         overflow-wrap: anywhere;
       }
@@ -450,6 +496,8 @@
         background: #fff;
         border: 1px solid #ece3f0;
         border-bottom-left-radius: 13px;
+        font-size: 13px;
+        line-height: 1.4;
       }
 
       .user {
@@ -625,16 +673,25 @@
         .panel {
           right: 12px;
           bottom: calc(12px + var(--gutgpt-bottom-obstruction, 0px) + env(safe-area-inset-bottom, 0px));
-          width: min(400px, calc(100vw - 24px));
+          width: min(410px, calc(100vw - 24px));
           height: min(660px, calc(100dvh - var(--gutgpt-bottom-obstruction, 0px) - env(safe-area-inset-bottom, 0px) - 24px));
           min-height: 0;
           border-radius: 16px;
+        }
+        .panel.fullscreen {
+          top: auto;
+          right: 12px;
+          bottom: calc(12px + var(--gutgpt-bottom-obstruction, 0px) + env(safe-area-inset-bottom, 0px));
+          left: auto;
+          width: min(410px, calc(100vw - 24px));
+          height: min(660px, calc(100dvh - var(--gutgpt-bottom-obstruction, 0px) - env(safe-area-inset-bottom, 0px) - 24px));
         }
         .panel-tail { display: none; }
       }
 
       @media (min-width: 561px) and (max-height: 620px) {
         .panel { bottom: 12px; height: calc(100dvh - 24px); }
+        .panel.fullscreen { bottom: 12px; height: calc(100dvh - 24px); }
         .customer-intake { padding-top: 12px; padding-bottom: 12px; }
       }
     </style>
@@ -654,6 +711,7 @@
           <p>Guttify's gut-health assistant</p>
         </div>
         <div class="head-actions">
+          <button class="fullscreen-toggle" type="button" aria-label="Expand chat" aria-pressed="false" title="Expand chat">⛶</button>
           <select class="language-select" aria-label="Chat language" title="Chat language" hidden>
             <option value="en">English</option>
             <option value="hinglish">Hinglish</option>
@@ -711,6 +769,7 @@
   const launcher = $(".launcher");
   const launcherPromo = $(".launcher-promo");
   const panel = $(".panel");
+  const fullscreenToggle = $(".fullscreen-toggle");
   const messages = $(".messages");
   const assessmentActions = $(".assessment-actions");
   const newAssessmentButton = $(".new-assessment-button");
@@ -1770,6 +1829,12 @@
     launcherPromo.classList.remove("visible");
     launcherPromo.setAttribute("aria-hidden", "true");
     const isOpen = panel.classList.toggle("open");
+    if (!isOpen) {
+      panel.classList.remove("fullscreen");
+      fullscreenToggle.setAttribute("aria-pressed", "false");
+      fullscreenToggle.setAttribute("aria-label", "Expand chat");
+      fullscreenToggle.title = "Expand chat";
+    }
     launcher.setAttribute("aria-expanded", String(isOpen));
     if (isOpen) input.focus();
   });
@@ -1783,7 +1848,18 @@
 
   $(".close").addEventListener("click", () => {
     panel.classList.remove("open");
+    panel.classList.remove("fullscreen");
+    fullscreenToggle.setAttribute("aria-pressed", "false");
+    fullscreenToggle.setAttribute("aria-label", "Expand chat");
+    fullscreenToggle.title = "Expand chat";
     launcher.setAttribute("aria-expanded", "false");
+  });
+
+  fullscreenToggle.addEventListener("click", () => {
+    const isFullscreen = panel.classList.toggle("fullscreen");
+    fullscreenToggle.setAttribute("aria-pressed", String(isFullscreen));
+    fullscreenToggle.setAttribute("aria-label", isFullscreen ? "Restore chat size" : "Expand chat");
+    fullscreenToggle.title = isFullscreen ? "Restore chat size" : "Expand chat";
   });
 
   form.addEventListener("submit", (event) => {
