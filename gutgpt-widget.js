@@ -1856,6 +1856,15 @@
     launcher.setAttribute("aria-expanded", "false");
   });
 
+  document.addEventListener("pointerdown", (event) => {
+    if (!panel.classList.contains("open") || event.composedPath().includes(host)) return;
+    panel.classList.remove("open", "fullscreen");
+    launcher.setAttribute("aria-expanded", "false");
+    fullscreenToggle.setAttribute("aria-pressed", "false");
+    fullscreenToggle.setAttribute("aria-label", "Expand chat");
+    fullscreenToggle.title = "Expand chat";
+  });
+
   fullscreenToggle.addEventListener("click", () => {
     const isFullscreen = panel.classList.toggle("fullscreen");
     fullscreenToggle.setAttribute("aria-pressed", String(isFullscreen));
